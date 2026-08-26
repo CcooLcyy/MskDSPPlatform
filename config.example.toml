@@ -1,0 +1,16 @@
+[server]
+http_addr = "127.0.0.1:8080"
+grpc_addr = "127.0.0.1:50051"
+shutdown_timeout_seconds = 10
+
+[runtime]
+protocol_version = "platform.v1"
+environment = "development"
+
+[tls]
+# 本地开发默认关闭 TLS；生产环境应由平台进程或支持 mTLS 的网关终止 TLS。
+enabled = false
+server_certificate = ""
+server_private_key = ""
+client_ca_certificate = ""
+require_client_certificate = false

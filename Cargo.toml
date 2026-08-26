@@ -1,0 +1,24 @@
+[package]
+name = "mskdsp-platform"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "MskDSP 远程服务平台基础服务"
+license = "Proprietary"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = "0.1"
+toml = "0.8"
+tonic = "0.13"
+prost = "0.13"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4"] }
+
+[build-dependencies]
+tonic-build = "0.13"

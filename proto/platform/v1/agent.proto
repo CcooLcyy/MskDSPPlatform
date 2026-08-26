@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package mskdsp.platform.v1;
+
+// Agent 与平台之间的基础连接协议。
+// 当前版本只承载身份握手、心跳和关闭通知，不包含现场业务命令。
+service AgentService {
+  // 建立 Agent 到平台的双向长连接。
+  // Agent 主动发起连接；平台通过同一条流返回 Welcome、HeartbeatAck 或 Error。
+  rpc ConnectAgent(stream AgentMessage) returns (stream ServerMessage);
+}
+
+message AgentMessage {
+  oneof payload {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    Goodbye goodbye = 3;
+  }
+}
+
+message ServerMessage {
+  oneof payload {
+    Welcome welcome = 1;
+    HeartbeatAck heartbeat_ack = 2;
+    ProtocolError error = 3;
+  }
+}
+
+message Hello {
+  // Agent 安装实例的稳定标识；当前仅作连接注册标识。
+  string agent_id = 1;
+  // Agent 声明的现场标识；认证绑定将在后续版本加入。
+  string site_id = 2;
+  string agent_version = 3;
+  string protocol_version = 4;
+  repeated string capabilities = 5;
+}
+
+message Welcome {
+  string connection_id = 1;
+  string protocol_version = 2;
+  int64 server_time_unix_ms = 3;
+}
+
+message Heartbeat {
+  int64 sent_at_unix_ms = 1;
+}
+
+message HeartbeatAck {
+  int64 server_time_unix_ms = 1;
+}
+
+message Goodbye {
+  string reason = 1;
+}
+
+message ProtocolError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+}
