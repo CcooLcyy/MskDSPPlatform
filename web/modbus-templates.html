@@ -40,167 +40,138 @@
 })();
   </script>
   <title>MskDSPPlatform · Modbus 点表库</title>
+  <link rel="stylesheet" href="/assets/platform.css">
   <style>
-    /* 三个页面共用语义色，系统主题在脚本不可用时仍然生效。 */
-    :root { color-scheme: light;
-      --page: #f3f5f8; --text: #172638; --muted: #516277;
-      --surface: #ffffff; --subtle: #f4f7fb; --border: #dce3eb; --control-border: #c6d0de;
-      --selected: #e9f0ff; --selected-border: #6090ee; --link: #2455bc;
-      --notice: #eef3fa; --danger: #a52c34; --danger-bg: #fff1f2; --danger-border: #f2cbd0;
-      --warning: #9b4b1b; --focus: #8bb5ff; --sticky: #fffffff2; --shadow: #17304b0d; }
-    @media (prefers-color-scheme: dark) {
-      :root:not([data-theme="light"]) { color-scheme: dark;
-      --page: #0f1723; --text: #e5edf7; --muted: #a6b5c8;
-      --surface: #182334; --subtle: #121d2c; --border: #35465d; --control-border: #536780;
-      --selected: #233b60; --selected-border: #78a7ff; --link: #9fc1ff;
-      --notice: #1b304a; --danger: #ffadb7; --danger-bg: #3c202d; --danger-border: #98505d;
-      --warning: #ffc18d; --focus: #8bb5ff; --sticky: #182334f2; --shadow: #00000033; }
-    }
-    :root[data-theme="dark"] { color-scheme: dark;
-      --page: #0f1723; --text: #e5edf7; --muted: #a6b5c8;
-      --surface: #182334; --subtle: #121d2c; --border: #35465d; --control-border: #536780;
-      --selected: #233b60; --selected-border: #78a7ff; --link: #9fc1ff;
-      --notice: #1b304a; --danger: #ffadb7; --danger-bg: #3c202d; --danger-border: #98505d;
-      --warning: #ffc18d; --focus: #8bb5ff; --sticky: #182334f2; --shadow: #00000033; }
-    a { color: var(--link); }
-    input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
-    input[type="checkbox"] { accent-color: #2563eb; }
-    .theme-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 16px; color: var(--muted); font-size: 13px; }
-    .theme-control select { width: auto; margin: 0; border: 1px solid var(--control-border); border-radius: 8px; padding: 6px 10px; background: var(--surface); color: var(--text); font: inherit; }
-    .theme-control select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: var(--page); color: var(--text); font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
-    main { width: min(1380px, calc(100% - 40px)); margin: 34px auto; }
-    header, nav, .actions, .section-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-    header { justify-content: space-between; margin-bottom: 24px; }
-    .brand, .muted, .hint { color: var(--muted); font-size: 13px; }
-    nav a { color: var(--muted); padding: 7px 13px; text-decoration: none; border-radius: 8px; }
-    nav a[aria-current] { background: var(--selected); color: var(--link); font-weight: 650; }
-    h1 { font-size: 28px; line-height: 1.3; margin: 0 0 8px; }
-    h2 { font-size: 18px; margin: 0; }
-    h3 { font-size: 15px; margin: 0; }
-    .intro { color: var(--muted); margin: 0 0 22px; }
-    .layout { display: grid; grid-template-columns: 310px minmax(0, 1fr); gap: 20px; align-items: start; }
-    section, .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 22px; box-shadow: 0 8px 30px var(--shadow); }
-    .section-heading { justify-content: space-between; margin-bottom: 16px; }
-    button { border: 1px solid var(--control-border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-weight: 600; padding: 8px 13px; cursor: pointer; }
-    button.primary { background: #2563eb; color: white; border-color: #2563eb; }
-    button.danger { color: var(--danger); }
-    button:hover:not(:disabled) { filter: brightness(.95); }
-    button:disabled { opacity: .45; cursor: not-allowed; }
-    button:focus-visible, a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-    input, select, textarea { width: 100%; min-width: 0; border: 1px solid var(--control-border); border-radius: 7px; padding: 8px 10px; background: var(--surface); color: var(--text); font: inherit; }
-    input:focus, select:focus, textarea:focus { outline: 2px solid var(--focus); border-color: var(--selected-border); }
-    input:disabled, select:disabled, textarea:disabled { background: var(--subtle); color: var(--muted); }
-    textarea { resize: vertical; min-height: 72px; }
-    label { display: block; color: var(--muted); font-size: 13px; }
-    label input, label select, label textarea { margin-top: 5px; font-size: 14px; }
-    .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-    .wide { grid-column: 1 / -1; }
-    fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
-    .actions { margin-top: 14px; }
-    .library-actions button { flex: 1; }
-    .library-actions button[aria-pressed="true"] { border-color: var(--selected-border); background: var(--selected); }
-    #template-list { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 10px; max-height: 65vh; overflow: auto; }
-    .template-card { width: 100%; text-align: left; font-weight: 400; display: grid; gap: 4px; padding: 13px; overflow-wrap: anywhere; }
-    .template-card strong { font-size: 15px; color: var(--text); }
-    .template-card[aria-pressed="true"] { border-color: var(--selected-border); background: var(--selected); }
-    .template-card span { color: var(--muted); font-size: 12px; }
-    .trash-card { border: 1px solid var(--control-border); border-radius: 8px; background: var(--subtle); }
-    .trash-card button { justify-self: start; }
-    #message { margin: 0 0 18px; padding: 13px 16px; border: 1px solid var(--border); background: var(--notice); border-radius: 10px; overflow-wrap: anywhere; }
-    #message.error { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-border); }
-    .editor-actions { position: sticky; bottom: 12px; background: var(--sticky); padding: 12px; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 3px 16px var(--shadow); }
-    #draft-status { margin-right: auto; color: var(--muted); font-size: 13px; }
-    details { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); }
-    summary { color: var(--text); cursor: pointer; }
+    /* 点表目录与编辑工作区使用共用主题中的语义颜色。 */
+    #message { margin-bottom: 20px; overflow-wrap: anywhere; }
+    .workbench { display: grid; grid-template-columns: 284px minmax(0, 1fr); gap: 20px; align-items: start; }
+    .catalog-panel .panel-heading { padding: 18px; }
+    .catalog-panel .panel-body { padding: 16px; }
+    .catalog-search label { font-size: 12px; }
+    #template-list { display: grid; gap: 7px; padding: 0; margin: 16px 0 0; list-style: none; max-height: 65vh; overflow: auto; }
+    .template-card { display: grid; gap: 5px; width: 100%; padding: 14px; border-color: var(--border); border-radius: 9px; background: var(--surface); text-align: left; font-weight: 400; overflow-wrap: anywhere; }
+    .template-card strong { color: var(--text); font-size: 14px; font-weight: 650; }
+    .template-card span { color: var(--muted); font-size: 11px; }
+    .template-card[aria-pressed="true"] { background: var(--selected); border-color: var(--selected-border); }
+    .capacity-note { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+    #list-empty { padding: 32px 8px; text-align: center; color: var(--muted); font-size: 13px; }
+    .nav-count { margin-left: auto; min-width: 18px; font-size: 11px; text-align: right; }
+    .editor-heading { align-items: flex-start; }
+    .editor-heading h2 { font-size: 18px; overflow-wrap: anywhere; }
+    #record-info { display: block; margin-top: 6px; font-size: 11px; }
+    .editor-section { padding: 22px; border-top: 1px solid var(--border); }
+    .editor-section:first-of-type { border-top: 0; }
+    .editor-section .section-heading { margin-bottom: 17px; }
+    .editor-section .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .editor-section .hint { margin: 10px 0 0; }
+    .foldout { border-top: 1px solid var(--border); }
+    .foldout > summary { padding: 16px 22px; cursor: pointer; font-size: 13px; font-weight: 600; }
+    .foldout-body { padding: 0 22px 22px; }
     .array-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; margin: 10px 0; }
     .source-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) auto; }
-    .point-area { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(0, 2fr); gap: 18px; margin-top: 16px; }
-    #point-list { display: grid; align-content: start; gap: 6px; max-height: 530px; overflow: auto; }
-    .point-row { text-align: left; display: grid; font-weight: 400; gap: 2px; overflow-wrap: anywhere; }
-    .point-row small { font-size: 12px; color: var(--muted); }
+    .source-heading { margin-top: 24px; }
+    .point-area { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 18px; margin-top: 18px; align-items: start; }
+    .point-navigation { display: grid; gap: 12px; min-width: 0; }
+    #point-list { display: grid; gap: 6px; align-content: start; max-height: 550px; overflow: auto; }
+    .point-row { display: grid; gap: 3px; padding: 11px; border-color: var(--border); text-align: left; font-weight: 400; overflow-wrap: anywhere; }
+    .point-row small { color: var(--muted); font-size: 11px; }
     .point-row[aria-pressed="true"] { background: var(--selected); border-color: var(--selected-border); }
-    .point-form { padding: 16px; background: var(--subtle); border: 1px solid var(--border); border-radius: 10px; }
-    .check-label { display: flex; align-items: center; gap: 7px; }
-    .check-label input { width: auto; margin: 0; }
-    .point-heading { border-top: 1px solid var(--border); padding-top: 20px; margin-top: 20px; }
-    footer { color: var(--muted); font-size: 13px; margin-top: 18px; }
-    [hidden] { display: none !important; }
-    @media (max-width: 1050px) { .layout { grid-template-columns: 250px minmax(0, 1fr); } .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .point-area { grid-template-columns: 1fr; } #point-list { max-height: 220px; } }
-    @media (max-width: 720px) { main { width: calc(100% - 24px); margin: 20px auto; } .layout { grid-template-columns: 1fr; } section { padding: 18px; } #template-list { max-height: 300px; } .source-row { grid-template-columns: 1fr; } .editor-actions { position: static; } .editor-actions button { flex: 1 1 130px; } #draft-status { width: 100%; } }
-    @media (max-width: 420px) { .form-grid { grid-template-columns: 1fr; } h1 { font-size: 24px; } }
+    .point-form { min-width: 0; padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--subtle); }
+    .field-group { margin-top: 22px; }
+    .field-group h3 { margin-bottom: 12px; color: var(--muted); font-size: 12px; font-weight: 650; }
+    .point-form > .section-heading { margin-bottom: 17px; }
+    .point-form .form-grid { gap: 13px; }
+    .point-form .field-group:first-of-type { margin-top: 0; }
+    .point-form .form-grid label.wide { grid-column: 1 / -1; }
+    #point-advanced { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--border); }
+    #point-advanced summary { cursor: pointer; color: var(--text); font-size: 13px; font-weight: 600; }
+    #point-advanced .form-grid { margin-top: 16px; }
+    #point-advanced .optional-field { display: grid; gap: 8px; grid-column: 1 / -1; }
+    .editor-actions { position: sticky; bottom: 12px; z-index: 2; justify-content: flex-end; padding: 15px 22px; border-top: 1px solid var(--border); border-radius: 0 0 13px 13px; background: var(--sticky); box-shadow: 0 -4px 18px var(--shadow); }
+    #draft-status { margin-right: auto; color: var(--muted); font-size: 12px; }
+    .delete-area { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 22px; border-top: 1px solid var(--border); }
+    .delete-area p { margin: 0; color: var(--muted); font-size: 11px; }
+    .workbench[data-view="trash"] { display: block; }
+    .workbench[data-view="trash"] .catalog-panel .panel-body { padding: 22px; }
+    .workbench[data-view="trash"] .catalog-search { max-width: 460px; }
+    .workbench[data-view="trash"] #template-list { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); max-height: none; gap: 16px; }
+    .trash-card { height: 100%; padding: 20px; border: 1px solid var(--border); }
+    .trash-card button { margin-top: 13px; justify-self: start; color: var(--link); }
+    #trash-intro { max-width: 640px; margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+    .workspace-footer { margin-top: 18px; }
+    @media (max-width: 1280px) { .workbench { grid-template-columns: 238px minmax(0, 1fr); gap: 16px; } .point-area { grid-template-columns: 1fr; } #point-list { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 185px; } }
+    @media (max-width: 960px) { .workbench { grid-template-columns: 1fr; } #template-list { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 265px; } }
+    @media (max-width: 600px) { .page-actions { width: 100%; } .page-actions button { flex: 1; } .editor-section { padding: 18px; } .editor-section .form-grid { grid-template-columns: 1fr; } .point-form { padding: 15px; } #template-list, #point-list { grid-template-columns: 1fr; } .source-row { grid-template-columns: 1fr; } .editor-actions { bottom: 0; padding: 13px 16px; border-radius: 0; } .editor-actions button { flex: 1 1 120px; } #draft-status { width: 100%; } .delete-area { align-items: flex-start; flex-wrap: wrap; } .workbench[data-view="trash"] #template-list { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
-  <main>
-    <label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
-    <header><div class="brand">MskDSPPlatform</div><nav aria-label="平台导航"><a href="/modbus-templates" aria-current="page">点表库</a><a href="/update">程序更新</a><span id="username" class="muted"></span><button id="logout" type="button" disabled>退出登录</button></nav></header>
-    <h1>Modbus 点表库</h1>
-    <p class="intro">管理 RTU / TCP 共用点表，导入、编辑并下载上位机兼容的 JSON 模板。</p>
-    <div id="message" role="status" aria-live="polite">正在读取点表库…</div>
-    <div class="layout">
-      <section aria-label="点表库列表">
-        <div class="section-heading"><h2 id="library-title">全部点表</h2><button id="refresh" type="button">刷新</button></div>
-        <div class="actions library-actions" role="group" aria-label="点表库视图"><button id="library-view" type="button" aria-pressed="true">全部点表</button><button id="trash-view" type="button" aria-pressed="false">回收站</button></div>
-        <label>搜索名称、厂家、型号或协议<input id="search" type="search" placeholder="搜索点表" autocomplete="off"></label>
-        <div class="actions library-actions"><button id="new-template" type="button">新建</button><button id="import" type="button">导入 JSON</button><input id="import-file" type="file" accept=".json,application/json" hidden></div>
-        <p class="hint">点表库最多 1000 张，每张最多 10 MiB / 10000 点。导入后可先检查，点击保存才写入点表库。</p>
-        <p class="hint">删除的点表在回收站保留 90 天，可在到期前恢复；回收站不占点表库名额。切换视图不会丢弃右侧草稿。</p>
-        <ul id="template-list"></ul>
-        <p id="list-empty" class="muted" hidden>暂无点表。新建或导入上位机模板开始使用。</p>
-      </section>
-      <section id="editor-panel" aria-label="点表编辑器">
-        <div id="editor-empty" class="muted">选择左侧点表查看详情，或新建一张点表。</div>
-        <div id="editor" hidden>
-          <div class="section-heading"><h2>点表详情</h2><span id="record-info" class="muted"></span></div>
-          <fieldset id="metadata" class="form-grid">
-            <label>模板 ID<input id="meta-id" type="text" maxlength="128" autocomplete="off"></label>
-            <label>模板名称<input id="meta-name" type="text" maxlength="256"></label>
-            <label>厂家<input id="meta-manufacturer" type="text" maxlength="256"></label>
-            <label>协议版本<input id="meta-protocol_version" type="text" maxlength="256"></label>
-            <label>地址基准<select id="meta-address_base"><option value="0">0 基地址</option><option value="1">1 基地址</option></select></label>
-            <label>型号（每行一个）<textarea id="meta-models" rows="2"></textarea></label>
-          </fieldset>
-          <p class="hint">上位机已有相同模板 ID 时，请修改模板 ID 后保存，再下载导入。内置模板也需使用新的 ID；可点击“另存为新模板”生成副本。</p>
-          <details><summary>模板说明与来源文件</summary><p class="hint">导入的说明与 SHA256 将随模板完整保留。</p><div id="notes"></div><button id="add-note" type="button">添加说明</button><div id="sources"></div><button id="add-source" type="button">添加来源</button></details>
-          <div class="section-heading point-heading"><h2 id="point-count">点位</h2><button id="add-point" type="button">添加点位</button></div>
-          <label>搜索点位<input id="point-search" type="search" placeholder="标签 / 分组 / 地址" autocomplete="off"></label>
-          <div class="point-area">
-            <div id="point-list" role="group" aria-label="选择编辑点位"></div>
-            <fieldset id="point-editor" class="point-form">
-              <div class="section-heading"><h3 id="point-title">点位编辑</h3><button id="remove-point" class="danger" type="button">删除点位</button></div>
-              <div class="form-grid">
-                <label>点位 ID<input id="point-id" type="text" maxlength="128"></label>
-                <label>标签<input id="point-tag" type="text" maxlength="256"></label>
-                <label>分组<input id="point-group" type="text" maxlength="256"></label>
-                <label>单位<input id="point-unit" type="text" maxlength="64"></label>
-                <label>功能码<select id="point-function_code"><option value="1">01 · 读线圈</option><option value="3">03 · 读保持寄存器</option><option value="4">04 · 读输入寄存器</option><option value="5">05 · 写单线圈</option><option value="6">06 · 写单寄存器</option><option value="16">16 · 写多寄存器</option></select></label>
-                <label>地址<input id="point-address" type="text" inputmode="numeric"></label>
-                <label>数据类型<select id="point-data_type"><option>BOOL</option><option>UINT16</option><option>UINT32</option><option>INT16</option><option>INT32</option></select></label>
-                <label>寄存器数量<select id="point-reg_count"><option value="1">1</option><option value="2">2</option></select></label>
-                <label>倍率<input id="point-scale" type="text" placeholder="1 或 1e-3" spellcheck="false"></label>
-                <label>偏移<input id="point-offset" type="text" spellcheck="false"></label>
-                <label>死区<input id="point-deadband" type="text" spellcheck="false"></label>
-                <label>字序<select id="point-word_order"><option>HL</option><option>LH</option></select></label>
-                <label>字节序<select id="point-byte_order"><option>AB</option><option>BA</option></select></label>
-                <label>位索引（空为无）<input id="point-bit_index" type="text" inputmode="numeric"></label>
-                <label>来源页码<input id="point-source_page" type="text" inputmode="numeric"></label>
-                <label>默认选择<select id="point-default_selected"><option value="">未指定（使用上位机默认行为）</option><option value="true">选中</option><option value="false">不选中</option></select></label>
-                <label class="wide">点位说明<textarea id="point-description" maxlength="4096" rows="2"></textarea></label>
-                <div class="wide"><label class="check-label"><input id="point-condition_enabled" type="checkbox">保存适用条件（可选）</label><label>适用条件<textarea id="point-condition" maxlength="4096" rows="2"></textarea></label></div>
-                <div class="wide"><label class="check-label"><input id="point-enum_enabled" type="checkbox">保存枚举相等值（可选）</label><label>枚举相等值（空为 null，0 是有效值）<input id="point-enum_value" type="text" inputmode="numeric"></label></div>
-              </div>
-              <p class="hint">倍率 / 偏移 / 死区保留原始字符串与精度。位索引和枚举仅适用于寄存器 BOOL；两者不能同时设值。</p>
-            </fieldset>
-          </div>
-          <div class="actions editor-actions"><span id="draft-status"></span><button id="save" class="primary" type="button">保存点表</button><button id="copy-template" type="button">另存为新模板</button><button id="download" type="button">下载已保存 JSON</button><button id="reload-record" type="button">重新读取</button><button id="delete-template" class="danger" type="button">删除点表</button></div>
+  <div class="app-shell">
+    <aside class="app-sidebar" aria-label="平台导航">
+      <div class="app-brand"><span class="brand-mark" aria-hidden="true">M</span><div><span class="brand-name">MskDSP</span><span class="brand-caption">远程服务平台</span></div></div>
+      <p class="nav-label">工作台</p>
+      <nav class="app-nav" aria-label="平台功能">
+        <button id="library-view" class="nav-item" type="button" aria-pressed="true"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16M10 10v10"/></svg></span>点表工作台<span id="library-total" class="nav-count">—</span></button>
+        <button id="trash-view" class="nav-item" type="button" aria-pressed="false"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></svg></span>回收站<span id="trash-total" class="nav-count">—</span></button>
+        <a class="nav-item" href="/update"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M5 15v5h14v-5"/></svg></span>程序更新</a>
+      </nav>
+      <div class="sidebar-footer">MskDSPPlatform<br>配置 · 维护 · 更新</div>
+    </aside>
+    <div class="app-content">
+      <header class="app-topbar"><span class="topbar-label">工作空间 / Modbus 点表</span><div class="account-actions"><label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><span id="username"></span><button id="logout" class="quiet" type="button" disabled>退出登录</button></div></header>
+      <main class="page-content">
+        <div class="page-heading"><div><span class="eyebrow">MODBUS RTU / TCP</span><h1 id="page-title">点表工作台</h1><p id="page-summary" class="page-summary">集中管理协议点表，编辑后下载到上位机使用。</p></div><div id="library-controls" class="page-actions"><button id="import" type="button">导入 JSON</button><button id="new-template" type="button">＋ 新建点表</button><input id="import-file" type="file" accept=".json,application/json" hidden></div></div>
+        <div id="message" class="status-banner" role="status" aria-live="polite">正在读取点表库…</div>
+        <div id="workbench" class="workbench" data-view="library">
+          <section id="library-panel" class="panel catalog-panel" aria-label="点表目录">
+            <div class="panel-heading"><div class="section-heading"><h2 id="library-title">全部点表</h2><span id="catalog-count" class="badge">读取中</span></div><button id="refresh" class="quiet" type="button">刷新</button></div>
+            <div class="panel-body">
+              <p id="trash-intro" hidden>删除的点表在 90 天内可恢复，恢复后保留原内容。切换视图会保留编辑草稿。</p>
+              <div class="catalog-search"><label>搜索点表<input id="search" type="search" placeholder="名称、厂家、型号或协议" autocomplete="off"></label></div>
+              <ul id="template-list"></ul><p id="list-empty" hidden>暂无点表。新建或导入一张模板开始使用。</p>
+              <p id="capacity-note" class="capacity-note">最多 1000 张 · 每张 10000 点 / 10 MiB</p>
+            </div>
+          </section>
+          <section id="editor-panel" class="panel" aria-label="点表编辑工作区">
+            <div id="editor-empty" class="empty-state"><span class="empty-symbol" aria-hidden="true">▦</span><strong>打开一张点表</strong><span>从目录选择，或新建、导入模板开始编辑。</span></div>
+            <div id="editor" hidden>
+              <div class="panel-heading editor-heading"><div><span class="eyebrow">编辑工作区</span><h2 id="editor-title">点表详情</h2><span id="record-info" class="muted"></span></div><button id="reload-record" class="quiet" type="button">重新读取</button></div>
+              <div class="editor-section"><div class="section-heading"><h3>模板信息</h3><span class="badge">上位机兼容 JSON</span></div><fieldset id="metadata" class="form-grid"><label>模板名称<input id="meta-name" type="text" maxlength="256"></label>
+<label>厂家<input id="meta-manufacturer" type="text" maxlength="256"></label>
+<label>型号（每行一个）<textarea id="meta-models" rows="2"></textarea></label>
+<label>协议版本<input id="meta-protocol_version" type="text" maxlength="256"></label>
+<label>模板 ID<input id="meta-id" type="text" maxlength="128" autocomplete="off"></label>
+<label>地址基准<select id="meta-address_base"><option value="0">0 基地址</option><option value="1">1 基地址</option></select></label></fieldset><p class="hint">模板 ID 用于上位机导入识别；需要独立副本时，使用“另存为新模板”。</p></div>
+              <details class="foldout"><summary>说明与来源文件</summary><div class="foldout-body"><div class="section-heading"><h3>模板说明</h3><button id="add-note" class="quiet" type="button">添加说明</button></div><div id="notes"></div><div class="section-heading source-heading"><h3>来源文件</h3><button id="add-source" class="quiet" type="button">添加来源</button></div><div id="sources"></div></div></details>
+              <div class="editor-section"><div class="section-heading"><h3 id="point-count">点位</h3><button id="add-point" type="button">＋ 添加点位</button></div><div class="point-area"><div class="point-navigation"><label>查找点位<input id="point-search" type="search" placeholder="标签 / 分组 / 地址" autocomplete="off"></label><div id="point-list" role="group" aria-label="选择编辑点位"></div></div><fieldset id="point-editor" class="point-form"><div class="section-heading"><h3 id="point-title">点位编辑</h3><button id="remove-point" class="quiet danger" type="button">移除点位</button></div>
+                <div class="field-group"><h3>标识与展示</h3><div class="form-grid"><label>标签<input id="point-tag" type="text" maxlength="256"></label>
+<label>分组<input id="point-group" type="text" maxlength="256"></label>
+<label>单位<input id="point-unit" type="text" maxlength="64"></label>
+<label class="wide">点位说明<textarea id="point-description" maxlength="4096" rows="2"></textarea></label></div></div>
+                <div class="field-group"><h3>寄存器与读取方式</h3><div class="form-grid"><label>功能码<select id="point-function_code"><option value="1">01 · 读线圈</option><option value="3">03 · 读保持寄存器</option><option value="4">04 · 读输入寄存器</option><option value="5">05 · 写单线圈</option><option value="6">06 · 写单寄存器</option><option value="16">16 · 写多寄存器</option></select></label>
+<label>地址<input id="point-address" type="text" inputmode="numeric"></label>
+<label>数据类型<select id="point-data_type"><option>BOOL</option><option>UINT16</option><option>UINT32</option><option>INT16</option><option>INT32</option></select></label>
+<label>寄存器数量<select id="point-reg_count"><option value="1">1</option><option value="2">2</option></select></label></div></div>
+                <div class="field-group"><h3>工程量换算</h3><div class="form-grid"><label>倍率<input id="point-scale" type="text" placeholder="1 或 1e-3" spellcheck="false"></label>
+<label>偏移<input id="point-offset" type="text" spellcheck="false"></label>
+<label>死区<input id="point-deadband" type="text" spellcheck="false"></label></div><p class="hint">保留十进制原文与精度，支持科学计数法。</p></div>
+                <details id="point-advanced"><summary>高级配置 · 端序、位解析与适用条件</summary><div class="form-grid"><label>点位 ID<input id="point-id" type="text" maxlength="128"></label>
+<label>字序<select id="point-word_order"><option>HL</option><option>LH</option></select></label>
+<label>字节序<select id="point-byte_order"><option>AB</option><option>BA</option></select></label>
+<label>位索引（空为无）<input id="point-bit_index" type="text" inputmode="numeric"></label>
+<label>来源页码<input id="point-source_page" type="text" inputmode="numeric"></label>
+<label>默认选择<select id="point-default_selected"><option value="">未指定（使用上位机默认行为）</option><option value="true">选中</option><option value="false">不选中</option></select></label><div class="optional-field"><label class="check-label"><input id="point-condition_enabled" type="checkbox">保存适用条件（可选）</label>
+<label>适用条件<textarea id="point-condition" maxlength="4096" rows="2"></textarea></label></div><div class="optional-field"><label class="check-label"><input id="point-enum_enabled" type="checkbox">保存枚举相等值（可选）</label>
+<label>枚举相等值（空为 null，0 是有效值）<input id="point-enum_value" type="text" inputmode="numeric"></label></div></div><p class="hint">位索引与枚举相等值仅用于寄存器 BOOL，不能同时设置。</p></details>
+              </fieldset></div></div>
+              <div class="actions editor-actions"><span id="draft-status"></span><button id="copy-template" type="button">另存为新模板</button><button id="download" type="button">下载 JSON</button><button id="save" class="primary" type="button">保存点表</button></div>
+              <div class="delete-area"><p>删除后进入回收站，已保存内容在 90 天内可恢复。</p><button id="delete-template" class="quiet danger" type="button">删除点表</button></div>
+            </div>
+          </section>
         </div>
-      </section>
+        <footer class="workspace-footer">点表保存在平台；下载 JSON 可导入上位机。保存不会向设备下发配置。</footer><noscript>请启用 JavaScript 以管理点表。</noscript>
+      </main>
     </div>
-    <footer>点表保存于平台。下载的 JSON 可直接导入上位机；保存点表不会向设备下发配置。</footer>
-    <noscript>请启用 JavaScript 以管理点表。</noscript>
-  </main>
+  </div>
   <script type="module">
 const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_POINTS = 10000;
@@ -328,9 +299,9 @@ function summary(record) {
   return {id:record.id,revision:record.revision,created_at:record.created_at,updated_at:record.updated_at,name,manufacturer,models,protocol_version,address_base,point_count:points.length};
 }
 function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,onUnauthorized = () => {}}) {
-  let list = [], trash = [], view = 'library', record = null, draft = null, baseline = '', pending = false, error = '', notice = '', conflict = false, username = '', authorized = false, stopped = false;
+  let list = [], trash = [], listLoaded = false, trashLoaded = false, view = 'library', record = null, draft = null, baseline = '', pending = false, error = '', notice = '', conflict = false, username = '', authorized = false, stopped = false;
   const dirty = () => draft !== null && JSON.stringify(draft) !== baseline;
-  const snapshot = () => ({list,trash,view,record,draft,dirty:dirty(),pending,error,notice,conflict,username,authorized,stopped});
+  const snapshot = () => ({list,trash,listLoaded,trashLoaded,view,record,draft,dirty:dirty(),pending,error,notice,conflict,username,authorized,stopped});
   const notify = () => onChange(snapshot());
   const editable = () => !pending && authorized && !stopped;
   const canLeave = () => editable() && (!dirty() || confirmDiscard());
@@ -379,7 +350,7 @@ function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,on
   async function readList(target) {
     const result = await request(target === 'trash' ? `${BASE}/trash` : BASE);
     if (!Array.isArray(result)) throw new Error('点表接口返回了无法识别的列表');
-    if (target === 'trash') trash = result; else list = result;
+    if (target === 'trash') { trash = result; trashLoaded = true; } else { list = result; listLoaded = true; }
     notice = target === 'trash' ? `回收站有 ${trash.length} 张点表，删除后 90 天内可恢复。` : `已读取 ${list.length} 张点表。`;
   }
   const client = {
@@ -469,7 +440,7 @@ function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,on
       if (!editable() || !record) return;
       await run(async () => {
         const id = record.id; await request(`${BASE}/${encodeURIComponent(id)}`,'DELETE',undefined,record.revision);
-        list = list.filter(item => item.id !== id); record = null; draft = null; baseline = ''; notice = '点表已移入回收站，90 天内可恢复已保存内容。';
+        list = list.filter(item => item.id !== id); trashLoaded = false; record = null; draft = null; baseline = ''; notice = '点表已移入回收站，90 天内可恢复已保存内容。';
       });
     },
     async logout() {
@@ -570,6 +541,18 @@ function renderExtras(state) {
 }
 function render(state) {
   element('username').textContent = state.username;
+  const inTrash = state.view === 'trash';
+  element('workbench').setAttribute('data-view',state.view);
+  element('editor-panel').hidden = inTrash;
+  element('library-controls').hidden = inTrash;
+  element('trash-intro').hidden = !inTrash;
+  element('capacity-note').hidden = inTrash;
+  element('page-title').textContent = inTrash ? '回收站' : '点表工作台';
+  element('page-summary').textContent = inTrash ? '找回误删的点表，保留原有内容与模板信息。' : '集中管理协议点表，编辑后下载到上位机使用。';
+  element('library-total').textContent = state.listLoaded ? String(state.list.length) : '—';
+  element('trash-total').textContent = state.trashLoaded ? String(state.trash.length) : '—';
+  const loaded = inTrash ? state.trashLoaded : state.listLoaded;
+  element('catalog-count').textContent = loaded ? `${(inTrash ? state.trash : state.list).length} 张` : '读取中';
   element('message').textContent = state.error || (state.pending ? '正在处理，请稍候…' : state.notice || '选择或导入一张点表开始编辑。');
   element('message').classList.toggle('error',Boolean(state.error));
   element('editor-panel').setAttribute('aria-busy',String(state.pending));
@@ -578,6 +561,7 @@ function render(state) {
   renderList(state);
   element('editor').hidden = !state.draft; element('editor-empty').hidden = Boolean(state.draft);
   if (!state.draft) { shownDraft = null; return; }
+  element('editor-title').textContent = state.draft.name || '未命名点表';
   if (shownDraft !== state.draft) {
     shownDraft = state.draft; selectedPoint = 0; renderedPoints = ''; renderedExtras = ''; element('point-search').value = '';
     for (const key of ['id','name','manufacturer','protocol_version','address_base']) element(`meta-${key}`).value = state.draft[key];

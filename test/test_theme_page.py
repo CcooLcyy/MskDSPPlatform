@@ -13,25 +13,26 @@ PAGES = sorted((ROOT / "web").glob("*.html"))
 class ThemePageTests(unittest.TestCase):
     # 每个入口都在首屏绘制前恢复主题，并覆盖系统深色与无脚本场景。
     def test_page_contract(self):
-        scripts, palettes = [], []
+        scripts = []
+        shared = (ROOT / "web" / "platform.css").read_text(encoding="utf-8")
+        self.assertIn('@media (prefers-color-scheme: dark)', shared)
+        self.assertIn(':root:not([data-theme="light"])', shared)
+        self.assertIn(':root[data-theme="dark"]', shared)
+        self.assertIn('--on-primary: #ffffff', shared)
+        self.assertIn('color: var(--on-primary)', shared)
         for path in PAGES:
             with self.subTest(page=path.name):
                 page = path.read_text(encoding="utf-8")
                 self.assertIn('content="light dark"', page)
                 self.assertIn('for="theme-select"', page)
-                self.assertIn('@media (prefers-color-scheme: dark)', page)
-                self.assertIn(':root:not([data-theme="light"])', page)
-                self.assertIn(':root[data-theme="dark"]', page)
+                self.assertIn('href="/assets/platform.css"', page)
                 self.assertLess(page.index('id="theme-script"'), page.index("<body>"))
                 scripts.append(re.search(r'<script id="theme-script">([\s\S]*?)</script>', page).group(1))
                 styles = re.search(r'<style>([\s\S]*?)</style>', page).group(1)
-                palettes.append(styles.split('    * {')[0])
-                # 业务样式不能残留浅色背景，主题变量之外只保留主按钮固定色。
-                body_styles = styles.split('    * {')[1]
-                self.assertNotIn('background: white', body_styles)
-                self.assertEqual(set(re.findall(r'#[0-9a-fA-F]{3,8}\b', body_styles)), {'#2563eb'})
+                # 业务样式使用共享主题变量，避免浅色背景或跨页配色漂移。
+                self.assertNotIn('background: white', styles)
+                self.assertEqual(set(re.findall(r'#[0-9a-fA-F]{3,8}\b', styles)), set())
         self.assertTrue(all(script == scripts[0] for script in scripts))
-        self.assertTrue(all(palette == palettes[0] for palette in palettes))
 
     # 模拟系统变化、手动优先、刷新恢复、其他标签页和存储被禁用的情况。
     def test_theme_behavior(self):

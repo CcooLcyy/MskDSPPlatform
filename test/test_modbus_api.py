@@ -90,6 +90,21 @@ class TemplateApiTests(unittest.TestCase):
         finally:
             connection.close()
 
+    # 登录前即可加载公共样式；页面 CSP 允许同源样式并保留安全限制。
+    def test_shared_styles_are_public_and_allowed_by_page_csp(self):
+        status, raw, headers = self.request("GET", "/assets/platform.css", headers={"Cookie": ""})
+        self.assertEqual(status, 200, raw)
+        self.assertIn("text/css", headers["content-type"])
+        self.assertIn(b".app-shell", raw)
+        self.assertIn("no-store", headers["cache-control"])
+        for path in ("/login", "/update", "/modbus-templates"):
+            with self.subTest(path=path):
+                status, page, headers = self.request("GET", path, headers={"Cookie": ""} if path == "/login" else None)
+                self.assertEqual(status, 200, page)
+                self.assertIn(b'href="/assets/platform.css"', page)
+                self.assertIn("style-src 'self' 'unsafe-inline'", headers["content-security-policy"])
+                self.assertIn("frame-ancestors 'none'", headers["content-security-policy"])
+
     # 点表全字段及十进制精度经创建、下载、替换和进程重启保持一致。
     def test_roundtrip_restart_edit_and_revision_conflict(self):
         base = "/api/v1/modbus-templates"

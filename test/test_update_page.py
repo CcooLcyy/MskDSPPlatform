@@ -9,6 +9,20 @@ PAGE = Path(__file__).resolve().parents[1] / "web" / "update.html"
 
 
 class UpdatePageTests(unittest.TestCase):
+    # 更新页共用平台导航，当前版本、可用版本、任务状态和技术详情分别呈现。
+    def test_shared_shell_and_separate_update_regions(self):
+        page = PAGE.read_text(encoding="utf-8")
+        self.assertIn('href="/assets/platform.css"', page)
+        for css_class in ('app-shell', 'app-sidebar', 'app-topbar', 'page-heading'):
+            self.assertIn(f'class="{css_class}"', page)
+        self.assertIn('href="/modbus-templates#trash"', page)
+        self.assertIn('aria-labelledby="current-heading"', page)
+        self.assertIn('aria-labelledby="available-heading"', page)
+        self.assertIn('id="task-status"', page)
+        self.assertRegex(page, r'<details[^>]*>[\s\S]*?<summary>技术详情</summary>')
+        self.assertNotIn('--page:', page)
+        self.assertNotIn("document.querySelector('section')", page)
+
     # 所有动态内容走文本赋值，网页不自动提交检查或安装请求。
     def test_page_contract(self):
         page = PAGE.read_text(encoding="utf-8")

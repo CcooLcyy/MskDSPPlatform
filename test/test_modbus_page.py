@@ -25,6 +25,15 @@ class ModbusPageTests(unittest.TestCase):
         self.assertIn("X-MskDSP-Action", page)
         self.assertIn("90 天", page)
         self.assertNotIn("此操作无法撤销", page)
+        self.assertIn('href="/assets/platform.css"', page)
+        for classname in ("app-shell", "app-sidebar", "app-content", "app-topbar", "page-content", "page-heading", "app-nav"):
+            self.assertIn(classname, page)
+        for field in ("workbench", "library-panel", "library-total", "trash-total", "catalog-count", "library-controls", "point-advanced", "page-title"):
+            self.assertIn(f'id="{field}"', page)
+        self.assertRegex(page, r'<details[^>]*id="point-advanced"')
+        self.assertNotIn(":root {", page)
+        identifiers = re.findall(r'id="([^"]+)"', page)
+        self.assertEqual(len(identifiers), len(set(identifiers)), "页面控件 ID 不能重复，否则表单会读写错误的字段")
         for field in ("scale", "offset", "deadband"):
             self.assertRegex(page, rf'id="point-{field}"[^>]*type="text"')
 
@@ -207,7 +216,10 @@ const client=createTemplateClient({onChange:()=>{},confirmDiscard:()=>!denyDisca
   return response(record);
 }});
 (async()=>{
-  await client.refresh();await client.load(record.id);await client.remove();
+  await client.refresh();await client.loadTrash();assert.equal(client.snapshot().trashLoaded,true);
+  assert.equal(client.snapshot().trash.length,0);client.showLibrary();
+  await client.load(record.id);await client.remove();
+  assert.equal(client.snapshot().trashLoaded,false);
   assert.equal(client.snapshot().list.length,0);assert.equal(client.snapshot().draft,null);
   assert.match(client.snapshot().notice,/90 天/);
   await client.loadTrash();assert.equal(client.snapshot().view,'trash');
@@ -294,6 +306,10 @@ const window={confirm:()=>true,location:{assign:()=>{}},addEventListener:(name,l
     trash=[];return response({id:'trash-id',revision:6,created_at:1,updated_at:3,template:storedTemplate});
   }
   if(options.method==='GET') return response([]);
+  if(options.method==='DELETE'){
+    trash=[{id:'saved-id',revision:4,name:storedTemplate.name,models:[],point_count:storedTemplate.points.length,deleted_at:1000,expires_at:2000}];
+    return response(null,204);
+  }
   if(slow) return await new Promise(resolve=>finishSave=resolve);
   if(status!==200) return response({error:'版本已变化'},status);
   storedTemplate=JSON.parse(options.body);
@@ -305,6 +321,8 @@ const {client,createTemplate}=context.api;
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
   await tick(); assert.equal(nodes['username'].textContent,'admin');
+  assert.equal(nodes['library-total'].textContent,'0');
+  assert.equal(nodes['trash-total'].textContent,'—');
   const template=JSON.parse(JSON.stringify(createTemplate()));
   template.name='<img src=x onerror=alert(1)>'; template.points[0].tag='<script>alert(1)</script>';
   template.notes=['多行说明\n保持换行'];template.sources=[{file:'来源.pdf',sha256:'a'.repeat(64)}];
@@ -347,6 +365,9 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   const copied=JSON.parse(JSON.stringify(client.snapshot().draft));
   trash=[{id:'trash-id',revision:5,name:posted.name,manufacturer:'厂家',models:[],point_count:1,deleted_at:1000,expires_at:2000}];
   await nodes['trash-view'].dispatch('click');assert.equal(nodes['library-title'].textContent,'回收站');
+  assert.equal(nodes['editor-panel'].hidden,true);assert.equal(nodes['library-controls'].hidden,true);
+  assert.equal(nodes['workbench'].attributes['data-view'],'trash');
+  assert.equal(nodes['trash-total'].textContent,'1');
   assert.equal(nodes['trash-view'].attributes['aria-pressed'],'true');
   const card=nodes['template-list'].children[0].children[0];
   assert.equal(card.children[0].textContent,posted.name);
@@ -358,9 +379,17 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(nodes['template-list'].children.length,1);
   status=200;await nodes['template-list'].children[0].children[0].children[5].dispatch('click');
   assert.equal(nodes['list-empty'].hidden,false);assert.match(nodes['list-empty'].textContent,/回收站为空/);
+  assert.equal(nodes['trash-total'].textContent,'0');
   assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
   await nodes['library-view'].dispatch('click');assert.equal(nodes['library-title'].textContent,'全部点表');
+  assert.equal(nodes['editor-panel'].hidden,false);assert.equal(nodes['library-controls'].hidden,false);
+  assert.equal(nodes['meta-name'].value,copied.name);
   assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
+  // 已读取空回收站后删除正常点表，旧零计数应失效，重新访问才显示真实数量。
+  await nodes['save'].dispatch('click');
+  assert.equal(nodes['trash-total'].textContent,'0');
+  await nodes['delete-template'].dispatch('click');await tick();assert.equal(nodes['trash-total'].textContent,'—');
+  await nodes['trash-view'].dispatch('click');assert.equal(nodes['trash-total'].textContent,'1');
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''
         command = "const SCRIPT=" + json.dumps(script) + ";\nconst IDS=" + json.dumps(identifiers) + ";\n" + scenario

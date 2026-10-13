@@ -7,7 +7,7 @@ use axum::{
     Router,
     extract::DefaultBodyLimit,
     extract::State,
-    http::StatusCode,
+    http::{StatusCode, header},
     middleware,
     response::{Html, IntoResponse},
     routing::{get, post},
@@ -32,6 +32,7 @@ pub fn router(state: HttpState) -> Router {
             auth::require_admin,
         ))
         .route("/login", get(auth::login_page))
+        .route("/assets/platform.css", get(platform_styles))
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
@@ -45,6 +46,13 @@ pub fn router(state: HttpState) -> Router {
 
 async fn update_page() -> Html<&'static str> {
     Html(include_str!("../web/update.html"))
+}
+
+async fn platform_styles() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("../web/platform.css"),
+    )
 }
 
 async fn healthz() -> impl IntoResponse {

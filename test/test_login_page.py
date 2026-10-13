@@ -10,6 +10,20 @@ PAGE = Path(__file__).resolve().parents[1] / "web" / "login.html"
 
 
 class LoginPageTests(unittest.TestCase):
+    # 登录入口使用平台共用样式，保留主题与输入辅助信息，品牌说明与表单分开。
+    def test_shared_login_layout_and_accessibility(self):
+        page = PAGE.read_text(encoding="utf-8")
+        self.assertIn('href="/assets/platform.css"', page)
+        self.assertIn('class="login-layout"', page)
+        self.assertIn('class="login-brand"', page)
+        self.assertIn('class="login-card panel"', page)
+        self.assertIn('aria-describedby="message"', page)
+        self.assertIn('for="username"', page)
+        self.assertIn('for="password"', page)
+        self.assertNotIn('--page:', page)
+        self.assertNotIn('http://', page)
+        self.assertNotIn('https://', page)
+
     # 登录表单采用密码输入与浏览器自动填充，不包含示例或默认密码。
     def test_page_contract(self):
         page = PAGE.read_text(encoding="utf-8")
