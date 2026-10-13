@@ -33,6 +33,11 @@ jobs:
           from pathlib import Path
           from urllib.request import Request,urlopen
           from urllib.error import HTTPError
+          for name in ('R2_ACCOUNT_ID','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY'):
+              value=os.environ[name].strip()
+              if not value or any(c.isspace() or ord(c)<32 for c in value):
+                  raise SystemExit('凭据为空或包含内部空白：'+name)
+              os.environ[name]=value
           root=os.environ['R2_PUBLIC_BASE_URL'].rstrip('/')
           endpoint='https://'+os.environ['R2_ACCOUNT_ID']+'.r2.cloudflarestorage.com'
           key=os.environ['OBJECT_KEY']

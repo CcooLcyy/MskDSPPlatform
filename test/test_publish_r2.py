@@ -212,6 +212,29 @@ class PublishingTests(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertNotIn(SECRETS["AWS_SECRET_ACCESS_KEY"], " ".join(command))
 
+    # 复制凭据时附带的首尾空白不能进入 AWS 请求头。
+    def test_secret_copy_whitespace_is_trimmed_before_aws(self):
+        secrets = {name: ' \r\n' + value + '\r\n' for name, value in SECRETS.items()}
+        with patch.dict(os.environ, secrets, clear=True), patch.object(release.subprocess, "run") as run:
+            release.upload(self.binary, "p/ci/program", "mskdsp-update", "https://endpoint", "application/gzip", "no-store")
+        environment = run.call_args.kwargs["env"]
+        for name, value in SECRETS.items():
+            self.assertEqual(environment[name], value)
+        self.prepare()
+        with patch.dict(os.environ, secrets, clear=True), patch.object(release, "get_json", side_effect=RuntimeError("network reached")):
+            with self.assertRaisesRegex(RuntimeError, "network reached"):
+                self.publish()
+
+    def test_internal_secret_whitespace_is_rejected_without_leaking_value(self):
+        for name in SECRETS:
+            with self.subTest(name=name), patch.dict(os.environ, SECRETS | {name: "sensitive\nvalue"}, clear=True), \
+                 patch.object(release, "get_json") as read, patch.object(release.subprocess, "run") as run:
+                with self.assertRaises(ValueError) as error:
+                    self.publish()
+                self.assertNotIn("sensitive", str(error.exception))
+                read.assert_not_called()
+                run.assert_not_called()
+
     # 默认程序身份检查调用真实 CLI 参数并限制执行时间。
     def test_binary_identity_cli(self):
         identity = {"service": "mskdsp-platform", **{key: self.metadata[key] for key in ("version", "channel", "commit", "build_time")}}

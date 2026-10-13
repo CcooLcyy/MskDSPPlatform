@@ -214,7 +214,14 @@ def verify_asset(url: str, expected_sha: str, expected_size: int) -> None:
 
 
 def aws_environment() -> dict:
-    return os.environ | {"AWS_DEFAULT_REGION": "auto", "AWS_REQUEST_CHECKSUM_CALCULATION": "when_required", "AWS_RESPONSE_CHECKSUM_VALIDATION": "when_required"}
+    environment = dict(os.environ)
+    for name in ("R2_ACCOUNT_ID", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        if name in environment:
+            value = environment[name].strip()
+            if any(char.isspace() or ord(char) < 32 for char in value):
+                raise ValueError("R2 凭据含内部空白或控制字符：" + name)
+            environment[name] = value
+    return environment | {"AWS_DEFAULT_REGION": "auto", "AWS_REQUEST_CHECKSUM_CALCULATION": "when_required", "AWS_RESPONSE_CHECKSUM_VALIDATION": "when_required"}
 
 
 def upload(source: Path, key: str, bucket: str, endpoint: str, content_type: str, cache_control: str) -> None:
@@ -270,10 +277,11 @@ def cleanup_old_versions(*, bucket: str, endpoint: str, channel_root: str, keep_
 
 
 def publish(*, output_dir: Path, bucket: str, public_base_url: str, prefix: str = PROJECT, account_id: str | None = None) -> dict:
-    missing = [name for name in ("R2_ACCOUNT_ID", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY") if not os.environ.get(name)]
+    environment = aws_environment()
+    missing = [name for name in ("R2_ACCOUNT_ID", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY") if not environment.get(name)]
     if missing:
         raise ValueError("缺少 R2 发布环境变量：" + ", ".join(missing))
-    account = os.environ["R2_ACCOUNT_ID"]
+    account = environment["R2_ACCOUNT_ID"]
     if not re.fullmatch(r"[0-9a-f]{32}", account) or account_id is not None and account_id != account:
         raise ValueError("R2 账号必须来自环境变量且为 32 位小写十六进制")
     endpoint = f"https://{account}.r2.cloudflarestorage.com"
