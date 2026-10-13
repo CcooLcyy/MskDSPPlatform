@@ -1,0 +1,17 @@
+# 仅允许构建输入进入上下文，避免携带本地配置、密钥、版本库和产物。
+**
+!Dockerfile
+!Cargo.toml
+!Cargo.lock
+!build.rs
+!src/
+!src/**
+!proto/
+!proto/**
+!web/
+!web/**
+!script/
+!script/runtime.py
+!script/update_common.py
+!deploy/
+!deploy/config.toml

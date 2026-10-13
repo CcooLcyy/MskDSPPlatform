@@ -23,6 +23,55 @@ use uuid::Uuid;
 
 pub use agent::agent_service_server::AgentServiceServer;
 
+/// 管理进程通过真实双向流握手检查 gRPC 服务，检查后主动清理临时会话。
+pub async fn probe(address: &str, protocol_version: &str) -> anyhow::Result<()> {
+    let check = async {
+        let mut client =
+            agent::agent_service_client::AgentServiceClient::connect(format!("http://{address}"))
+                .await?;
+        let (sender, receiver) = mpsc::channel(2);
+        sender
+            .send(AgentMessage {
+                payload: Some(agent_message::Payload::Hello(agent::Hello {
+                    agent_id: format!("update-probe-{}", Uuid::new_v4()),
+                    site_id: String::new(),
+                    agent_version: crate::build_info::BuildInfo::current().version.into(),
+                    protocol_version: protocol_version.into(),
+                    capabilities: Vec::new(),
+                })),
+            })
+            .await?;
+        let mut response = client
+            .connect_agent(ReceiverStream::new(receiver))
+            .await?
+            .into_inner();
+        let first = response
+            .message()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("gRPC 握手未返回 Welcome"))?;
+        match first.payload {
+            Some(server_message::Payload::Welcome(welcome))
+                if welcome.protocol_version == protocol_version => {}
+            _ => anyhow::bail!("gRPC 握手响应协议不匹配"),
+        }
+        sender
+            .send(AgentMessage {
+                payload: Some(agent_message::Payload::Goodbye(agent::Goodbye {
+                    reason: "更新健康检查完成".into(),
+                })),
+            })
+            .await?;
+        drop(sender);
+        if response.message().await?.is_some() {
+            anyhow::bail!("gRPC 检查会话未正常关闭");
+        }
+        Ok(())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), check)
+        .await
+        .map_err(|_| anyhow::anyhow!("gRPC 握手检查超时"))?
+}
+
 #[derive(Clone)]
 pub struct AgentGrpcService {
     sessions: SessionRegistry,

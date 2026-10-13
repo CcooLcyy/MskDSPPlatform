@@ -1,0 +1,37 @@
+services:
+  platform:
+    image: ${MSKDSP_PLATFORM_IMAGE:-ghcr.io/ccoolcyy/mskdsp-platform:ci}
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${MSKDSP_PLATFORM_VERSION:-0.0.1}
+        CHANNEL: ${MSKDSP_PLATFORM_CHANNEL:-dev}
+        COMMIT: ${MSKDSP_PLATFORM_COMMIT:-unknown}
+        BUILD_TIME: ${MSKDSP_PLATFORM_BUILD_TIME:-}
+        SOURCE: ${MSKDSP_PLATFORM_SOURCE:-}
+        UPDATE_MANIFEST_URL: ${MSKDSP_PLATFORM_UPDATE_URL:-https://pub-19f3d71852b04011b120b1b814141c12.r2.dev/mskdsp-platform/ci/latest.json}
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      MSKDSP_PLATFORM_CONFIG: /app/config.toml
+    volumes:
+      - ./deploy/config.toml:/app/config.toml:ro
+      - ./deploy/updater.json:/app/updater.json:ro
+      - platform-runtime:/var/lib/mskdsp-platform
+    ports:
+      - "127.0.0.1:${MSKDSP_HTTP_PORT:-8080}:8080"
+      - "127.0.0.1:${MSKDSP_GRPC_PORT:-50051}:50051"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+
+volumes:
+  platform-runtime:

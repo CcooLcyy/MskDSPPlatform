@@ -83,12 +83,17 @@ impl Default for TlsConfig {
 impl AppConfig {
     pub fn load() -> Result<Self> {
         let path = env::var("MSKDSP_PLATFORM_CONFIG").unwrap_or_else(|_| "config.toml".into());
-        if !Path::new(&path).exists() {
-            return Ok(Self::default());
+        let mut config = if Path::new(&path).exists() {
+            let content =
+                fs::read_to_string(&path).with_context(|| format!("读取配置文件失败: {path}"))?;
+            toml::from_str(&content).with_context(|| format!("解析配置文件失败: {path}"))?
+        } else {
+            Self::default()
+        };
+        // 常驻管理进程仅覆盖子进程 HTTP 地址，原配置文件保持不变。
+        if let Ok(address) = env::var("MSKDSP_PLATFORM_HTTP_ADDR") {
+            config.server.http_addr = address.parse().context("子进程 HTTP 地址格式不正确")?;
         }
-
-        let content =
-            fs::read_to_string(&path).with_context(|| format!("读取配置文件失败: {path}"))?;
-        toml::from_str(&content).with_context(|| format!("解析配置文件失败: {path}"))
+        Ok(config)
     }
 }

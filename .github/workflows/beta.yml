@@ -1,0 +1,31 @@
+name: Beta
+
+on:
+  push:
+    branches: ['beta/*']
+  workflow_dispatch:
+    inputs:
+      beta_ref:
+        description: 'Beta 分支，例如 beta/0.0.1'
+        required: true
+        type: string
+        default: beta/0.0.1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-beta-publish
+  cancel-in-progress: false
+
+jobs:
+  publish-beta:
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/docker-release.yml
+    secrets: inherit
+    with:
+      channel: beta
+      source_ref: ${{ inputs.beta_ref || github.ref }}
+      checkout_ref: ${{ inputs.beta_ref || github.sha }}

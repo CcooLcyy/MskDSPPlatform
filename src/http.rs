@@ -1,5 +1,11 @@
-use crate::state::SessionRegistry;
-use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use crate::{build_info::BuildInfo, state::SessionRegistry};
+use axum::{
+    Router,
+    extract::State,
+    http::StatusCode,
+    response::{Html, IntoResponse},
+    routing::get,
+};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -11,10 +17,16 @@ pub struct HttpState {
 
 pub fn router(state: HttpState) -> Router {
     Router::new()
+        .route("/", get(update_page))
+        .route("/update", get(update_page))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/api/v1/version", get(version))
         .with_state(state)
+}
+
+async fn update_page() -> Html<&'static str> {
+    Html(include_str!("../web/update.html"))
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -31,7 +43,7 @@ async fn readyz(State(state): State<HttpState>) -> impl IntoResponse {
 
 async fn version(State(state): State<HttpState>) -> impl IntoResponse {
     axum::Json(VersionResponse {
-        service: "mskdsp-platform",
+        build: BuildInfo::current(),
         protocol_version: state.protocol_version.to_string(),
     })
 }
@@ -44,6 +56,8 @@ struct HealthResponse {
 
 #[derive(Serialize)]
 struct VersionResponse {
-    service: &'static str,
     protocol_version: String,
+    // HTTP 与命令行共享编译身份，运行配置不能改变发布版本。
+    #[serde(flatten)]
+    build: BuildInfo,
 }

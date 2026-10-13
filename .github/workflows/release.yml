@@ -1,0 +1,31 @@
+name: Stable
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '已经存在的正式标签，例如 v0.0.1'
+        required: true
+        type: string
+        default: v0.0.1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-stable-publish
+  cancel-in-progress: false
+
+jobs:
+  publish-stable:
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/docker-release.yml
+    secrets: inherit
+    with:
+      channel: stable
+      source_ref: ${{ inputs.release_tag || github.ref }}
+      checkout_ref: ${{ inputs.release_tag || github.sha }}

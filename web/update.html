@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MskDSPPlatform · 程序更新</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3f5f8; color: #172638; font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { width: min(760px, calc(100% - 32px)); margin: 64px auto; }
+    .brand { color: #516277; font-size: 13px; letter-spacing: .05em; margin-bottom: 10px; }
+    h1 { font-size: 28px; line-height: 1.3; margin: 0 0 10px; }
+    .intro { color: #516277; margin: 0 0 28px; }
+    section { background: white; border: 1px solid #dce3eb; border-radius: 16px; padding: 28px; box-shadow: 0 8px 30px #17304b06; }
+    dl { margin: 0; display: grid; grid-template-columns: 110px 1fr; gap: 18px 22px; }
+    dt { color: #627286; }
+    dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+    .version { font-weight: 650; }
+    .result { margin-top: 25px; background: #f4f7fb; border-radius: 10px; padding: 16px; min-height: 70px; }
+    .result strong { font-size: 13px; color: #627286; font-weight: 500; }
+    #message { margin: 4px 0 0; overflow-wrap: anywhere; }
+    #connection { margin: 8px 0 0; font-size: 13px; color: #9b4b1b; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+    button { border: 1px solid #c6d0de; border-radius: 9px; background: white; color: #243d59; font: inherit; font-weight: 600; padding: 10px 20px; cursor: pointer; }
+    button.primary { background: #2563eb; color: white; border-color: #2563eb; }
+    button:hover:not(:disabled) { filter: brightness(.95); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button:focus-visible { outline: 3px solid #8bb5ff; outline-offset: 3px; }
+    footer { color: #68788a; font-size: 13px; margin-top: 18px; }
+    @media (max-width: 520px) { main { margin: 30px auto; } section { padding: 22px 18px; } dl { grid-template-columns: 80px 1fr; gap: 16px; } h1 { font-size: 25px; } .actions button { flex: 1; padding: 10px 12px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">MskDSPPlatform</div>
+    <h1>程序更新</h1>
+    <p class="intro">查看平台版本，手动检查并安装最新更新。</p>
+    <section aria-label="平台更新信息">
+      <dl>
+        <dt>当前版本</dt><dd id="current" class="version">—</dd>
+        <dt>最新版本</dt><dd id="latest" class="version">待检查</dd>
+        <dt>更新通道</dt><dd id="channel">—</dd>
+        <dt>更新来源</dt><dd id="source">—</dd>
+        <dt>更新状态</dt><dd id="state">正在读取</dd>
+      </dl>
+      <div class="result" role="status" aria-live="polite">
+        <strong>操作结果</strong>
+        <p id="message">正在读取更新状态…</p>
+        <p id="connection" hidden></p>
+      </div>
+      <div class="actions">
+        <button id="check" type="button" disabled>检查更新</button>
+        <button id="apply" class="primary" type="button" disabled>更新到最新版</button>
+      </div>
+    </section>
+    <footer>更新由你手动发起。安装期间服务会短暂重连，更新失败时将尝试恢复上一版本。</footer>
+    <noscript>请启用 JavaScript 以查看更新状态并操作更新。</noscript>
+  </main>
+  <script type="module">
+const labels = {idle:'待检查', checking:'检查中', available:'有新版本', current:'已是最新版', updating:'更新中', succeeded:'更新成功', error:'更新失败'};
+const channels = {ci:'测试通道', beta:'预发布通道', stable:'稳定通道', dev:'开发版本'};
+const text = value => typeof value === 'string' ? value : '';
+const busy = status => status?.state === 'checking' || status?.state === 'updating';
+const validStatus = value => value && typeof value === 'object' && typeof value.enabled === 'boolean' && Object.hasOwn(labels, value.state);
+
+function getView(status, flags = {}) {
+  const processing = flags.pending || flags.refreshing || busy(status);
+  const disabled = !status?.enabled || processing || flags.disconnected;
+  return {
+    checkDisabled: Boolean(disabled),
+    applyDisabled: Boolean(disabled || status?.update_available !== true),
+    processing: Boolean(processing),
+  };
+}
+
+function createUpdateClient({fetchImpl, onChange, reload}) {
+  let status = null, pending = false, disconnected = false, refreshing = false, actionError = '';
+  let watching = null, reloaded = false;
+  const snapshot = () => ({status, pending, refreshing, disconnected, actionError, view:getView(status, {pending, refreshing, disconnected})});
+  const notify = () => onChange(snapshot());
+  async function request(url, method = 'GET') {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const options = {method, cache:'no-store', credentials:'same-origin', signal:controller.signal};
+      if (method === 'POST') {
+        options.headers = {'Content-Type':'application/json', 'X-MskDSP-Action':'update'};
+        options.body = '{}';
+      }
+      const response = await fetchImpl(url, options);
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        const error = new Error(text(body?.error) || `请求失败（HTTP ${response.status}）`);
+        error.httpStatus = response.status;
+        throw error;
+      }
+      if (!validStatus(body)) {
+        const error = new Error('更新接口返回了无法识别的状态');
+        error.httpStatus = response.status;
+        throw error;
+      }
+      return body;
+    } finally { clearTimeout(timer); }
+  }
+  function failed(error) {
+    disconnected = !error.httpStatus;
+    actionError = disconnected ? '' : error.message;
+  }
+  async function refreshAssets() {
+    if (reloaded || !watching || status?.state !== 'succeeded' || status.job_id !== watching.job || text(status.current_version) === watching.version) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetchImpl('/readyz', {method:'GET', cache:'no-store', credentials:'same-origin', signal:controller.signal});
+      const body = await response.json();
+      if (!response.ok || body?.status !== 'ready') return;
+      reloaded = true;
+      reload();
+    } catch { /* 服务恢复后，后续状态轮询会再次检查就绪。 */ }
+    finally { clearTimeout(timer); }
+  }
+  return {
+    snapshot,
+    async refresh() {
+      if (refreshing || pending) return;
+      refreshing = true;
+      notify();
+      try {
+        status = await request('/api/update/status');
+        disconnected = false; actionError = '';
+        notify();
+        await refreshAssets();
+      } catch (error) { failed(error); }
+      finally { refreshing = false; notify(); }
+    },
+    async action(operation) {
+      const view = snapshot().view;
+      if (refreshing || !['check','apply'].includes(operation) || (operation === 'check' ? view.checkDisabled : view.applyDisabled)) return;
+      pending = true; actionError = '';
+      const version = text(status?.current_version);
+      watching = null;
+      notify();
+      try {
+        status = await request(`/api/update/${operation}`, 'POST');
+        disconnected = false;
+        if (operation === 'apply' && text(status.job_id) && ['updating','succeeded'].includes(status.state)) watching = {job:status.job_id, version};
+        await refreshAssets();
+      } catch (error) { failed(error); }
+      finally { pending = false; notify(); }
+    },
+  };
+}
+
+// 页面启动
+const element = id => document.getElementById(id);
+const client = createUpdateClient({
+  fetchImpl:window.fetch.bind(window),
+  reload:() => window.location.reload(),
+  onChange:({status, pending, disconnected, actionError, view}) => {
+    element('current').textContent = text(status?.current_version) || '—';
+    element('latest').textContent = text(status?.latest_version) || '待检查';
+    element('channel').textContent = channels[status?.channel] || text(status?.channel) || '—';
+    element('source').textContent = text(status?.source_url) || '未配置';
+    element('state').textContent = disconnected ? '连接中断' : pending ? '正在提交' : labels[status?.state] || '正在读取';
+    element('message').textContent = actionError || text(status?.message) || (status?.enabled === false ? '网页更新未启用，请由管理员配置更新源。' : '点击“检查更新”获取最新版本。');
+    element('connection').hidden = !disconnected;
+    element('connection').textContent = disconnected ? '暂时无法连接，正在自动重试读取状态。' : '';
+    element('check').disabled = view.checkDisabled;
+    element('apply').disabled = view.applyDisabled;
+    document.querySelector('section').setAttribute('aria-busy', String(view.processing));
+  },
+});
+let timer;
+async function poll() {
+  clearTimeout(timer);
+  await client.refresh();
+  timer = setTimeout(poll, busy(client.snapshot().status) ? 2000 : 5000);
+}
+for (const operation of ['check','apply']) {
+  element(operation).addEventListener('click', async () => {
+    clearTimeout(timer);
+    await client.action(operation);
+    poll();
+  });
+}
+window.addEventListener('online', poll);
+poll();
+  </script>
+</body>
+</html>

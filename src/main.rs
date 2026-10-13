@@ -1,3 +1,4 @@
+mod build_info;
 mod config;
 mod error;
 mod grpc;
@@ -12,6 +13,24 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.as_slice() {
+        [] => {}
+        [flag] if flag == "--version-json" => {
+            println!(
+                "{}",
+                serde_json::to_string(&build_info::BuildInfo::current())?
+            );
+            return Ok(());
+        }
+        [flag, address] if flag == "--probe-grpc" => {
+            let protocol_version = AppConfig::load()?.runtime.protocol_version;
+            grpc::probe(address, &protocol_version).await?;
+            println!("gRPC 握手检查通过");
+            return Ok(());
+        }
+        _ => anyhow::bail!("参数不支持；可使用 --version-json 或 --probe-grpc 主机:端口"),
+    }
     init_logging();
 
     let config = AppConfig::load()?;

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-ci-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: false
+
+jobs:
+  verify-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          components: rustfmt
+      - name: 安装协议编译器
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: 发布工具测试与 Rust 检查
+        run: |
+          python -m unittest discover -s test -p 'test_*.py' -v
+          cargo fmt --all -- --check
+          cargo test --locked --all-targets
+
+  publish-ci:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/docker-release.yml
+    secrets: inherit
+    with:
+      channel: ci
+      source_ref: main
+      checkout_ref: ${{ github.sha }}

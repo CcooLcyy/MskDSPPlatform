@@ -1,0 +1,17 @@
+[server]
+# 管理进程接管公开 HTTP，平台子进程会由环境变量覆盖到内部回环地址。
+http_addr = "0.0.0.0:8080"
+grpc_addr = "0.0.0.0:50051"
+shutdown_timeout_seconds = 10
+
+[runtime]
+protocol_version = "platform.v1"
+environment = "container"
+
+[tls]
+# 当前服务尚未实现 TLS；需要加密接入时，在外部网关配置 TLS/mTLS。
+enabled = false
+server_certificate = ""
+server_private_key = ""
+client_ca_certificate = ""
+require_client_certificate = false

@@ -1,6 +1,13 @@
 # Rust
 /target/
 **/target/
+/package/
+/release/
+/bundle/
+/r2/
+/runtime/
+__pycache__/
+*.pyc
 
 # Node / web UI
 node_modules/

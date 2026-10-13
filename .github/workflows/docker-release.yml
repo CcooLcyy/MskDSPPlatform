@@ -1,0 +1,197 @@
+name: Docker 通道发布
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
+      checkout_ref:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  R2_BUCKET: ${{ vars.R2_BUCKET || 'mskdsp-update' }}
+  R2_PREFIX: ${{ vars.R2_PREFIX || 'mskdsp-platform' }}
+  R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL || 'https://pub-19f3d71852b04011b120b1b814141c12.r2.dev' }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: 检出唯一发布目标
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 校验通道来源并生成版本
+        id: metadata
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          REPOSITORY: ${{ github.repository }}
+          BUILD_ID: ${{ github.run_number }}.${{ github.run_attempt }}
+        run: |
+          python script/release.py metadata --channel "$CHANNEL" --ref "$SOURCE_REF" --repository "$REPOSITORY" --build-id "$BUILD_ID" --update-manifest-url "$R2_PUBLIC_BASE_URL/$R2_PREFIX/$CHANNEL/latest.json" --output package/metadata.json --github-output "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          components: rustfmt
+      - name: 安装协议编译器
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+      - name: 发布工具测试与 Rust 检查
+        run: |
+          python -m unittest discover -s test -p 'test_*.py' -v
+          cargo fmt --all -- --check
+          cargo test --locked --all-targets
+      - uses: docker/setup-buildx-action@v3
+      - name: 构建待验证镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ steps.metadata.outputs.image }}
+          build-args: |
+            VERSION=${{ steps.metadata.outputs.version }}
+            CHANNEL=${{ steps.metadata.outputs.channel }}
+            COMMIT=${{ steps.metadata.outputs.commit }}
+            BUILD_TIME=${{ steps.metadata.outputs.build_time }}
+            SOURCE=${{ steps.metadata.outputs.source }}
+            UPDATE_MANIFEST_URL=${{ steps.metadata.outputs.update_manifest_url }}
+          cache-from: type=gha,scope=platform-amd64
+          cache-to: type=gha,mode=max,scope=platform-amd64
+      - name: 检查真实容器与构建身份
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          CHANNEL: ${{ steps.metadata.outputs.channel }}
+          COMMIT: ${{ steps.metadata.outputs.commit }}
+          BUILD_TIME: ${{ steps.metadata.outputs.build_time }}
+        run: |
+          test "$(docker image inspect "$IMAGE" --format '{{.Config.User}}')" = '10001:10001'
+          test "$(docker image inspect "$IMAGE" --format '{{json .Config.Volumes}}')" != 'null'
+          docker run -d --name platform-smoke --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true -p 127.0.0.1::8080 -p 127.0.0.1::50051 "$IMAGE"
+          trap 'docker logs platform-smoke; docker rm -fv platform-smoke' EXIT
+          http_port=$(docker port platform-smoke 8080/tcp | cut -d: -f2)
+          grpc_port=$(docker port platform-smoke 50051/tcp | cut -d: -f2)
+          python script/smoke_container.py --http-url "http://127.0.0.1:$http_port" --grpc-port "$grpc_port" --expected-version "$VERSION" --expected-channel "$CHANNEL" --expected-commit "$COMMIT" --expected-build-time "$BUILD_TIME"
+          docker exec platform-smoke /usr/local/bin/mskdsp-platform --probe-grpc 127.0.0.1:50051
+          curl --fail "http://127.0.0.1:$http_port/" | grep '检查更新'
+          curl --fail "http://127.0.0.1:$http_port/api/update/status"
+          docker restart platform-smoke
+          python script/smoke_container.py --http-url "http://127.0.0.1:$http_port" --grpc-port "$grpc_port" --expected-version "$VERSION" --expected-channel "$CHANNEL" --expected-commit "$COMMIT" --expected-build-time "$BUILD_TIME"
+      - name: 验证容器内真实程序更新与重启恢复
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+        run: docker run --rm --entrypoint python3 -v "$PWD/script/smoke_runtime.py:/smoke_runtime.py:ro" "$IMAGE" /smoke_runtime.py
+      - name: 保存并校验离线镜像包
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          ARTIFACT_NAME: ${{ steps.metadata.outputs.artifact_name }}
+        run: |
+          docker save "$IMAGE" | gzip -n > package/image.tar.gz
+          docker create --name platform-extract "$IMAGE"
+          docker cp platform-extract:/usr/local/bin/mskdsp-platform package/mskdsp-platform
+          docker rm -v platform-extract
+          python script/publish_r2.py prepare --metadata package/metadata.json --image-archive package/image.tar.gz --binary package/mskdsp-platform --output r2 --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"
+          python script/release.py bundle --metadata package/metadata.json --archive package/image.tar.gz --output bundle
+          mkdir release
+          python - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          from script.release import sha256_file
+          destination = Path('release')
+          shutil.make_archive(str(destination / os.environ['ARTIFACT_NAME']), 'zip', 'bundle')
+          shutil.copyfile('bundle/latest.json', destination / 'latest.json')
+          shutil.copyfile('r2/latest.json', destination / 'updater-manifest.json')
+          for asset in Path('r2/assets').rglob('*-binary.tar.gz'):
+              shutil.copyfile(asset, destination / asset.name)
+          sums = [f'{sha256_file(p)}  {p.name}' for p in sorted(destination.iterdir()) if p.is_file()]
+          (destination / 'SHA256SUMS').write_text('\n'.join(sums) + '\n', encoding='utf-8')
+          PY
+      - name: 保留可独立下载的交付产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
+      - name: 拒绝过期的分支构建覆盖滚动通道
+        if: inputs.channel != 'stable'
+        env:
+          SOURCE_REF: ${{ steps.metadata.outputs.ref }}
+          COMMIT: ${{ steps.metadata.outputs.commit }}
+        run: |
+          git fetch origin "refs/heads/$SOURCE_REF"
+          test "$(git rev-parse FETCH_HEAD)" = "$COMMIT" || { echo '分支已有新提交，本次构建不更新滚动通道'; exit 1; }
+      - name: 发布 R2 程序包、镜像包与更新清单
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          aws --version
+          python script/publish_r2.py publish --output-dir r2 --bucket "$R2_BUCKET" --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"
+          printf 'R2 更新入口：%s/%s/%s/latest.json\n' "$R2_PUBLIC_BASE_URL" "$R2_PREFIX" '${{ steps.metadata.outputs.channel }}' >> "$GITHUB_STEP_SUMMARY"
+      - name: 登录 GitHub 镜像仓库
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 发布已经验证的镜像及通道标签
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          IMAGE_REPOSITORY: ${{ steps.metadata.outputs.image_repository }}
+          CHANNEL: ${{ steps.metadata.outputs.channel }}
+        run: |
+          docker push "$IMAGE"
+          docker tag "$IMAGE" "$IMAGE_REPOSITORY:$CHANNEL"
+          docker push "$IMAGE_REPOSITORY:$CHANNEL"
+          if [ "$CHANNEL" = stable ]; then
+            docker tag "$IMAGE" "$IMAGE_REPOSITORY:latest"
+            docker push "$IMAGE_REPOSITORY:latest"
+          fi
+      - name: 发布 GitHub 交付包，最后更新通道清单
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          CHANNEL: ${{ steps.metadata.outputs.channel }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.release_tag }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          COMMIT: ${{ steps.metadata.outputs.commit }}
+          IMAGE: ${{ steps.metadata.outputs.image }}
+        run: |
+          printf '版本：%s\n通道：%s\n提交：%s\n镜像：%s\n\n下载离线包并核对 SHA256SUMS 后，可使用 docker load 导入。\n' "$VERSION" "$CHANNEL" "$COMMIT" "$IMAGE" > package/notes.md
+          flags=(--prerelease --latest=false)
+          if [ "$CHANNEL" = stable ]; then flags=(--latest); fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "MskDSPPlatform $VERSION" --notes-file package/notes.md "${flags[@]}"
+          else
+            tag_flags=(--target "$COMMIT")
+            if [ "$CHANNEL" = stable ]; then tag_flags=(--verify-tag); fi
+            gh release create "$RELEASE_TAG" --title "MskDSPPlatform $VERSION" --notes-file package/notes.md "${flags[@]}" "${tag_flags[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" release/*.zip release/*-binary.tar.gz release/updater-manifest.json release/SHA256SUMS --clobber
+          gh release upload "$RELEASE_TAG" release/latest.json --clobber
+          printf '已发布 %s\n镜像：`%s`\n交付入口：https://github.com/%s/releases/tag/%s\n' "$VERSION" "$IMAGE" "$GH_REPO" "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
