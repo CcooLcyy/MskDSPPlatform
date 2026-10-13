@@ -21,7 +21,7 @@ services:
       - platform-runtime:/var/lib/mskdsp-platform
     ports:
       - "127.0.0.1:${MSKDSP_HTTP_PORT:-8080}:8080"
-      - "127.0.0.1:${MSKDSP_GRPC_PORT:-50051}:50051"
+      - "127.0.0.1:${MSKDSP_GRPC_PORT:-50000}:50000"
     init: true
     restart: unless-stopped
     read_only: true

@@ -1,6 +1,6 @@
 [server]
 http_addr = "127.0.0.1:8080"
-grpc_addr = "127.0.0.1:50051"
+grpc_addr = "127.0.0.1:50000"
 shutdown_timeout_seconds = 10
 
 [runtime]

@@ -50,7 +50,7 @@ def release_name(version):
 def probe_address(config_path):
     try:
         config = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
-        value = config.get("server", {}).get("grpc_addr", "127.0.0.1:50051")
+        value = config.get("server", {}).get("grpc_addr", "127.0.0.1:50000")
         host, port = listen_address(value)
         host = {"0.0.0.0": "127.0.0.1", "[::]": "[::1]"}.get(host, host)
         return f"{host}:{port}"

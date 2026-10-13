@@ -59,7 +59,7 @@ ENV MSKDSP_PLATFORM_CONFIG=/app/config.toml \
     RUST_LOG=info
 USER 10001:10001
 VOLUME ["/var/lib/mskdsp-platform"]
-EXPOSE 8080 50051
+EXPOSE 8080 50000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
     CMD curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8080/healthz || exit 1
 ENTRYPOINT ["python3", "/opt/mskdsp-manager/runtime.py"]

@@ -87,17 +87,17 @@ jobs:
         run: |
           test "$(docker image inspect "$IMAGE" --format '{{.Config.User}}')" = '10001:10001'
           test "$(docker image inspect "$IMAGE" --format '{{json .Config.Volumes}}')" != 'null'
-          docker run -d --name platform-smoke --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true -p 127.0.0.1::8080 -p 127.0.0.1::50051 "$IMAGE"
+          docker run -d --name platform-smoke --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true -p 127.0.0.1::8080 -p 127.0.0.1::50000 "$IMAGE"
           trap 'docker logs platform-smoke; docker rm -fv platform-smoke' EXIT
           http_port=$(docker port platform-smoke 8080/tcp | cut -d: -f2)
-          grpc_port=$(docker port platform-smoke 50051/tcp | cut -d: -f2)
+          grpc_port=$(docker port platform-smoke 50000/tcp | cut -d: -f2)
           python script/smoke_container.py --http-url "http://127.0.0.1:$http_port" --grpc-port "$grpc_port" --expected-version "$VERSION" --expected-channel "$CHANNEL" --expected-commit "$COMMIT" --expected-build-time "$BUILD_TIME"
-          docker exec platform-smoke /usr/local/bin/mskdsp-platform --probe-grpc 127.0.0.1:50051
+          docker exec platform-smoke /usr/local/bin/mskdsp-platform --probe-grpc 127.0.0.1:50000
           curl --fail "http://127.0.0.1:$http_port/" | grep '检查更新'
           curl --fail "http://127.0.0.1:$http_port/api/update/status"
           docker restart platform-smoke
           http_port=$(docker port platform-smoke 8080/tcp | cut -d: -f2)
-          grpc_port=$(docker port platform-smoke 50051/tcp | cut -d: -f2)
+          grpc_port=$(docker port platform-smoke 50000/tcp | cut -d: -f2)
           python script/smoke_container.py --http-url "http://127.0.0.1:$http_port" --grpc-port "$grpc_port" --expected-version "$VERSION" --expected-channel "$CHANNEL" --expected-commit "$COMMIT" --expected-build-time "$BUILD_TIME"
       - name: 验证容器内真实程序更新与重启恢复
         env:

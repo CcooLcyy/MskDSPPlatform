@@ -51,7 +51,7 @@ impl Default for ServerConfig {
             http_addr: "127.0.0.1:8080"
                 .parse()
                 .expect("valid default HTTP address"),
-            grpc_addr: "127.0.0.1:50051"
+            grpc_addr: "127.0.0.1:50000"
                 .parse()
                 .expect("valid default gRPC address"),
             shutdown_timeout_seconds: 10,

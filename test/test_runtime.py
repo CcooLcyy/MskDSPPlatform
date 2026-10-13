@@ -28,7 +28,7 @@ class ManagerTests(unittest.TestCase):
         self.config = self.folder / "updater.json"
         self.config.write_text(json.dumps({"manifest_url": "https://updates.example/platform/ci/latest.json"}))
         self.platform_config = self.folder / "config.toml"
-        self.platform_config.write_text('[server]\ngrpc_addr = "0.0.0.0:50051"\n')
+        self.platform_config.write_text('[server]\ngrpc_addr = "0.0.0.0:50000"\n')
         self.identity_mock = mock.patch.object(runtime, "binary_identity", return_value=self.identity)
         self.identity_mock.start()
         self.addCleanup(self.identity_mock.stop)
@@ -137,7 +137,7 @@ class ManagerTests(unittest.TestCase):
 
     def test_grpc_probe_follows_configuration(self):
         config = self.folder / "config.toml"
-        for address, expected in (("0.0.0.0:55051", "127.0.0.1:55051"), ("[::]:55052", "[::1]:55052"), ("127.0.0.1:50051", "127.0.0.1:50051")):
+        for address, expected in (("0.0.0.0:55051", "127.0.0.1:55051"), ("[::]:55052", "[::1]:55052"), ("127.0.0.1:50000", "127.0.0.1:50000")):
             config.write_text(f'[server]\ngrpc_addr = "{address}"\n')
             self.assertEqual(runtime.probe_address(config), expected)
         manager = runtime.Manager(self.folder / "separate", self.config, config=config, grpc_probe="127.0.0.1:56051")
@@ -212,7 +212,7 @@ class ManagerTests(unittest.TestCase):
         self.manager.child.poll.return_value = None
         with mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=0)) as probe:
             self.assertTrue(self.manager.healthy(timeout=1))
-            self.assertEqual(probe.call_args.args[0][-2:], ["--probe-grpc", "127.0.0.1:50051"])
+            self.assertEqual(probe.call_args.args[0][-2:], ["--probe-grpc", "127.0.0.1:50000"])
             self.assertEqual(probe.call_args.kwargs["env"]["MSKDSP_PLATFORM_CONFIG"], str(self.platform_config))
         with mock.patch.object(runtime.subprocess, "run", return_value=mock.Mock(returncode=1)):
             self.assertFalse(self.manager.healthy(timeout=0.05))

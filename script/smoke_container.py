@@ -47,7 +47,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--http-url", default="http://127.0.0.1:8080", help="HTTP 服务地址")
     parser.add_argument("--grpc-host", default="127.0.0.1", help="gRPC 服务主机")
-    parser.add_argument("--grpc-port", default=50051, type=int, help="gRPC 服务端口")
+    parser.add_argument("--grpc-port", default=50000, type=int, help="gRPC 服务端口")
     parser.add_argument("--timeout", default=45.0, type=float, help="等待服务就绪的秒数")
     parser.add_argument("--expected-version", help="预期构建版本")
     parser.add_argument("--expected-channel", help="预期发布通道")

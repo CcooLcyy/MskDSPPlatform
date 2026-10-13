@@ -11,7 +11,7 @@ docker volume create mskdsp-platform-runtime >/dev/null
 docker run -d --name mskdsp-platform --init --restart unless-stopped --stop-timeout 30 \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
   -p "127.0.0.1:${MSKDSP_HTTP_PORT:-8080}:8080" \
-  -p "127.0.0.1:${MSKDSP_GRPC_PORT:-50051}:50051" \
+  -p "127.0.0.1:${MSKDSP_GRPC_PORT:-50000}:50000" \
   --mount type=volume,source=mskdsp-platform-runtime,target=/var/lib/mskdsp-platform \
   --mount "type=bind,source=$task_dir/deploy/config.toml,target=/app/config.toml,readonly" \
   --mount "type=bind,source=$task_dir/deploy/updater.json,target=/app/updater.json,readonly" \

@@ -1,7 +1,7 @@
 [server]
 # 管理进程接管公开 HTTP，平台子进程会由环境变量覆盖到内部回环地址。
 http_addr = "0.0.0.0:8080"
-grpc_addr = "0.0.0.0:50051"
+grpc_addr = "0.0.0.0:50000"
 shutdown_timeout_seconds = 10
 
 [runtime]
