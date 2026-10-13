@@ -35,7 +35,7 @@ class ModbusPageTests(unittest.TestCase):
         syntax = subprocess.run([node, "--check", "--input-type=module"], input=script, capture_output=True, text=True, encoding="utf-8", timeout=15)
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
         library = script.split("// 页面启动")[0]
-        fixtures = [json.loads(path.read_text(encoding="utf-8")) for path in (ROOT.parent / "MskDSPUpper/src/features/modbus-templates/builtin").glob("*.json")]
+        fixtures = [json.loads(path.read_text(encoding="utf-8-sig")) for path in sorted((ROOT / "test/fixtures/modbus-templates").glob("*.json"))]
         self.assertGreaterEqual(len(fixtures), 3)
         scenario = r'''
 const assert = require('node:assert/strict');

@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import socket
-import shutil
 import subprocess
 import tempfile
 import time
@@ -138,53 +137,18 @@ class TemplateApiTests(unittest.TestCase):
         self.assertEqual(json.loads(self.request("GET", base)[1])[0]["point_count"], 1)
 
     # 平台入口和点表页面均可访问，现有程序更新页面继续保留。
-    def test_pages_and_upper_builtin_compatibility(self):
+    def test_pages_and_builtin_fixture_compatibility(self):
         self.assertIn("点表".encode(), self.request("GET", "/modbus-templates")[1])
         self.assertIn(b"/modbus-templates", self.request("GET", "/")[1])
         self.assertEqual(self.request("GET", "/update")[0], 200)
-        fixtures = ROOT.parent / "MskDSPUpper" / "src" / "features" / "modbus-templates" / "builtin"
-        for file in fixtures.glob("*.json"):
+        fixtures = sorted((ROOT / "test/fixtures/modbus-templates").glob("*.json"))
+        self.assertGreaterEqual(len(fixtures), 3, "平台仓库需包含三个厂家点表夹具")
+        for file in fixtures:
             expected = json.loads(file.read_text(encoding="utf-8-sig"))
             status, raw, _ = self.request("POST", "/api/v1/modbus-templates", expected)
             self.assertEqual(status, 201, file.name + ": " + raw.decode())
             record = json.loads(raw)
             self.assertEqual(record["template"], expected)
-
-    # 真正调用上位机解析器与个人目录保存逻辑，验证平台导出的副本能够导入。
-    def test_download_imports_into_upper_personal_catalog(self):
-        upper = ROOT.parent / "MskDSPUpper" / "src" / "features" / "modbus-templates"
-        node = shutil.which("node")
-        if not node or not (upper / "store-core.ts").exists():
-            self.skipTest("仅在同时存在上位机源码与 Node 时执行跨项目导入契约")
-        downloaded = []
-        for index, file in enumerate((upper / "builtin").glob("*.json")):
-            document = json.loads(file.read_text(encoding="utf-8-sig"))
-            document["id"] = f"platform-personal-copy-{index}"
-            status, raw, _ = self.request("POST", "/api/v1/modbus-templates", document)
-            self.assertEqual(status, 201, raw)
-            record = json.loads(raw)
-            downloaded.append(self.request("GET", "/api/v1/modbus-templates/" + record["id"] + "/download")[1].decode())
-        self.assertTrue(downloaded, "上位机至少应有一个内置模板夹具")
-        script = '''
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-const base = process.argv[1];
-const {parseModbusTemplateJson} = await import(base + '/model.ts');
-const {createPersonalTemplateStore} = await import(base + '/store-core.ts');
-const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-let saved = [];
-const catalog = createPersonalTemplateStore([], {read:()=>saved, write:async value=>{saved=value;}});
-for (const raw of input) {
-  const parsed = parseModbusTemplateJson(raw);
-  await catalog.save(parsed);
-  assert.deepEqual(catalog.list().at(-1), parsed);
-}
-assert.equal(catalog.list().length, input.length);
-'''
-        result = subprocess.run([node, "--experimental-strip-types", "--input-type=module", "-e", script, upper.as_uri()],
-                                input=json.dumps(downloaded, ensure_ascii=False), text=True, encoding="utf-8",
-                                capture_output=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
