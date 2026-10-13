@@ -26,10 +26,11 @@ mkdir -p "$work_dir/deploy" "$work_dir/runtime/data" "$work_dir/runtime/logs" "$
 for config in config.toml updater.json; do
   if [ ! -e "$work_dir/deploy/$config" ]; then
     cp "$task_dir/deploy/$config" "$work_dir/deploy/$config"
+    chmod 0644 "$work_dir/deploy/$config"
   fi
 done
 # 仅准备平台目录的属主，不递归改动已有业务文件。
-docker run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN \
+docker run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE \
   --user 0:0 --entrypoint chown \
   --mount "type=bind,source=$work_dir/runtime,target=/var/lib/mskdsp-platform" \
   "$image" 10001:10001 /var/lib/mskdsp-platform /var/lib/mskdsp-platform/data \

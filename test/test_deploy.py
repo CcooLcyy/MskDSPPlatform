@@ -65,6 +65,14 @@ class DeployTests(unittest.TestCase):
         self.assertEqual((self.work / "deploy/updater.json").read_text(), "existing source")
         self.assertEqual(data.read_text(), "existing data")
 
+    # 宿主机严格 umask 不能让新复制的配置对容器用户不可读。
+    def test_strict_umask_keeps_new_configuration_readable(self):
+        result = subprocess.run(["sh", "-c", 'umask 077; exec sh "$1"', "deploy-test", str(self.deploy / "run.sh")],
+                                env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in ["config.toml", "updater.json"]:
+            self.assertEqual((self.work / "deploy" / name).stat().st_mode & 0o777, 0o644)
+
     # 相对路径与宿主根目录不能被误用为平台工作目录。
     def test_rejects_relative_or_root_work_directory_before_docker(self):
         for value in ["relative/platform", "/", "/tmp/.."]:
