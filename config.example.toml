@@ -7,6 +7,13 @@ shutdown_timeout_seconds = 10
 protocol_version = "platform.v1"
 environment = "development"
 
+[auth]
+username = "root"
+# 默认使用内置初始密码哈希；自定义密码用 --hash-admin-password 从标准输入生成。
+# password_hash = "填入完整的 Argon2id PHC 哈希"
+secure_cookie = false
+session_seconds = 28800
+
 [tls]
 # 本地开发默认关闭 TLS；生产环境应由平台进程或支持 mTLS 的网关终止 TLS。
 enabled = false

@@ -93,8 +93,8 @@ jobs:
           grpc_port=$(docker port platform-smoke 50000/tcp | cut -d: -f2)
           python script/smoke_container.py --http-url "http://127.0.0.1:$http_port" --grpc-port "$grpc_port" --expected-version "$VERSION" --expected-channel "$CHANNEL" --expected-commit "$COMMIT" --expected-build-time "$BUILD_TIME"
           docker exec platform-smoke /usr/local/bin/mskdsp-platform --probe-grpc 127.0.0.1:50000
-          curl --fail "http://127.0.0.1:$http_port/" | grep '检查更新'
-          curl --fail "http://127.0.0.1:$http_port/api/update/status"
+          curl --fail "http://127.0.0.1:$http_port/login" | grep '管理员登录'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:$http_port/api/update/status")" = '401'
           docker restart platform-smoke
           http_port=$(docker port platform-smoke 8080/tcp | cut -d: -f2)
           grpc_port=$(docker port platform-smoke 50000/tcp | cut -d: -f2)

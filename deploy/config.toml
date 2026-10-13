@@ -8,6 +8,12 @@ shutdown_timeout_seconds = 10
 protocol_version = "platform.v1"
 environment = "container"
 
+[auth]
+username = "root"
+# 在 HTTPS 网关后对外部署时改为 true；纯 HTTP 本地调试保持 false。
+secure_cookie = false
+session_seconds = 28800
+
 [tls]
 # 当前服务尚未实现 TLS；需要加密接入时，在外部网关配置 TLS/mTLS。
 enabled = false

@@ -1,3 +1,4 @@
+mod auth;
 mod build_info;
 mod config;
 mod error;
@@ -23,13 +24,27 @@ async fn main() -> Result<()> {
             );
             return Ok(());
         }
+        [flag] if flag == "--hash-admin-password" => {
+            use std::io::Read;
+            let mut password = String::new();
+            std::io::stdin().take(1025).read_to_string(&mut password)?;
+            let password = password.trim_end_matches(['\r', '\n']);
+            anyhow::ensure!(
+                !password.is_empty() && password.len() <= 1024,
+                "密码长度必须为 1～1024 字节"
+            );
+            println!("{}", auth::hash_password(password)?);
+            return Ok(());
+        }
         [flag, address] if flag == "--probe-grpc" => {
             let protocol_version = AppConfig::load()?.runtime.protocol_version;
             grpc::probe(address, &protocol_version).await?;
             println!("gRPC 握手检查通过");
             return Ok(());
         }
-        _ => anyhow::bail!("参数不支持；可使用 --version-json 或 --probe-grpc 主机:端口"),
+        _ => anyhow::bail!(
+            "参数不支持；可使用 --version-json、--hash-admin-password 或 --probe-grpc 主机:端口"
+        ),
     }
     init_logging();
 

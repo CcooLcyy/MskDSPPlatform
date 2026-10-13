@@ -8,6 +8,7 @@ pub struct AppConfig {
     pub server: ServerConfig,
     pub runtime: RuntimeConfig,
     pub tls: TlsConfig,
+    pub auth: crate::auth::AuthConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -41,6 +42,7 @@ impl Default for AppConfig {
             server: ServerConfig::default(),
             runtime: RuntimeConfig::default(),
             tls: TlsConfig::default(),
+            auth: crate::auth::AuthConfig::default(),
         }
     }
 }

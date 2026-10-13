@@ -1,4 +1,5 @@
 use crate::{
+    auth::AdminAuth,
     config::AppConfig,
     grpc::{AgentGrpcService, AgentServiceServer},
     http::{self, HttpState},
@@ -31,6 +32,7 @@ impl PlatformRuntime {
         let http_state = HttpState {
             sessions: self.sessions.clone(),
             protocol_version: protocol_version.clone(),
+            auth: AdminAuth::new(self.config.auth.clone())?,
         };
         let http_listener = TcpListener::bind(self.config.server.http_addr)
             .await

@@ -23,6 +23,8 @@ import update_common as common
 IDENTITY_FIELDS = ("version", "channel", "commit", "build_time")
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
 BUSY_STATES = {"checking", "updating"}
+AUTH_TIMEOUT = 2
+MAX_AUTH_RESPONSE = 4096
 
 
 class BusyError(common.UpdateError):
@@ -428,9 +430,42 @@ class RuntimeHandler(BaseHTTPRequestHandler):
         except ValueError:
             return False
 
+    def authenticated(self):
+        # 会话只由 Rust 验证；连接失败、未知身份和异常响应一律关闭更新入口。
+        connection = http.client.HTTPConnection(self.server.manager.child_http, timeout=AUTH_TIMEOUT)
+        try:
+            headers = {"Connection": "close"}
+            cookies = self.headers.get_all("Cookie", [])
+            if cookies:
+                headers["Cookie"] = "; ".join(cookies)
+            connection.request("GET", "/api/v1/auth/me", headers=headers)
+            response = connection.getresponse()
+            raw = response.read(MAX_AUTH_RESPONSE + 1)
+            if len(raw) > MAX_AUTH_RESPONSE:
+                raise ValueError("会话验证响应超过大小限制")
+            if response.length:
+                raise ValueError("会话验证响应内容不完整")
+            identity = json.loads(raw)
+            if (response.status == 200 and isinstance(identity, dict)
+                    and isinstance(identity.get("username"), str) and identity["username"].strip()
+                    and identity.get("role") == "admin"):
+                return True
+            if response.status == 401 and isinstance(identity, dict) and isinstance(identity.get("error"), str):
+                self.respond(401, {"error": "请先登录"})
+                return False
+            raise ValueError("会话验证响应不正确")
+        except (OSError, ValueError, RecursionError, http.client.HTTPException) as exc:
+            log("更新会话验证失败：" + str(exc))
+            self.respond(503, {"error": "平台会话验证暂时不可用"})
+            return False
+        finally:
+            connection.close()
+
     def handle_request(self):
         parsed = urlsplit(self.path)
         if parsed.path.startswith("/api/update/"):
+            if not self.authenticated():
+                return
             if parsed.query or parsed.fragment:
                 self.respond(400, {"error": "更新接口不接受查询参数"})
             elif parsed.path == "/api/update/status":
@@ -446,6 +481,9 @@ class RuntimeHandler(BaseHTTPRequestHandler):
                     raw = self.body(1024)
                     if raw and json.loads(raw) != {}:
                         raise ValueError("更新操作不接受参数")
+                    # 上传请求体期间会话可能被注销，提交更新前必须再次校验。
+                    if not self.authenticated():
+                        return
                     self.server.manager.begin(parsed.path.rsplit("/", 1)[1])
                     self.respond(202, self.server.manager.status())
                 except BusyError as exc:
@@ -465,8 +503,11 @@ class RuntimeHandler(BaseHTTPRequestHandler):
         try:
             raw = self.body(1024 * 1024)
             blocked = HOP_HEADERS | {part.strip().lower() for part in self.headers.get("Connection", "").split(",")}
-            headers = {name: value for name, value in self.headers.items() if name.lower() not in blocked}
-            headers.update(Host=self.server.manager.child_http, Connection="close")
+            # 保留浏览器访问的 Host 以便 Rust 校验 Origin，丢弃客户端伪造的代理身份头。
+            headers = {name: value for name, value in self.headers.items()
+                       if name.lower() not in blocked and name.lower() != "forwarded"
+                       and not name.lower().startswith("x-forwarded-")}
+            headers["Connection"] = "close"
             connection.request(self.command, self.path, raw or None, headers)
             response = connection.getresponse()
             blocked = HOP_HEADERS | {part.strip().lower() for part in response.getheader("Connection", "").split(",")}

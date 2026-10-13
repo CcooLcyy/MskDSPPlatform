@@ -18,6 +18,36 @@ import runtime
 from test_update_common import manifest
 
 
+class FakeAuthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.server.requests.append((self.command, self.path, dict(self.headers)))
+        status, payload = self.server.auth_response
+        if status is None:
+            status, payload = ((200, {"username": "root", "role": "admin"})
+                               if self.headers.get("Cookie") == "session=valid" and self.server.logged_in
+                               else (401, {"error": "会话无效"}))
+        raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+        self.server.auth_checked.set()
+
+    def do_POST(self):
+        self.server.requests.append((self.command, self.path, dict(self.headers)))
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        self.server.logged_in = self.path.endswith("/login")
+        self.send_response(200)
+        self.send_header("Set-Cookie", "session=valid; HttpOnly" if self.server.logged_in else "session=; Max-Age=0")
+        self.send_header("Set-Cookie", "preference=light")
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *args):
+        pass
+
+
 class ManagerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -39,6 +69,30 @@ class ManagerTests(unittest.TestCase):
         platform = mock.patch.object(runtime.common, "platform_key", return_value="linux-amd64")
         platform.start()
         self.addCleanup(platform.stop)
+
+    def http_server(self, handler, manager=None):
+        server = (runtime.RuntimeServer(("127.0.0.1", 0), manager) if manager
+                  else ThreadingHTTPServer(("127.0.0.1", 0), handler))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def auth_backend(self):
+        server = self.http_server(FakeAuthHandler)
+        server.requests, server.auth_response, server.logged_in = [], (None, None), True
+        server.auth_checked = threading.Event()
+        self.manager.child_http = f"127.0.0.1:{server.server_port}"
+        return server
+
+    def http_request(self, server, method, path, body=None, headers=None):
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=4)
+        try:
+            connection.request(method, path, body, headers or {})
+            response = connection.getresponse()
+            return response.status, response.getheaders(), response.read()
+        finally:
+            connection.close()
 
     def run_update(self, healthy=(True,)):
         data = manifest()
@@ -233,6 +287,8 @@ class ManagerTests(unittest.TestCase):
         connection.close()
 
     def test_http_contract_and_request_constraints(self):
+        # 使用真实已验证会话执行原有接口契约，保持认证检查启用。
+        self.auth_backend()
         server = runtime.RuntimeServer(("127.0.0.1", 0), self.manager)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -241,7 +297,7 @@ class ManagerTests(unittest.TestCase):
         host, port = server.server_address
         def request(method, path, body=None, headers=None):
             connection = http.client.HTTPConnection(host, port, timeout=3)
-            connection.request(method, path, body, headers or {})
+            connection.request(method, path, body, {"Cookie": "session=valid", **(headers or {})})
             response = connection.getresponse()
             status = response.status
             response.read()
@@ -259,6 +315,111 @@ class ManagerTests(unittest.TestCase):
             begin.assert_called_once_with("check")
         self.manager.busy = True
         self.assertEqual(request("POST", "/api/update/apply", "{}", marked), 409)
+
+    # 更新接口全部先校验会话，伪造身份头不能读取状态或启动任务。
+    def test_update_routes_require_cookie_session(self):
+        backend = self.auth_backend()
+        server = self.http_server(None, self.manager)
+        forged = {"Authorization": "Bearer root", "X-Forwarded-User": "root",
+                  "X-Forwarded-Host": "trusted.example", "X-MskDSP-Action": "update"}
+        with mock.patch.object(self.manager, "begin") as begin:
+            for method, path in (("GET", "/api/update/status"), ("POST", "/api/update/check"),
+                                 ("POST", "/api/update/apply"), ("GET", "/api/update/unknown"),
+                                 ("GET", "/api/update/status?x=1")):
+                with self.subTest(method=method, path=path):
+                    self.assertEqual(self.http_request(server, method, path, "{}", forged)[0], 401)
+            self.assertEqual(self.http_request(server, "POST", "/api/update/apply", "{}",
+                                               {**forged, "Cookie": "session=invalid"})[0], 401)
+            begin.assert_not_called()
+        for method, path, headers in backend.requests:
+            self.assertEqual((method, path), ("GET", "/api/v1/auth/me"))
+            self.assertNotIn("Authorization", headers)
+            self.assertNotIn("X-Forwarded-User", headers)
+
+    # 登录/注销经代理传递 Cookie；注销后原 Cookie 也不能继续更新。
+    def test_auth_proxy_preserves_host_cookies_and_logout_revokes_update(self):
+        backend = self.auth_backend()
+        backend.logged_in = False
+        server = self.http_server(None, self.manager)
+        headers = {"Host": "platform.example:8080", "Origin": "http://platform.example:8080",
+                   "X-Forwarded-Host": "forged.example", "X-Forwarded-User": "root"}
+        status, response_headers, _ = self.http_request(server, "POST", "/api/v1/auth/login", "{}", headers)
+        self.assertEqual(status, 200)
+        self.assertEqual([value for name, value in response_headers if name.lower() == "set-cookie"],
+                         ["session=valid; HttpOnly", "preference=light"])
+        forwarded = backend.requests[-1][2]
+        self.assertEqual(forwarded["Host"], "platform.example:8080")
+        self.assertEqual(forwarded["Origin"], headers["Origin"])
+        self.assertNotIn("X-Forwarded-Host", forwarded)
+        authenticated = {**headers, "Cookie": "session=valid", "X-MskDSP-Action": "update"}
+        self.assertEqual(self.http_request(server, "GET", "/api/update/status", headers=authenticated)[0], 200)
+        self.assertEqual(backend.requests[-1][2]["Cookie"], "session=valid")
+        with mock.patch.object(self.manager, "begin") as begin:
+            self.assertEqual(self.http_request(server, "POST", "/api/update/check", "{}", authenticated)[0], 202)
+            begin.assert_called_once_with("check")
+        status, response_headers, _ = self.http_request(server, "POST", "/api/v1/auth/logout", "{}", authenticated)
+        self.assertEqual(status, 200)
+        self.assertIn(("Set-Cookie", "session=; Max-Age=0"), response_headers)
+        self.assertEqual(backend.requests[-1][2]["Cookie"], "session=valid")
+        with mock.patch.object(self.manager, "begin") as begin:
+            self.assertEqual(self.http_request(server, "POST", "/api/update/apply", "{}", authenticated)[0], 401)
+            begin.assert_not_called()
+
+    # 子进程不可达或身份响应异常时拒绝更新，不得降级为未认证执行。
+    def test_auth_unavailable_or_invalid_response_fails_closed(self):
+        backend = self.auth_backend()
+        server = self.http_server(None, self.manager)
+        headers = {"Cookie": "session=valid", "X-MskDSP-Action": "update"}
+        invalid = ((500, {"error": "失败"}), (302, {}), (200, b"not json"),
+                   (200, b"\xff"), (200, b"[" * 2000 + b"]" * 2000),
+                   (200, []), (200, {"username": "root"}),
+                   (200, {"username": " ", "role": "admin"}),
+                   (200, {"username": 1, "role": "admin"}),
+                   (200, {"username": "root", "role": "viewer"}),
+                   (200, b" " * 4097), (401, b"not json"))
+        with mock.patch.object(self.manager, "begin") as begin:
+            for reply in invalid:
+                with self.subTest(reply=reply):
+                    backend.auth_response = reply
+                    self.assertEqual(self.http_request(server, "POST", "/api/update/apply", "{}", headers)[0], 503)
+            backend.shutdown()
+            backend.server_close()
+            self.assertEqual(self.http_request(server, "GET", "/api/update/status", headers=headers)[0], 503)
+            self.assertEqual(self.http_request(server, "POST", "/api/update/apply", "{}", headers)[0], 503)
+            begin.assert_not_called()
+
+    # Rust 可配置管理员用户名，更新校验必须接受服务端验证过的非空用户名。
+    def test_authenticated_custom_username_can_update(self):
+        backend = self.auth_backend()
+        backend.auth_response = (200, {"username": "custom-admin", "role": "admin"})
+        server = self.http_server(None, self.manager)
+        with mock.patch.object(self.manager, "begin") as begin:
+            status, _, _ = self.http_request(server, "POST", "/api/update/check", "{}",
+                                             {"Cookie": "session=valid", "X-MskDSP-Action": "update"})
+            self.assertEqual(status, 202)
+            begin.assert_called_once_with("check")
+
+    # 请求体慢速上传期间注销，提交前再次验证会话，禁止启动更新任务。
+    def test_logout_during_body_upload_prevents_update(self):
+        backend = self.auth_backend()
+        server = self.http_server(None, self.manager)
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=4)
+        self.addCleanup(connection.close)
+        with mock.patch.object(self.manager, "begin") as begin:
+            connection.putrequest("POST", "/api/update/apply")
+            connection.putheader("Content-Length", "2")
+            connection.putheader("Cookie", "session=valid")
+            connection.putheader("X-MskDSP-Action", "update")
+            connection.endheaders()
+            self.assertTrue(backend.auth_checked.wait(timeout=2), "请求体上传前未完成首次会话验证")
+            backend.logged_in = False
+            connection.send(b"{}")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 401)
+            response.read()
+            begin.assert_not_called()
+        self.assertEqual([path for _, path, _ in backend.requests],
+                         ["/api/v1/auth/me", "/api/v1/auth/me"])
 
 
 if __name__ == "__main__":

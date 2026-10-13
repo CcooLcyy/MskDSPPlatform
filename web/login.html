@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MskDSPPlatform · 管理员登录</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3f5f8; color: #172638; font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { width: min(460px, calc(100% - 32px)); margin: 64px auto; }
+    .brand { color: #516277; font-size: 13px; letter-spacing: .05em; margin-bottom: 10px; }
+    h1 { font-size: 28px; line-height: 1.3; margin: 0 0 10px; }
+    .intro { color: #516277; margin: 0 0 28px; }
+    section { background: white; border: 1px solid #dce3eb; border-radius: 16px; padding: 28px; box-shadow: 0 8px 30px #17304b06; }
+    label { display: block; margin: 0 0 6px; font-weight: 600; }
+    input { width: 100%; margin-bottom: 20px; border: 1px solid #c6d0de; border-radius: 9px; padding: 10px 12px; font: inherit; color: inherit; background: white; }
+    button { width: 100%; border: 1px solid #2563eb; border-radius: 9px; padding: 10px 20px; font: inherit; font-weight: 600; color: white; background: #2563eb; cursor: pointer; }
+    button:hover:not(:disabled) { filter: brightness(.95); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    input:focus-visible, button:focus-visible { outline: 3px solid #8bb5ff; outline-offset: 3px; }
+    #message { margin: 16px 0 0; min-height: 25px; color: #9b4b1b; overflow-wrap: anywhere; }
+    @media (max-width: 520px) { main { margin: 30px auto; } section { padding: 22px 18px; } h1 { font-size: 25px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">MskDSPPlatform</div>
+    <h1>管理员登录</h1>
+    <p class="intro">登录后可查看平台版本并管理程序更新。</p>
+    <section aria-label="管理员登录">
+      <form id="login-form" method="post" action="/api/v1/auth/login">
+        <label for="username">用户名</label>
+        <input id="username" name="username" type="text" autocomplete="username" required autofocus>
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button id="submit" type="submit">登录</button>
+        <p id="message" role="status" aria-live="polite"></p>
+      </form>
+    </section>
+    <noscript>请启用 JavaScript 以登录管理平台。</noscript>
+  </main>
+  <script type="module">
+function createLoginClient({fetchImpl, onChange, onSuccess}) {
+  let pending = false, finished = false, error = '';
+  const snapshot = () => ({pending, finished, error});
+  const notify = () => onChange(snapshot());
+  return {
+    snapshot,
+    async login(username, password) {
+      if (pending || finished) return;
+      if (!username.trim() || !password) {
+        error = '请输入用户名和密码';
+        notify();
+        return;
+      }
+      pending = true; error = '';
+      notify();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetchImpl('/api/v1/auth/login', {
+          method:'POST', cache:'no-store', credentials:'same-origin', signal:controller.signal,
+          headers:{'Content-Type':'application/json', 'X-MskDSP-Action':'auth'},
+          body:JSON.stringify({username:username.trim(), password}),
+        });
+        const body = await response.json().catch(() => null);
+        if (!response.ok) {
+          error = typeof body?.error === 'string' ? body.error : response.status === 429 ? '登录尝试过多，请稍后重试' : '登录失败，请重新输入用户名和密码';
+          return;
+        }
+        if (typeof body?.username !== 'string' || !body.username.trim() || body?.role !== 'admin') {
+          error = '登录接口返回了无法识别的用户信息';
+          return;
+        }
+        finished = true;
+        onSuccess();
+      } catch { error = '暂时无法连接平台，请稍后重试'; }
+      finally { clearTimeout(timer); pending = false; notify(); }
+    },
+  };
+}
+
+// 页面启动
+const element = id => document.getElementById(id);
+const client = createLoginClient({
+  fetchImpl:window.fetch.bind(window),
+  onSuccess:() => window.location.replace('/update'),
+  onChange:({pending, finished, error}) => {
+    element('submit').disabled = pending || finished;
+    element('submit').textContent = pending ? '正在登录…' : finished ? '登录成功' : '登录';
+    element('username').disabled = pending || finished;
+    element('password').disabled = pending || finished;
+    element('message').textContent = error;
+    element('login-form').setAttribute('aria-busy', String(pending));
+  },
+});
+element('login-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  await client.login(element('username').value, element('password').value);
+});
+  </script>
+</body>
+</html>

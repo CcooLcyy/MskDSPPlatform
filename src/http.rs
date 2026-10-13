@@ -1,10 +1,16 @@
-use crate::{build_info::BuildInfo, state::SessionRegistry};
+use crate::{
+    auth::{self, AdminAuth},
+    build_info::BuildInfo,
+    state::SessionRegistry,
+};
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     extract::State,
     http::StatusCode,
+    middleware,
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{get, post},
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -13,15 +19,26 @@ use std::sync::Arc;
 pub struct HttpState {
     pub sessions: SessionRegistry,
     pub protocol_version: Arc<str>,
+    pub auth: AdminAuth,
 }
 
 pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/", get(update_page))
         .route("/update", get(update_page))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_admin,
+        ))
+        .route("/login", get(auth::login_page))
+        .route("/api/v1/auth/login", post(auth::login))
+        .route("/api/v1/auth/logout", post(auth::logout))
+        .route("/api/v1/auth/me", get(auth::me))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/api/v1/version", get(version))
+        .layer(DefaultBodyLimit::max(4096))
+        .layer(middleware::from_fn(auth::no_cache))
         .with_state(state)
 }
 
