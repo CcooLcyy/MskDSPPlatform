@@ -44,7 +44,7 @@ jobs:
           if not key.startswith('mskdsp-platform/') or any(p in ('..','.') for p in key.split('/')):
               raise SystemExit('对象检查仅允许本平台前缀')
           with tempfile.TemporaryDirectory() as folder:
-              for index,object_key in enumerate(['mskdsp-upper/ci/latest.json',key]):
+              for index,object_key in enumerate([key]):
                   target=Path(folder)/str(index)
                   command=['aws','s3api','get-object','--bucket',os.environ['R2_BUCKET'],'--key',object_key,'--endpoint-url',endpoint,'--region','auto',str(target)]
                   response=subprocess.run(command,capture_output=True,text=True)
