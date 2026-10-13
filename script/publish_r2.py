@@ -21,7 +21,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from script.release import inspect_archive
+from script.release import _write_verified_bundle, inspect_archive
 from script.update_common import validate_commit, version_order
 
 PROJECT = "mskdsp-platform"
@@ -139,11 +139,16 @@ def write_immutable(path: Path, content: bytes) -> None:
 
 
 def prepare(*, metadata: Path, image_archive: Path, binary: Path, output: Path,
-            public_base_url: str, prefix: str = PROJECT, identity_reader=None) -> dict:
+            public_base_url: str, prefix: str = PROJECT, identity_reader=None,
+            bundle_output: Path | None = None, bundle_source: Path = Path(".")) -> dict:
     base, prefix = public_url(public_base_url), valid_prefix(prefix)
     data = json.loads(Path(metadata).read_text(encoding="utf-8"))
     tag = validate_metadata(data)
     binary, image_archive, output = Path(binary), Path(image_archive), Path(output)
+    if bundle_output is not None:
+        bundle_output = Path(bundle_output)
+        if bundle_output.exists():
+            raise ValueError("交付输出目录已存在，请使用新目录避免混入旧产物")
     if binary.is_symlink() or not binary.is_file() or not 0 < binary.stat().st_size <= MAX_BINARY:
         raise ValueError("缺少程序或程序大小超过 128 MiB")
     if image_archive.is_symlink() or not image_archive.is_file() or image_archive.stat().st_size == 0:
@@ -151,7 +156,6 @@ def prepare(*, metadata: Path, image_archive: Path, binary: Path, output: Path,
     identity = (identity_reader or read_binary_identity)(binary)
     if not isinstance(identity, dict) or identity.get("service") != PROJECT or any(identity.get(key) != data[key] for key in ("version", "channel", "commit", "build_time")):
         raise ValueError("程序身份与发布元数据不一致")
-    image_id = inspect_archive(image_archive, data)
     manifest = {"schema_version": 1, "project": PROJECT,
                 **{key: data[key] for key in ("channel", "version", "commit", "build_time", "base_version")},
                 "published_at": data["build_time"], "platforms": {}}
@@ -159,6 +163,8 @@ def prepare(*, metadata: Path, image_archive: Path, binary: Path, output: Path,
         staging = Path(temporary)
         image_name, binary_name = f"{PROJECT}-{tag}-{PLATFORM}-image.tar.gz", f"{PROJECT}-{tag}-{PLATFORM}-binary.tar.gz"
         shutil.copyfile(image_archive, staging / image_name)
+        # 镜像只校验一次；离线包使用这份已校验的临时副本和摘要。
+        image_id = inspect_archive(staging / image_name, data)
         binary_package(staging / binary_name, binary)
         if (staging / binary_name).stat().st_size > MAX_BINARY:
             raise ValueError("程序压缩包超过 128 MiB 更新限制")
@@ -166,9 +172,10 @@ def prepare(*, metadata: Path, image_archive: Path, binary: Path, output: Path,
         checksums = []
         for marker, name in (("", image_name), ("binary_", binary_name)):
             path = staging / name
+            sha = digest(path)
             entry.update({marker + "url": encoded_url(base, f"{prefix}/{data['channel']}/{tag}/{PLATFORM}/{name}"),
-                          marker + "sha256": digest(path), marker + "size": path.stat().st_size})
-            checksums.append(f"{digest(path)}  {PLATFORM}/{name}")
+                          marker + "sha256": sha, marker + "size": path.stat().st_size})
+            checksums.append(f"{sha}  {PLATFORM}/{name}")
         manifest["platforms"][PLATFORM] = entry
         existing = output / "release.json"
         if existing.exists() and not same_release(json.loads(existing.read_text(encoding="utf-8")), manifest):
@@ -179,6 +186,8 @@ def prepare(*, metadata: Path, image_archive: Path, binary: Path, output: Path,
         write_immutable(output / "SHA256SUMS", ("\n".join(checksums) + "\n").encode("utf-8"))
         write_immutable(output / "release.json", json_bytes(manifest))
         write_immutable(output / "latest.json", json_bytes(manifest))
+        if bundle_output is not None:
+            _write_verified_bundle(data, staging / image_name, bundle_output, Path(bundle_source), image_id, entry["sha256"])
     print(f"R2 资产准备完成：通道={data['channel']} 版本={data['version']} 镜像ID={image_id}")
     return manifest
 
@@ -360,6 +369,8 @@ def main() -> None:
     prepare_command = commands.add_parser("prepare", help="准备镜像与单程序更新归档")
     for name in ("metadata", "image-archive", "binary", "output"):
         prepare_command.add_argument("--" + name, type=Path, required=True)
+    prepare_command.add_argument("--bundle-output", type=Path, help="同时生成离线包，共用镜像校验和摘要")
+    prepare_command.add_argument("--bundle-source", type=Path, default=Path("."), help="离线包部署文件来源")
     publish_command = commands.add_parser("publish", help="发布资产、提交入口并清理当前通道")
     publish_command.add_argument("--output-dir", type=Path, required=True)
     publish_command.add_argument("--bucket", required=True)

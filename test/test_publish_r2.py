@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from script import publish_r2 as release
+from script import release as bundle_release
 from script.release import build_metadata
 from script.update_common import validate_manifest, version_order
 
@@ -56,6 +57,66 @@ class PublishingTests(unittest.TestCase):
 
     def publish(self):
         return release.publish(output_dir=self.output, bucket="mskdsp-update", public_base_url=BASE)
+
+    def bundle_source(self):
+        source = self.root / "source"
+        (source / "deploy").mkdir(parents=True)
+        (source / "deploy/config.toml").write_text("[server]\n", encoding="utf-8")
+        (source / "deploy/run.sh").write_text("docker run example\n", encoding="utf-8")
+        (source / "deploy/updater.json").write_text(json.dumps({"manifest_url": BASE + "/mskdsp-platform/stable/latest.json"}), encoding="utf-8")
+        return source
+
+    # 联合准备复用镜像校验和摘要，交付文件与独立命令完全一致。
+    def test_combined_prepare_reuses_image_checks_and_preserves_bundle(self):
+        source = self.bundle_source()
+        combined = self.root / "combined"
+        standalone = self.root / "standalone"
+        with patch.object(release, "inspect_archive", wraps=release.inspect_archive) as r2_inspect, \
+             patch.object(bundle_release, "inspect_archive", wraps=bundle_release.inspect_archive) as bundle_inspect, \
+             patch.object(release, "digest", wraps=release.digest) as r2_digest, \
+             patch.object(bundle_release, "sha256_file", wraps=bundle_release.sha256_file) as bundle_digest:
+            manifest = self.prepare(bundle_output=combined, bundle_source=source)
+        self.assertEqual(r2_inspect.call_count + bundle_inspect.call_count, 1)
+        image_hash_calls = [call for call in (*r2_digest.call_args_list, *bundle_digest.call_args_list)
+                            if call.args[0].name == "image.tar.gz" or call.args[0].name.endswith("-image.tar.gz")]
+        self.assertEqual(len(image_hash_calls), 1)
+        bundle_release.write_bundle(self.metadata, self.image, standalone, source)
+        expected_files = {path.relative_to(standalone) for path in standalone.rglob("*") if path.is_file()}
+        self.assertEqual(expected_files, {path.relative_to(combined) for path in combined.rglob("*") if path.is_file()})
+        for name in expected_files:
+            self.assertEqual((combined / name).read_bytes(), (standalone / name).read_bytes(), str(name))
+        sums = (combined / "SHA256SUMS").read_text(encoding="utf-8")
+        for line in sums.splitlines():
+            sha, name = line.split("  ", 1)
+            self.assertEqual(sha, release.digest(combined / name))
+        self.assertEqual(json.loads((combined / "latest.json").read_text(encoding="utf-8"))["image_archive"]["sha256"],
+                         manifest["platforms"]["linux-amd64"]["sha256"])
+
+    # 联合准备不能因复用校验而接受身份错误的镜像或产生交付目录。
+    def test_combined_prepare_rejects_wrong_image_identity(self):
+        source = self.bundle_source()
+        self.metadata["image"] = self.metadata["image"].replace(":0.0.1", ":0.0.2")
+        self.write_image()
+        combined = self.root / "combined"
+        with self.assertRaises(ValueError):
+            self.prepare(bundle_output=combined, bundle_source=source)
+        self.assertFalse(self.output.exists())
+        self.assertFalse(combined.exists())
+
+    # 工作流使用的命令行参数同时生成 R2 资产和离线交付包。
+    def test_prepare_cli_generates_both_deliveries(self):
+        source = self.bundle_source()
+        combined = self.root / "combined"
+        args = ["publish_r2.py", "prepare", "--metadata", str(self.meta_path),
+                "--image-archive", str(self.image), "--binary", str(self.binary),
+                "--output", str(self.output), "--public-base-url", BASE,
+                "--bundle-output", str(combined), "--bundle-source", str(source)]
+        identity = {"service": "mskdsp-platform", **{key: self.metadata[key] for key in ("version", "channel", "commit", "build_time")}}
+        with patch.object(sys, "argv", args), patch.object(release, "read_binary_identity", return_value=identity):
+            release.main()
+        self.assertTrue((self.output / "release.json").is_file())
+        self.assertTrue((combined / "image.tar.gz").is_file())
+        self.assertEqual((combined / "image.tar.gz").read_bytes(), self.image.read_bytes())
 
     # 程序归档只含一个普通可执行文件，镜像归档及清单中的摘要和长度准确。
     def test_prepare_tar_and_manifest(self):

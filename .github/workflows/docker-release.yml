@@ -112,8 +112,7 @@ jobs:
           docker create --name platform-extract "$IMAGE"
           docker cp platform-extract:/usr/local/bin/mskdsp-platform package/mskdsp-platform
           docker rm -v platform-extract
-          python script/publish_r2.py prepare --metadata package/metadata.json --image-archive package/image.tar.gz --binary package/mskdsp-platform --output r2 --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"
-          python script/release.py bundle --metadata package/metadata.json --archive package/image.tar.gz --output bundle
+          python script/publish_r2.py prepare --metadata package/metadata.json --image-archive package/image.tar.gz --binary package/mskdsp-platform --output r2 --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX" --bundle-output bundle
           mkdir release
           python - <<'PY'
           import os, shutil

@@ -124,6 +124,15 @@ def write_bundle(metadata: dict, archive: Path, output: Path, source: Path) -> N
     if output.exists():
         raise ValueError("交付输出目录已存在，请使用新目录避免混入旧产物")
     image_id = inspect_archive(archive, metadata)
+    image_sha256 = sha256_file(archive)
+    _write_verified_bundle(metadata, archive, output, source, image_id, image_sha256)
+
+
+def _write_verified_bundle(metadata: dict, archive: Path, output: Path, source: Path,
+                           image_id: str, image_sha256: str) -> None:
+    """仅在同一准备进程内复用已校验归档，不接受外部缓存的校验结果。"""
+    if output.exists():
+        raise ValueError("交付输出目录已存在，请使用新目录避免混入旧产物")
     output.mkdir(parents=True)
     (output / "deploy").mkdir()
     shutil.copyfile(archive, output / "image.tar.gz")
@@ -132,10 +141,15 @@ def write_bundle(metadata: dict, archive: Path, output: Path, source: Path) -> N
     updater = {"manifest_url": metadata.get("update_manifest_url") or json.loads((source / "deploy/updater.json").read_text(encoding="utf-8"))["manifest_url"]}
     (output / "deploy/updater.json").write_text(json.dumps(updater, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output / ".env").write_text(f"MSKDSP_PLATFORM_IMAGE={metadata['image']}\n", encoding="utf-8")
-    manifest = {**metadata, "schema_version": 1, "image_id": image_id, "image_archive": {"file": "image.tar.gz", "sha256": sha256_file(archive)}, "bundle_asset": metadata["artifact_name"] + ".zip"}
+    manifest = {**metadata, "schema_version": 1, "image_id": image_id, "image_archive": {"file": "image.tar.gz", "sha256": image_sha256}, "bundle_asset": metadata["artifact_name"] + ".zip"}
     (output / "latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output / "README.txt").write_text("先校验 SHA256SUMS，再运行：\ndocker load -i image.tar.gz\nsh deploy/run.sh\n打开 http://127.0.0.1:8080 使用网页手动更新；不自动检查或安装。\n默认仅绑定宿主机回环地址；跨机访问请通过受保护的网关。\n持久化卷保存已更新程序；基础镜像和管理器需单独维护。\n", encoding="utf-8")
-    checksums = [f"{sha256_file(path)}  {path.relative_to(output).as_posix()}" for path in sorted(output.rglob("*")) if path.is_file()]
+    checksums = []
+    for path in sorted(output.rglob("*")):
+        if path.is_file():
+            name = path.relative_to(output).as_posix()
+            sha = image_sha256 if name == "image.tar.gz" else sha256_file(path)
+            checksums.append(f"{sha}  {name}")
     (output / "SHA256SUMS").write_text("\n".join(checksums) + "\n", encoding="utf-8")
     print(f"离线包校验完成：版本={metadata['version']} 镜像ID={image_id} 目录={output}")
 

@@ -7,9 +7,11 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from script.release import build_metadata, inspect_archive, validate_source, write_bundle
+from script import release
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 TIME = "2026-10-13T08:00:00Z"
@@ -125,7 +127,11 @@ class ArchiveTests(unittest.TestCase):
         (source / "deploy/run.sh").write_text("docker run example\n", encoding="utf-8")
         (source / "deploy/updater.json").write_text('{"manifest_url":"https://example.com/ci/latest.json"}', encoding="utf-8")
         output = self.root / "bundle"
-        write_bundle(self.metadata, self.archive(), output, source)
+        with patch.object(release, "inspect_archive", wraps=release.inspect_archive) as inspect, \
+             patch.object(release, "sha256_file", wraps=release.sha256_file) as digest:
+            write_bundle(self.metadata, self.archive(), output, source)
+        self.assertEqual(inspect.call_count, 1)
+        self.assertEqual(sum(call.args[0].name == "image.tar.gz" for call in digest.call_args_list), 1)
         manifest = json.loads((output / "latest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["image"], self.metadata["image"])
         self.assertEqual(manifest["commit"], SHA)
