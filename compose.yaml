@@ -15,23 +15,23 @@ services:
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       MSKDSP_PLATFORM_CONFIG: /app/config.toml
+      MSKDSP_RUNTIME_DIR: /var/lib/mskdsp-platform
+      MSKDSP_PLATFORM_DATA_DIR: /var/lib/mskdsp-platform/data
+      TMPDIR: /var/lib/mskdsp-platform/tmp
+    working_dir: /var/lib/mskdsp-platform
     volumes:
-      - ./deploy/config.toml:/app/config.toml:ro
-      - ./deploy/updater.json:/app/updater.json:ro
-      - platform-runtime:/var/lib/mskdsp-platform
+      - ${MSKDSP_WORK_DIR:-/home/daniel/mskplt}/deploy/config.toml:/app/config.toml:ro
+      - ${MSKDSP_WORK_DIR:-/home/daniel/mskplt}/deploy/updater.json:/app/updater.json:ro
+      - ${MSKDSP_WORK_DIR:-/home/daniel/mskplt}/runtime:/var/lib/mskdsp-platform
+      - ${MSKDSP_WORK_DIR:-/home/daniel/mskplt}/runtime/tmp:/tmp
     ports:
-      - "127.0.0.1:${MSKDSP_HTTP_PORT:-8080}:8080"
-      - "127.0.0.1:${MSKDSP_GRPC_PORT:-50000}:50000"
+      - "${MSKDSP_BIND_ADDRESS:-127.0.0.1}:${MSKDSP_HTTP_PORT:-8080}:8080"
+      - "${MSKDSP_BIND_ADDRESS:-127.0.0.1}:${MSKDSP_GRPC_PORT:-50000}:50000"
     init: true
     restart: unless-stopped
     read_only: true
-    tmpfs:
-      - /tmp
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 30s
-
-volumes:
-  platform-runtime:

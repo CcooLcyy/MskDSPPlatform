@@ -40,11 +40,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl libgcc-s1 python3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin platform \
-    && mkdir -p /var/lib/mskdsp-platform/releases \
+    && mkdir -p /var/lib/mskdsp-platform/releases /var/lib/mskdsp-platform/data \
+        /var/lib/mskdsp-platform/logs /var/lib/mskdsp-platform/tmp \
     && touch /var/lib/mskdsp-platform/.keep \
     && chown -R 10001:10001 /var/lib/mskdsp-platform
 
-WORKDIR /app
+WORKDIR /var/lib/mskdsp-platform
 COPY --from=builder /build/target/release/mskdsp-platform /usr/local/bin/mskdsp-platform
 COPY deploy/config.toml /app/config.toml
 COPY script/runtime.py script/update_common.py /opt/mskdsp-manager/
@@ -53,6 +54,7 @@ ENV MSKDSP_PLATFORM_CONFIG=/app/config.toml \
     MSKDSP_UPDATER_CONFIG=/app/updater.json \
     MSKDSP_RUNTIME_DIR=/var/lib/mskdsp-platform \
     MSKDSP_PLATFORM_DATA_DIR=/var/lib/mskdsp-platform/data \
+    TMPDIR=/var/lib/mskdsp-platform/tmp \
     MSKDSP_MANAGER_LISTEN=0.0.0.0:8080 \
     MSKDSP_CHILD_HTTP_ADDR=127.0.0.1:8081 \
     PYTHONDONTWRITEBYTECODE=1 \

@@ -63,6 +63,7 @@ class ManagerTests(unittest.TestCase):
         self.identity_mock.start()
         self.addCleanup(self.identity_mock.stop)
         self.manager = runtime.Manager(self.folder / "runtime", self.config, config=self.platform_config, seed=self.folder / "seed")
+        self.addCleanup(self.manager.close)
         lock = mock.patch.object(runtime.common, "file_lock", return_value=nullcontext())
         lock.start()
         self.addCleanup(lock.stop)
@@ -157,11 +158,112 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(child.wait.call_count, 2)
 
     def test_real_child_is_reaped_on_close(self):
-        child = runtime.subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        self.manager.child = child
+        popen = runtime.subprocess.Popen
+        def child_process(*args, **kwargs):
+            return popen([sys.executable, "-c", "import time; time.sleep(60)"], **kwargs)
+        with mock.patch.object(runtime.subprocess, "Popen", side_effect=child_process):
+            self.manager.launch()
+        child, reader = self.manager.child, self.manager.child_reader
         self.manager.close()
         self.assertIsNotNone(child.poll())
         self.assertIsNone(self.manager.child)
+        self.assertFalse(reader.is_alive())
+        self.assertTrue(child.stdout.closed)
+
+    # 管理日志落盘保留中文，同时 Docker 控制台仍能看到生命周期信息。
+    def test_manager_logs_are_persistent_and_visible_on_console(self):
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as console:
+            self.manager.log("测试管理进程日志")
+        self.assertIn("测试管理进程日志", console.getvalue())
+        self.assertIn("测试管理进程日志", (self.manager.runtime_dir / "logs" / "manager.log").read_text(encoding="utf-8"))
+
+    # 管理日志长消息同样有界，有限历史不会随运行时间持续增长。
+    def test_manager_large_messages_are_rotated(self):
+        handler = self.manager.logs.manager.handlers[0]
+        handler.maxBytes, handler.backupCount = 20 * 1024, 2
+        with mock.patch("sys.stdout", new_callable=io.StringIO):
+            for _ in range(100):
+                self.manager.log("管理日志" * 2048)
+        paths = list((self.manager.runtime_dir / "logs").glob("manager.log*"))
+        self.assertEqual(len(paths), 3)
+        self.assertTrue(all(path.stat().st_size <= 20 * 1024 for path in paths))
+
+    # 大量子进程输出不能填满管道；无换行输出也受到轮换限制。
+    def test_child_output_is_drained_and_rotated_with_bounded_files(self):
+        handler = self.manager.logs.platform.handlers[0]
+        handler.maxBytes, handler.backupCount = 20 * 1024, 2
+        code = "import os; os.write(1, '平台中文日志\\n'.encode()); os.write(2, b'stderr-mark\\n'); os.write(1, b'x' * (1024 * 1024)); os.write(2, b'\\nfinal-mark\\n')"
+        popen = runtime.subprocess.Popen
+        def child_process(*args, **kwargs):
+            return popen([sys.executable, "-c", code], **kwargs)
+        with mock.patch.object(runtime.subprocess, "Popen", side_effect=child_process), \
+             mock.patch("sys.stdout", new_callable=io.StringIO) as console:
+            self.manager.launch()
+            child, reader = self.manager.child, self.manager.child_reader
+            self.assertEqual(child.wait(timeout=10), 0)
+            self.manager.stop_child()
+        self.assertFalse(reader.is_alive())
+        self.assertTrue(child.stdout.closed)
+        self.assertNotIn("final-mark", console.getvalue())
+        paths = list((self.manager.runtime_dir / "logs").glob("platform.log*"))
+        self.assertEqual(len(paths), 3)
+        self.assertTrue(all(path.stat().st_size <= 20 * 1024 for path in paths))
+        self.assertIn("final-mark", (self.manager.runtime_dir / "logs" / "platform.log").read_text(encoding="utf-8"))
+
+    # 标准输出和错误输出统一保存，UTF-8 多字节字符跨读取边界不会损坏。
+    def test_child_stdout_stderr_and_split_utf8_are_saved(self):
+        raw = io.BytesIO(("x" * 4094 + "中文输出\n错误输出\n").encode("utf-8"))
+        self.manager.logs.capture(raw)
+        contents = (self.manager.runtime_dir / "logs" / "platform.log").read_text(encoding="utf-8")
+        payload = "".join(line.split("] ", 1)[1] for line in contents.splitlines())
+        self.assertIn("中文输出", payload)
+        self.assertIn("错误输出", contents)
+        self.assertNotIn("\ufffd", contents)
+        self.assertTrue(raw.closed)
+
+    # 真实子进程的标准输出与错误输出都进入同一持久日志。
+    def test_real_child_stdout_and_stderr_are_saved(self):
+        popen = runtime.subprocess.Popen
+        def child_process(*args, **kwargs):
+            return popen([sys.executable, "-c", "import os; os.write(1, '标准输出\\n'.encode()); os.write(2, '错误输出\\n'.encode())"], **kwargs)
+        with mock.patch.object(runtime.subprocess, "Popen", side_effect=child_process):
+            self.manager.launch()
+        self.assertEqual(self.manager.child.wait(timeout=10), 0)
+        self.manager.stop_child()
+        contents = (self.manager.runtime_dir / "logs" / "platform.log").read_text(encoding="utf-8")
+        self.assertIn("标准输出", contents)
+        self.assertIn("错误输出", contents)
+
+    # 关闭后迟到的工作线程日志不能重新打开文件句柄。
+    def test_logs_close_releases_files_and_late_logs_do_not_reopen(self):
+        self.manager.log("退出前日志")
+        self.manager.close()
+        with mock.patch("sys.stdout", new_callable=io.StringIO):
+            self.manager.log("退出后迟到日志")
+        self.assertTrue(all(handler.stream is None for logger in (self.manager.logs.manager, self.manager.logs.platform)
+                            for handler in logger.handlers))
+        self.assertNotIn("退出后迟到日志", (self.manager.runtime_dir / "logs" / "manager.log").read_text(encoding="utf-8"))
+
+    # 创建子进程失败不能留下活动的日志读取线程。
+    def test_failed_child_launch_does_not_leave_reader(self):
+        with mock.patch.object(runtime.subprocess, "Popen", side_effect=OSError("程序不存在")):
+            with self.assertRaises(OSError):
+                self.manager.launch()
+        self.assertIsNone(self.manager.child)
+        self.assertIsNone(self.manager.child_reader)
+
+    # 日志线程启动失败时立即杀死并回收子进程，关闭管道句柄。
+    def test_failed_reader_start_reaps_child_and_closes_pipe(self):
+        child = mock.Mock()
+        with mock.patch.object(runtime.subprocess, "Popen", return_value=child), \
+             mock.patch.object(runtime.threading.Thread, "start", side_effect=RuntimeError("线程无法启动")):
+            with self.assertRaises(RuntimeError):
+                self.manager.launch()
+        child.kill.assert_called_once()
+        child.wait.assert_called_once_with(timeout=5)
+        child.stdout.close.assert_called_once()
+        self.assertIsNone(self.manager.child)
+        self.assertIsNone(self.manager.child_reader)
 
     def test_prepare_downloads_verifies_and_cleans_temporary_files(self):
         data = manifest()

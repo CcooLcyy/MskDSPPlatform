@@ -6,7 +6,13 @@ use crate::{
     state::SessionRegistry,
 };
 use anyhow::{Context, Result};
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    ffi::OsString,
+    future::Future,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{net::TcpListener, sync::watch, time::timeout};
 use tonic::transport::Server;
 use tracing::info;
@@ -34,12 +40,20 @@ impl PlatformRuntime {
             protocol_version: protocol_version.clone(),
             auth: AdminAuth::new(self.config.auth.clone())?,
         };
-        let templates = crate::modbus_templates::TemplateStore::new(
-            std::env::var_os("MSKDSP_PLATFORM_DATA_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::path::PathBuf::from("data"))
-                .join("modbus-templates"),
-        )?;
+        let working_directory = std::env::current_dir().context("读取平台工作目录失败")?;
+        let data_root = resolve_data_root(
+            std::env::var_os("MSKDSP_PLATFORM_DATA_DIR"),
+            std::env::var_os("MSKDSP_RUNTIME_DIR"),
+            &working_directory,
+        );
+        let templates_directory = data_root.join("modbus-templates");
+        info!(
+            data_directory = %data_root.display(),
+            templates_directory = %templates_directory.display(),
+            "平台数据存储目录已确定"
+        );
+        let templates = crate::modbus_templates::TemplateStore::new(templates_directory.clone())
+            .with_context(|| format!("初始化点表存储失败：{}", templates_directory.display()))?;
         let http_router = http::router(http_state.clone())
             .merge(crate::template_http::router(http_state, templates));
         let http_listener = TcpListener::bind(self.config.server.http_addr)
@@ -76,6 +90,27 @@ impl PlatformRuntime {
         .await?;
         info!("MskDSPPlatform 基础服务已停止");
         Ok(())
+    }
+}
+
+fn resolve_data_root(
+    explicit_directory: Option<OsString>,
+    runtime_directory: Option<OsString>,
+    working_directory: &Path,
+) -> PathBuf {
+    let directory = explicit_directory
+        .filter(|directory| !directory.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            runtime_directory
+                .filter(|directory| !directory.is_empty())
+                .map(|directory| PathBuf::from(directory).join("data"))
+        })
+        .unwrap_or_else(|| PathBuf::from("data"));
+    if directory.is_absolute() {
+        directory
+    } else {
+        working_directory.join(directory)
     }
 }
 
@@ -143,6 +178,92 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::{Notify, oneshot, watch};
+
+    #[test]
+    fn data_root_explicit_directory_takes_priority() {
+        let working_directory = std::env::temp_dir().join("mskplt-app");
+        let explicit = std::env::temp_dir().join("mskplt-data");
+        let runtime = std::env::temp_dir().join("mskplt-runtime");
+        assert_eq!(
+            resolve_data_root(
+                Some(explicit.clone().into_os_string()),
+                Some(runtime.into_os_string()),
+                &working_directory,
+            ),
+            explicit,
+        );
+    }
+
+    #[test]
+    fn data_root_legacy_container_uses_runtime_directory() {
+        let working_directory = std::env::temp_dir().join("mskplt-readonly-app");
+        let runtime = std::env::temp_dir().join("mskplt-runtime");
+        assert_eq!(
+            resolve_data_root(
+                None,
+                Some(runtime.clone().into_os_string()),
+                &working_directory
+            ),
+            runtime.join("data"),
+        );
+    }
+
+    #[test]
+    fn data_root_local_fallback_is_absolute() {
+        let working_directory = std::env::temp_dir().join("mskplt-app");
+        let resolved = resolve_data_root(None, None, &working_directory);
+        assert_eq!(resolved, working_directory.join("data"));
+        assert!(resolved.is_absolute());
+    }
+
+    #[test]
+    fn data_root_relative_explicit_directory_is_resolved_from_working_directory() {
+        let working_directory = std::env::temp_dir().join("mskplt-app");
+        assert_eq!(
+            resolve_data_root(
+                Some("custom-data".into()),
+                Some("runtime".into()),
+                &working_directory
+            ),
+            working_directory.join("custom-data"),
+        );
+    }
+
+    #[test]
+    fn data_root_relative_runtime_directory_is_resolved_from_working_directory() {
+        let working_directory = std::env::temp_dir().join("mskplt-app");
+        assert_eq!(
+            resolve_data_root(None, Some("runtime".into()), &working_directory),
+            working_directory.join("runtime").join("data"),
+        );
+    }
+
+    #[test]
+    fn data_root_empty_explicit_directory_uses_runtime_directory() {
+        let working_directory = std::env::temp_dir().join("mskplt-app");
+        assert_eq!(
+            resolve_data_root(Some("".into()), Some("runtime".into()), &working_directory),
+            working_directory.join("runtime").join("data"),
+        );
+    }
+
+    #[test]
+    fn data_root_empty_runtime_directory_uses_local_fallback() {
+        let working_directory = std::env::temp_dir().join("mskplt-app");
+        assert_eq!(
+            resolve_data_root(None, Some("".into()), &working_directory),
+            working_directory.join("data"),
+        );
+    }
+
+    #[test]
+    fn data_root_empty_directories_use_local_fallback() {
+        let working_directory = std::env::temp_dir().join("mskplt-app");
+        assert_eq!(
+            resolve_data_root(Some("".into()), Some("".into()), &working_directory),
+            working_directory.join("data"),
+        );
+    }
 
     // 收到退出通知后必须等待 HTTP 与 gRPC 两个服务完成，不能只等待其中之一。
     #[tokio::test]

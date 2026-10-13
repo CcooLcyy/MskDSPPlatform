@@ -47,12 +47,16 @@ sh deploy/run.sh
 脚本使用包内 `.env` 的唯一镜像标签，不需要 Compose 或在线拉取。
 平台容器名为 `mskdsp-platform`；已有同名容器时脚本会报错，不自动接管。
 默认 HTTP `127.0.0.1:8080`、gRPC `127.0.0.1:50000`，宿主机端口可用
-`MSKDSP_HTTP_PORT`、`MSKDSP_GRPC_PORT` 调整。配置与更新源只读挂载。
-更新程序与状态保存在命名卷 `mskdsp-platform-runtime`，不要删除该卷。
-只读根文件系统下仍允许这个程序版本目录可写、可执行，进程 UID 为 10001。
-使用宿主目录替代命名卷时需预先赋予 UID 10001 写权限。
+`MSKDSP_HTTP_PORT`、`MSKDSP_GRPC_PORT` 调整，监听地址可用 `MSKDSP_BIND_ADDRESS` 调整。
+宿主机工作目录默认 `/home/daniel/mskplt`，用 `MSKDSP_WORK_DIR` 可指定其他绝对目录。
+脚本只在配置缺失时从交付包复制配置与更新源，运行时均只读挂载。
+更新程序、状态、业务数据、日志与临时文件统一保存在工作目录的 `runtime` 子目录，
+不要删除该目录。脚本为运行目录准备 UID 10001 写权限，容器根文件系统保持只读。
+目录映射与旧容器兼容规则见 [平台工作目录](docs/平台工作目录.md)。
 
-仓库 `compose.yaml` 只是可选模板，不属于默认离线交付方式。
+仓库 `compose.yaml` 只是可选模板，不属于默认离线交付方式；使用相同的宿主机工作目录。
+首次使用 Compose 前须准备 `deploy` 配置和 `runtime/data`、`runtime/logs`、`runtime/tmp`
+目录，并给予 UID 10001 写入运行目录的权限。
 不同通道部署须使用匹配的镜像和 `deploy/updater.json` 更新源；交付包会自动生成对应 URL。
 
 ## 简单更新页面

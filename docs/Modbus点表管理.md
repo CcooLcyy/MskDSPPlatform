@@ -19,7 +19,7 @@
 
 页面及全部点表接口接入平台现有管理员登录认证，未登录的页面访问跳转 `/login`，接口返回 401。写接口还需 `X-MskDSP-Action: modbus-template` 标记及同源请求；标记用于防跨源误操作，不能替代登录认证。
 
-存储目录默认 `data/modbus-templates`，支持 `MSKDSP_PLATFORM_DATA_DIR` 覆盖数据根目录；容器使用现有持久卷 `/var/lib/mskdsp-platform/data`。每条记录独立 JSON；采用同目录临时文件、同步落盘和原子重命名后返回成功。串行化写入并检查 revision。最多保存 100 张点表。存储错误不报告成功，也不自动丢弃损坏记录。时间戳为 Unix 毫秒。
+数据根目录按非空 `MSKDSP_PLATFORM_DATA_DIR`、`MSKDSP_RUNTIME_DIR/data`、当前工作目录下 `data` 的顺序选择；点表保存在其 `modbus-templates` 子目录。容器目录 `/var/lib/mskdsp-platform/data` 映射宿主机 `/home/daniel/mskplt/runtime/data`，兼容旧镜像缺少数据目录环境变量的网页更新。每条记录独立 JSON；采用同目录临时文件、同步落盘和原子重命名后返回成功。串行化写入并检查 revision。最多保存 100 张点表。存储错误不报告成功，也不自动丢弃损坏记录。时间戳为 Unix 毫秒。
 
 ## 验收与异常场景
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """单容器平台管理进程：手动更新、HTTP 代理与子进程监督。"""
+import codecs
 import copy
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import re
@@ -25,6 +28,9 @@ HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriz
 BUSY_STATES = {"checking", "updating"}
 AUTH_TIMEOUT = 2
 MAX_AUTH_RESPONSE = 4096
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUPS = 3
+LOG_CHUNK_SIZE = 4096
 
 
 class BusyError(common.UpdateError):
@@ -33,6 +39,74 @@ class BusyError(common.UpdateError):
 
 def log(message):
     print("[平台管理] " + message, flush=True)
+
+
+class Utf8RotatingFileHandler(RotatingFileHandler):
+    """标准轮换按字符估算，中文日志必须按实际 UTF-8 字节计算。"""
+    def shouldRollover(self, record):
+        if self.stream is None:
+            self.stream = self._open()
+        if self.maxBytes <= 0:
+            return False
+        self.stream.seek(0, os.SEEK_END)
+        message = (self.format(record) + self.terminator).replace("\n", os.linesep)
+        return self.stream.tell() + len(message.encode(self.encoding, errors=self.errors)) >= self.maxBytes
+
+
+class RuntimeLogs:
+    """日志仅写入运行目录，按大小轮换；子进程输出独立排空。"""
+    def __init__(self, runtime_dir):
+        directory = Path(runtime_dir) / "logs"
+        if directory.is_symlink():
+            raise common.UpdateError("日志目录不能是符号链接")
+        directory.mkdir(exist_ok=True)
+        self.guard, self.closed = threading.RLock(), False
+        self.manager, self.platform = logging.Logger("平台管理"), logging.Logger("平台子进程")
+        for logger, name in ((self.manager, "manager"), (self.platform, "platform")):
+            path = directory / (name + ".log")
+            if any(candidate.is_symlink() for candidate in (path, *(directory / (path.name + "." + str(index))
+                                                                   for index in range(1, LOG_BACKUPS + 1)))):
+                raise common.UpdateError("日志文件不能是符号链接")
+            handler = Utf8RotatingFileHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
+                                             encoding="utf-8", errors="backslashreplace", delay=True)
+            handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(message)s"))
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+            logger.addHandler(handler)
+
+    def write(self, logger, message):
+        # 限制单条记录，避免无换行或超长内容绕过文件大小限制。
+        with self.guard:
+            if not self.closed:
+                for offset in range(0, max(1, len(message)), LOG_CHUNK_SIZE):
+                    logger.info(message[offset:offset + LOG_CHUNK_SIZE])
+
+    def capture(self, stream):
+        # 不向控制台同步转发，避免 Docker 日志背压阻塞平台子进程。
+        decoder, pending = codecs.getincrementaldecoder("utf-8")("replace"), ""
+        try:
+            while chunk := stream.read(LOG_CHUNK_SIZE):
+                pending += decoder.decode(chunk)
+                while "\n" in pending:
+                    line, pending = pending.split("\n", 1)
+                    self.write(self.platform, line.rstrip("\r"))
+                while len(pending) >= LOG_CHUNK_SIZE:
+                    self.write(self.platform, pending[:LOG_CHUNK_SIZE])
+                    pending = pending[LOG_CHUNK_SIZE:]
+            pending += decoder.decode(b"", final=True)
+            if pending:
+                self.write(self.platform, pending.rstrip("\r"))
+        except OSError as exc:
+            self.write(self.manager, "读取平台子进程日志失败：" + str(exc))
+        finally:
+            stream.close()
+
+    def close(self):
+        with self.guard:
+            self.closed = True
+            for logger in (self.manager, self.platform):
+                for handler in logger.handlers:
+                    handler.close()
 
 
 def read_json(path):
@@ -101,7 +175,7 @@ class Manager:
         self.transport = transport or common.Transport()
         self.guard, self.lifecycle = threading.RLock(), threading.RLock()
         self.stopping = threading.Event()
-        self.child = self.worker = self.monitor = None
+        self.child = self.child_reader = self.worker = self.monitor = None
         self.busy, self.source_url = False, ""
         config_error = ""
         if Path(updater_config).exists():
@@ -130,6 +204,11 @@ class Manager:
             self.result.update({key: saved[key] for key in self.result if key in saved})
             if self.result["state"] in BUSY_STATES:
                 self.set_result(state="error", message="上次任务中断，已恢复最后提交版本", update_available=False)
+        self.logs = RuntimeLogs(self.runtime_dir)
+
+    def log(self, message):
+        self.logs.write(self.logs.manager, message)
+        log(message)
 
     def validate_installed(self, state):
         if not isinstance(state, dict) or any(not isinstance(state.get(key), str) for key in (*IDENTITY_FIELDS, "release")):
@@ -260,11 +339,11 @@ class Manager:
                 self.prune()
         except Exception as exc:
             message = ("新版已提交，但后续任务处理失败：" if committed else "") + str(exc)
-            log(message)
+            self.log(message)
             try:
                 self.set_result(state="error", message=message)
             except OSError as error:
-                log("保存任务结果失败：" + str(error))
+                self.log("保存任务结果失败：" + str(error))
         finally:
             with self.guard:
                 self.busy = False
@@ -279,11 +358,24 @@ class Manager:
         self.ensure_running()
         env = dict(os.environ, MSKDSP_PLATFORM_CONFIG=self.config, MSKDSP_PLATFORM_HTTP_ADDR=self.child_http)
         binary = self.binary_path(state)
-        log("启动平台子进程：" + str(binary))
-        self.child = subprocess.Popen([str(binary)], env=env, stdin=subprocess.DEVNULL)
+        self.log("启动平台子进程：" + str(binary))
+        child = subprocess.Popen([str(binary)], env=env, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        try:
+            reader = threading.Thread(target=self.logs.capture, args=(child.stdout,), daemon=True)
+            reader.start()
+        except Exception:
+            try:
+                child.kill()
+                child.wait(timeout=5)
+            finally:
+                child.stdout.close()
+            raise
+        self.child, self.child_reader = child, reader
 
     def stop_child(self):
         child, self.child = self.child, None
+        reader, self.child_reader = self.child_reader, None
         if child is not None:
             if child.poll() is None:
                 child.terminate()
@@ -294,6 +386,10 @@ class Manager:
                     child.wait(timeout=5)
             else:
                 child.wait()
+        if reader:
+            reader.join(timeout=2)
+            if reader.is_alive():
+                self.log("平台日志管道未关闭，后台线程继续排空")
 
     def healthy(self, state=None, timeout=30):
         state = state or self.current
@@ -348,10 +444,10 @@ class Manager:
                 failures = [stamp for stamp in failures if now - stamp < 60]
                 if len(failures) >= 3:
                     self.set_result(state="error", message="平台一分钟内多次退出，已停止自动重启")
-                    log("子进程异常退出，停止自动重启")
+                    self.log("子进程异常退出，停止自动重启")
                     continue
                 failures.append(now)
-                log("平台异常退出（" + str(code) + "），恢复最后提交版本")
+                self.log("平台异常退出（" + str(code) + "），恢复最后提交版本")
                 try:
                     self.launch()
                     if not self.healthy(timeout=10):
@@ -368,6 +464,8 @@ class Manager:
             self.worker.join(timeout=3)
         if self.monitor:
             self.monitor.join(timeout=2)
+        # 超时未退出的后台任务只能继续写控制台，不能重新打开已关闭的日志文件。
+        self.logs.close()
 
 
 class RuntimeServer(ThreadingHTTPServer):
@@ -376,6 +474,10 @@ class RuntimeServer(ThreadingHTTPServer):
     def __init__(self, address, manager):
         self.manager = manager
         super().__init__(address, RuntimeHandler)
+
+    def log(self, message):
+        # 代理契约测试可以使用简化管理对象，仍保留原有控制台日志。
+        getattr(self.manager, "log", log)(message)
 
 
 class RuntimeHandler(BaseHTTPRequestHandler):
@@ -386,7 +488,7 @@ class RuntimeHandler(BaseHTTPRequestHandler):
         self.connection.settimeout(15)
 
     def log_message(self, fmt, *args):
-        log("HTTP " + fmt % args)
+        self.server.log("HTTP " + fmt % args)
 
     def respond(self, status, data):
         raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -455,7 +557,7 @@ class RuntimeHandler(BaseHTTPRequestHandler):
                 return False
             raise ValueError("会话验证响应不正确")
         except (OSError, ValueError, RecursionError, http.client.HTTPException) as exc:
-            log("更新会话验证失败：" + str(exc))
+            self.server.log("更新会话验证失败：" + str(exc))
             self.respond(503, {"error": "平台会话验证暂时不可用"})
             return False
         finally:
@@ -565,12 +667,12 @@ def main():
         manager.start()
         server = RuntimeServer(listen_address(os.environ.get("MSKDSP_MANAGER_LISTEN", "0.0.0.0:8080")), manager)
         server.timeout = 0.5
-        log("网页管理服务已启动，等待手动操作")
+        manager.log("网页管理服务已启动，等待手动操作")
         while not stopped.is_set():
             server.handle_request()
         return 0
     except (common.UpdateError, OSError, subprocess.SubprocessError) as exc:
-        log("管理进程启动失败：" + str(exc))
+        (manager.log if manager else log)("管理进程启动失败：" + str(exc))
         return 1
     finally:
         if manager:
