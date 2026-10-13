@@ -5,6 +5,7 @@ use std::time::Duration;
 const MARKER: &str = "database-required.json";
 const PREVIOUS_MARKER: &str = "database-required-previous.json";
 const MARKER_BYTES: &[u8] = b"{\"storage\":\"sqlite\",\"schema_version\":1}\n";
+const TRASH_RETENTION_MILLIS: u64 = 90 * 24 * 60 * 60 * 1000;
 
 fn storage(error: impl std::fmt::Display) -> StoreError {
     StoreError::Storage(format!("点表数据库操作失败：{error}"))
@@ -78,7 +79,7 @@ pub(super) fn open_initialized(root: &Path) -> Result<Connection, StoreError> {
     let version: u32 = transaction
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(storage)?;
-    if version != 0 && version != 1 {
+    if version > 2 {
         return Err(storage("点表数据库版本不受支持"));
     }
     if version == 0 {
@@ -109,6 +110,34 @@ pub(super) fn open_initialized(root: &Path) -> Result<Connection, StoreError> {
         let indexes: u32 = transaction.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='templates_updated' AND tbl_name='templates'", [], |row| row.get(0)).map_err(storage)?;
         if indexes != 1 {
             return Err(storage("点表数据库摘要索引缺失，请恢复数据库"));
+        }
+    }
+    if version < 2 {
+        transaction.execute_batch(
+            "CREATE TABLE trash (
+                id TEXT PRIMARY KEY NOT NULL,
+                revision TEXT NOT NULL CHECK(length(revision)=20 AND revision<>'00000000000000000000'),
+                created_at TEXT NOT NULL CHECK(length(created_at)=20),
+                updated_at TEXT NOT NULL CHECK(length(updated_at)=20 AND updated_at>=created_at),
+                name TEXT NOT NULL, manufacturer TEXT NOT NULL, models_json TEXT NOT NULL,
+                protocol_version TEXT NOT NULL, address_base INTEGER NOT NULL CHECK(address_base IN (0,1)),
+                point_count INTEGER NOT NULL CHECK(point_count BETWEEN 1 AND 10000), template_json TEXT NOT NULL,
+                deleted_at TEXT NOT NULL CHECK(length(deleted_at)=20),
+                expires_at TEXT NOT NULL CHECK(length(expires_at)=20 AND expires_at>deleted_at)
+            );
+            CREATE INDEX trash_deleted ON trash(deleted_at DESC,id ASC);
+            CREATE INDEX trash_expires ON trash(expires_at);
+            PRAGMA user_version=2;"
+        ).map_err(storage)?;
+        tracing::info!(
+            previous_version = version,
+            "点表数据库已升级至版本2，启用90天回收站"
+        );
+    } else {
+        transaction.prepare("SELECT id,revision,created_at,updated_at,name,manufacturer,models_json,protocol_version,address_base,point_count,template_json,deleted_at,expires_at FROM trash LIMIT 0").map_err(storage)?;
+        let indexes: u32 = transaction.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name='trash' AND name IN ('trash_deleted','trash_expires')", [], |row| row.get(0)).map_err(storage)?;
+        if indexes != 2 {
+            return Err(storage("点表回收站索引缺失，请恢复数据库"));
         }
     }
     let state: Option<String> = transaction
@@ -418,9 +447,17 @@ pub(super) fn list(database: &mut Connection) -> Result<Vec<Value>, StoreError> 
 }
 
 pub(super) fn get(database: &Connection, id: &str) -> Result<Value, StoreError> {
+    get_stored(database, id, false)
+}
+
+fn get_stored(database: &Connection, id: &str, trash: bool) -> Result<Value, StoreError> {
     let row = database
         .query_row(
-            "SELECT revision,created_at,updated_at,template_json FROM templates WHERE id=?1",
+            if trash {
+                "SELECT revision,created_at,updated_at,template_json FROM trash WHERE id=?1"
+            } else {
+                "SELECT revision,created_at,updated_at,template_json FROM templates WHERE id=?1"
+            },
             [id],
             |row| {
                 Ok((
@@ -495,6 +532,25 @@ pub(super) fn update(
 }
 
 pub(super) fn delete(database: &mut Connection, id: &str, revision: u64) -> Result<(), StoreError> {
+    delete_with_time(database, id, revision, None)
+}
+
+#[cfg(test)]
+pub(super) fn delete_at(
+    database: &mut Connection,
+    id: &str,
+    revision: u64,
+    now: u64,
+) -> Result<(), StoreError> {
+    delete_with_time(database, id, revision, Some(now))
+}
+
+fn delete_with_time(
+    database: &mut Connection,
+    id: &str,
+    revision: u64,
+    now: Option<u64>,
+) -> Result<(), StoreError> {
     let transaction = database
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(storage)?;
@@ -508,6 +564,14 @@ pub(super) fn delete(database: &mut Connection, id: &str, revision: u64) -> Resu
     if parse_number(current)? != revision {
         return Err(StoreError::Conflict);
     }
+    let next = revision
+        .checked_add(1)
+        .ok_or_else(|| storage("点表版本号已达到上限"))?;
+    let deleted_at = now.map_or_else(now_millis, Ok)?;
+    let expires_at = deleted_at
+        .checked_add(TRASH_RETENTION_MILLIS)
+        .ok_or_else(|| storage("回收站到期时间超出支持范围"))?;
+    transaction.execute("INSERT INTO trash SELECT id,?2,created_at,updated_at,name,manufacturer,models_json,protocol_version,address_base,point_count,template_json,?3,?4 FROM templates WHERE id=?1", params![id, number(next), number(deleted_at), number(expires_at)]).map_err(storage)?;
     transaction
         .execute(
             "DELETE FROM templates WHERE id=?1 AND revision=?2",
@@ -515,6 +579,161 @@ pub(super) fn delete(database: &mut Connection, id: &str, revision: u64) -> Resu
         )
         .map_err(storage)?;
     transaction.commit().map_err(storage)?;
-    tracing::info!(id, "数据库点表已删除");
+    tracing::info!(
+        id,
+        revision = next,
+        deleted_at,
+        expires_at,
+        "数据库点表已移入回收站，保留90天"
+    );
     Ok(())
+}
+
+fn purge_in_transaction(database: &Connection, now: u64) -> Result<usize, StoreError> {
+    let count = database
+        .execute("DELETE FROM trash WHERE expires_at<=?1", [number(now)])
+        .map_err(storage)?;
+    if count > 0 {
+        tracing::info!(count, "到期点表回收站记录已永久清理");
+    }
+    Ok(count)
+}
+
+pub(super) fn purge_expired(database: &mut Connection) -> Result<usize, StoreError> {
+    let transaction = database
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage)?;
+    let count = purge_in_transaction(&transaction, now_millis()?)?;
+    transaction.commit().map_err(storage)?;
+    Ok(count)
+}
+
+pub(super) fn list_trash(database: &mut Connection) -> Result<Vec<Value>, StoreError> {
+    list_trash_with_time(database, None)
+}
+
+#[cfg(test)]
+pub(super) fn list_trash_at(database: &mut Connection, now: u64) -> Result<Vec<Value>, StoreError> {
+    list_trash_with_time(database, Some(now))
+}
+
+fn list_trash_with_time(
+    database: &mut Connection,
+    now: Option<u64>,
+) -> Result<Vec<Value>, StoreError> {
+    let transaction = database
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage)?;
+    let now = now.map_or_else(now_millis, Ok)?;
+    purge_in_transaction(&transaction, now)?;
+    let records = {
+        let mut statement = transaction.prepare("SELECT id,revision,created_at,updated_at,name,manufacturer,models_json,protocol_version,address_base,point_count,deleted_at,expires_at FROM trash WHERE expires_at>?1 ORDER BY deleted_at DESC,id ASC").map_err(storage)?;
+        let rows = statement
+            .query_map([number(now)], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, u64>(8)?,
+                    row.get::<_, u64>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                ))
+            })
+            .map_err(storage)?;
+        rows.map(|row| {
+            let (id, revision, created, updated, name, manufacturer, models, protocol, base, count, deleted, expires) = row.map_err(storage)?;
+            let models: Value = serde_json::from_str(&models).map_err(storage)?;
+            Ok(json!({"id":id,"revision":parse_number(revision)?,"created_at":parse_number(created)?,"updated_at":parse_number(updated)?,
+                "name":name,"manufacturer":manufacturer,"models":models,"protocol_version":protocol,"address_base":base,"point_count":count,
+                "deleted_at":parse_number(deleted)?,"expires_at":parse_number(expires)?}))
+        }).collect::<Result<Vec<_>,StoreError>>()?
+    };
+    transaction.commit().map_err(storage)?;
+    Ok(records)
+}
+
+pub(super) fn restore(
+    database: &mut Connection,
+    id: &str,
+    revision: u64,
+) -> Result<Value, StoreError> {
+    restore_with_time(database, id, revision, None)
+}
+
+#[cfg(test)]
+pub(super) fn restore_at(
+    database: &mut Connection,
+    id: &str,
+    revision: u64,
+    now: u64,
+) -> Result<Value, StoreError> {
+    restore_with_time(database, id, revision, Some(now))
+}
+
+fn restore_with_time(
+    database: &mut Connection,
+    id: &str,
+    revision: u64,
+    now: Option<u64>,
+) -> Result<Value, StoreError> {
+    let mut transaction = database
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage)?;
+    let now = now.map_or_else(now_millis, Ok)?;
+    purge_in_transaction(&transaction, now)?;
+    // 恢复使用保存点；恢复失败只回滚恢复本身，过期清理仍然提交。
+    let savepoint = transaction.savepoint().map_err(storage)?;
+    let result = (|| {
+        let old = get_stored(&savepoint, id, true)?;
+        if old["revision"].as_u64() != Some(revision) {
+            return Err(StoreError::Conflict);
+        }
+        let next = revision
+            .checked_add(1)
+            .ok_or_else(|| storage("点表版本号已达到上限"))?;
+        let count: usize = savepoint
+            .query_row("SELECT COUNT(*) FROM templates", [], |row| row.get(0))
+            .map_err(storage)?;
+        if count >= MAX_TEMPLATES {
+            return Err(StoreError::Capacity);
+        }
+        let exists: bool = savepoint
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM templates WHERE id=?1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(storage)?;
+        if exists {
+            return Err(StoreError::Conflict);
+        }
+        let timestamp = now.max(old["updated_at"].as_u64().unwrap());
+        savepoint.execute("INSERT INTO templates SELECT id,?2,created_at,?3,name,manufacturer,models_json,protocol_version,address_base,point_count,template_json FROM trash WHERE id=?1", params![id, number(next), number(timestamp)]).map_err(storage)?;
+        savepoint
+            .execute(
+                "DELETE FROM trash WHERE id=?1 AND revision=?2",
+                params![id, number(revision)],
+            )
+            .map_err(storage)?;
+        Ok(
+            json!({"id":id,"revision":next,"created_at":old["created_at"],"updated_at":timestamp,"template":old["template"]}),
+        )
+    })();
+    match &result {
+        Ok(_) => savepoint.commit().map_err(storage)?,
+        Err(_) => {
+            savepoint.finish().map_err(storage)?;
+        }
+    }
+    transaction.commit().map_err(storage)?;
+    if result.is_ok() {
+        tracing::info!(id, "数据库点表已从回收站恢复");
+    }
+    result
 }

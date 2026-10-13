@@ -117,6 +117,80 @@ class TemplateApiTests(unittest.TestCase):
         self.assertEqual(self.request("DELETE", path, headers={"If-Match": str(latest["revision"])})[0], 204)
         self.assertEqual(self.request("GET", path)[0], 404)
 
+    # 误删进入回收站保留九十天，重启后恢复原 ID、完整内容及创建时间。
+    def test_trash_restore_persists_and_rejects_stale_revisions(self):
+        base = "/api/v1/modbus-templates"
+        record = json.loads(self.request("POST", base, template())[1])
+        path = base + "/" + record["id"]
+        self.assertEqual(self.request("DELETE", path, headers={"If-Match": str(record["revision"])})[0], 204)
+        self.assertEqual(self.request("GET", path)[0], 404)
+        self.assertEqual(self.request("GET", path + "/download")[0], 404)
+        self.assertEqual(self.request("PUT", path, template(), {"If-Match": str(record["revision"])})[0], 404)
+        self.assertEqual(json.loads(self.request("GET", base)[1]), [])
+        status, raw, _ = self.request("GET", base + "/trash")
+        self.assertEqual(status, 200, raw)
+        trash = json.loads(raw)
+        self.assertEqual(len(trash), 1)
+        deleted = trash[0]
+        self.assertEqual(deleted["id"], record["id"])
+        self.assertEqual(deleted["revision"], record["revision"] + 1)
+        self.assertEqual(deleted["expires_at"] - deleted["deleted_at"], 90 * 24 * 60 * 60 * 1000)
+        self.assertEqual(deleted["point_count"], len(template()["points"]))
+        self.assertNotIn("template", deleted)
+        self.stop()
+        self.start()
+        self.assertEqual(json.loads(self.request("GET", base + "/trash")[1]), trash)
+        restore = base + "/trash/" + record["id"] + "/restore"
+        self.assertEqual(self.request("POST", restore)[0], 428)
+        self.assertEqual(self.request("POST", restore, headers={"If-Match": str(record["revision"])})[0], 409)
+        status, raw, _ = self.request("POST", restore, headers={"If-Match": str(deleted["revision"])})
+        self.assertEqual(status, 200, raw)
+        restored = json.loads(raw)
+        self.assertEqual(restored["id"], record["id"])
+        self.assertEqual(restored["template"], record["template"])
+        self.assertEqual(restored["created_at"], record["created_at"])
+        self.assertGreaterEqual(restored["updated_at"], record["updated_at"])
+        self.assertEqual(restored["revision"], deleted["revision"] + 1)
+        self.assertEqual(json.loads(self.request("GET", base + "/trash")[1]), [])
+        self.assertEqual(json.loads(self.request("GET", path)[1]), restored)
+        self.assertEqual(self.request("PUT", path, template(), {"If-Match": str(record["revision"])})[0], 409)
+        self.assertEqual(self.request("DELETE", path, headers={"If-Match": str(record["revision"])})[0], 409)
+        self.assertEqual(self.request("POST", restore, headers={"If-Match": str(deleted["revision"])})[0], 404)
+
+    # 回收站和恢复继承管理员认证、同源与操作标记保护，失败不丢弃记录。
+    def test_trash_requires_admin_action_origin_and_revision(self):
+        base = "/api/v1/modbus-templates"
+        record = json.loads(self.request("POST", base, template())[1])
+        self.assertEqual(self.request("DELETE", base + "/" + record["id"], headers={"If-Match": "1"})[0], 204)
+        restore = base + "/trash/" + record["id"] + "/restore"
+        self.assertEqual(self.request("GET", base + "/trash", headers={"Cookie": ""})[0], 401)
+        self.assertEqual(self.request("POST", restore, headers={"Cookie": "", "If-Match": "2"})[0], 401)
+        self.assertEqual(self.request("POST", restore, headers={"X-MskDSP-Action": "", "If-Match": "2"})[0], 403)
+        self.assertEqual(self.request("POST", restore, headers={"Origin": "https://evil.example", "If-Match": "2"})[0], 403)
+        self.assertEqual(self.request("POST", restore, headers={"If-Match": "invalid"})[0], 400)
+        self.assertEqual(len(json.loads(self.request("GET", base + "/trash")[1])), 1)
+
+    # 平台重启清理已过期回收站记录，不清理正常点表，也不能恢复过期条目。
+    def test_expired_trash_is_purged_on_restart_without_losing_active_records(self):
+        base = "/api/v1/modbus-templates"
+        deleted = json.loads(self.request("POST", base, template())[1])
+        self.assertEqual(self.request("DELETE", base + "/" + deleted["id"], headers={"If-Match": "1"})[0], 204)
+        active = json.loads(self.request("POST", base, template())[1])
+        self.stop()
+        database = self.folder / "data/modbus-templates/templates.sqlite3"
+        expires_at = int(time.time() * 1000) - 1
+        deleted_at = expires_at - 90 * 24 * 60 * 60 * 1000
+        with closing(sqlite3.connect(database)) as connection:
+            connection.execute("UPDATE trash SET deleted_at=?,expires_at=? WHERE id=?",
+                               (f"{deleted_at:020d}", f"{expires_at:020d}", deleted["id"]))
+            connection.commit()
+        self.start()
+        self.assertEqual(json.loads(self.request("GET", base + "/trash")[1]), [])
+        self.assertEqual(self.request("POST", base + "/trash/" + deleted["id"] + "/restore", headers={"If-Match": "2"})[0], 404)
+        self.assertEqual(json.loads(self.request("GET", base + "/" + active["id"])[1]), active)
+        with closing(sqlite3.connect(database)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM trash").fetchone()[0], 0)
+
     # 写操作校验标记、版本、JSON 和上位机不支持的模板，并拒绝超限文件。
     def test_invalid_requests(self):
         base = "/api/v1/modbus-templates"

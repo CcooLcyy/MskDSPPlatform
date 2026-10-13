@@ -13,7 +13,7 @@ PAGE = ROOT / "web" / "modbus-templates.html"
 class ModbusPageTests(unittest.TestCase):
     def test_page_contract(self):
         page = PAGE.read_text(encoding="utf-8")
-        for field in ("search", "template-list", "import-file", "new-template", "save", "copy-template", "download", "delete-template", "point-list", "point-editor", "add-point", "remove-point", "message", "username", "logout"):
+        for field in ("search", "template-list", "import-file", "new-template", "save", "copy-template", "download", "delete-template", "point-list", "point-editor", "add-point", "remove-point", "message", "username", "logout", "library-view", "trash-view", "library-title"):
             self.assertIn(f'id="{field}"', page)
         self.assertIn('name="viewport"', page)
         self.assertIn('href="/update"', page)
@@ -23,6 +23,8 @@ class ModbusPageTests(unittest.TestCase):
         self.assertIn("textContent", page)
         self.assertIn("If-Match", page)
         self.assertIn("X-MskDSP-Action", page)
+        self.assertIn("90 天", page)
+        self.assertNotIn("此操作无法撤销", page)
         for field in ("scale", "offset", "deadband"):
             self.assertRegex(page, rf'id="point-{field}"[^>]*type="text"')
 
@@ -168,6 +170,95 @@ const client=createTemplateClient({fetchImpl:async(url,options)=>{
         result = subprocess.run([node], input=command, capture_output=True, text=True, encoding="utf-8", timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_trash_client(self):
+        """回收站切换、版本恢复、失败与会话失效均保留未保存草稿。"""
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "页面交互测试需要 Node")
+        script = re.search(r'<script type="module">([\s\S]*?)</script>', PAGE.read_text(encoding="utf-8")).group(1)
+        library = script.split("// 页面启动")[0]
+        scenario = r'''
+const assert=require('node:assert/strict'),vm=require('node:vm');
+const context=vm.createContext({TextEncoder,AbortController,setTimeout,clearTimeout,crypto:require('node:crypto').webcrypto});
+vm.runInContext(LIBRARY+'\nthis.api={createTemplateClient,createTemplate,summary};',context);
+const {createTemplateClient,createTemplate,summary}=context.api;
+const BASE='/api/v1/modbus-templates',plain=value=>JSON.parse(JSON.stringify(value));
+const record={id:'original-id',revision:1,created_at:100,updated_at:200,template:createTemplate()};
+let active=[summary(record)],trash=[],failure=0,denyDiscard=true,redirects=0,roundedRestore=false;const calls=[];
+const response=(body,status=200)=>({ok:status>=200&&status<300,status,json:async()=>body});
+const client=createTemplateClient({onChange:()=>{},confirmDiscard:()=>!denyDiscard,onUnauthorized:()=>redirects++,fetchImpl:async(url,options)=>{
+  calls.push({url,options});
+  if(failure) return response({error:failure===422?'点表库已满':failure===404?'回收站记录不存在或已过期':'版本或会话已变化'},failure);
+  if(url==='/api/v1/auth/me')return response({username:'admin'});
+  if(url===BASE)return response(active);
+  if(url===BASE+'/trash')return response(trash);
+  if(options.method==='DELETE'){
+    active=[];trash=[{...summary(record),revision:2,deleted_at:300,expires_at:300+90*24*60*60*1000}];
+    return response(null,204);
+  }
+  if(url.endsWith('/restore')){
+    if(roundedRestore){
+      const restored=JSON.parse('{"id":"rounded-id","revision":9007199254740993,"created_at":100,"updated_at":400,"template":'+JSON.stringify(record.template)+'}');
+      active=[summary(restored)];trash=[];return response(restored);
+    }
+    const restored={...record,id:url.split('/').at(-2),revision:6,updated_at:400};
+    if(restored.id===record.id)restored.revision=3;
+    active=[summary(restored)];trash=[];return response(restored);
+  }
+  return response(record);
+}});
+(async()=>{
+  await client.refresh();await client.load(record.id);await client.remove();
+  assert.equal(client.snapshot().list.length,0);assert.equal(client.snapshot().draft,null);
+  assert.match(client.snapshot().notice,/90 天/);
+  await client.loadTrash();assert.equal(client.snapshot().view,'trash');
+  assert.equal(client.snapshot().trash[0].revision,2);assert.equal(client.snapshot().trash[0].deleted_at,300);
+  assert.equal(client.snapshot().trash[0].expires_at,300+90*24*60*60*1000);
+  await client.restore(record.id);assert.equal(client.snapshot().record.revision,3);
+  assert.equal(client.snapshot().trash.length,0);assert.equal(client.snapshot().list[0].revision,3);
+  assert.equal(calls.at(-1).url,BASE+'/trash/original-id/restore');
+  assert.equal(calls.at(-1).options.method,'POST');assert.equal(calls.at(-1).options.headers['If-Match'],'2');
+  assert.equal(calls.at(-1).options.headers['X-MskDSP-Action'],'modbus-template');
+  assert.equal(calls.at(-1).options.body,undefined);
+  // 切换视图和刷新不放弃草稿；恢复失败不能清除草稿或回收站条目。
+  client.editMetadata('name','必须保留的草稿');const draft=plain(client.snapshot().draft);
+  trash=[{...summary(record),id:'other-id',revision:5,deleted_at:300,expires_at:999}];
+  await client.loadTrash();client.showLibrary();assert.equal(client.snapshot().view,'library');
+  assert.deepEqual(plain(client.snapshot().draft),draft);
+  await client.loadTrash();await client.refresh();assert.deepEqual(plain(client.snapshot().draft),draft);
+  for(const status of [422,409,404]){
+    failure=status;await client.restore('other-id');assert.deepEqual(plain(client.snapshot().draft),draft);
+    assert.equal(client.snapshot().trash.length,1);assert.equal(client.snapshot().view,'trash');
+    assert.match(client.snapshot().error,status===422?/已满/:status===404?/过期/:/版本/);
+  }
+  failure=0;await client.restore('other-id');assert.deepEqual(plain(client.snapshot().draft),draft);
+  assert.equal(client.snapshot().dirty,true);assert.equal(client.snapshot().trash.length,0);
+  // 服务端 u64 递增版本经 JSON 解码可能舍入相同；HTTP 成功仍必须移除回收站卡片。
+  roundedRestore=true;
+  trash=[JSON.parse('{"id":"rounded-id","revision":9007199254740992,"name":"大版本点表","models":[]}')];
+  await client.loadTrash();await client.restore('rounded-id');
+  assert.equal(client.snapshot().error,'');assert.equal(client.snapshot().trash.length,0);
+  assert.equal(client.snapshot().list[0].id,'rounded-id');
+  assert.equal(client.snapshot().list[0].revision,9007199254740992);
+  assert.deepEqual(plain(client.snapshot().draft),draft);
+  // 回收站列表加载和恢复各自的 401 都停止请求，且只跳转一次登录页。
+  for(const operation of ['loadTrash','restore']){
+    let expired=false,count=0;const authCalls=[];
+    const authClient=createTemplateClient({onChange:()=>{},onUnauthorized:()=>count++,fetchImpl:async(url,options)=>{
+      authCalls.push({url,options});if(expired)return response({error:'请先登录'},401);
+      return response(url==='/api/v1/auth/me'?{username:'admin'}:url===BASE+'/trash'?[{...summary(record),revision:2}]:[]);
+    }});
+    await authClient.refresh();authClient.startNew();const original=plain(authClient.snapshot().draft);
+    if(operation==='restore')await authClient.loadTrash();expired=true;
+    await authClient[operation](record.id);assert.equal(count,1);assert.equal(authClient.snapshot().stopped,true);
+    assert.deepEqual(plain(authClient.snapshot().draft),original);const total=authCalls.length;
+    await authClient.loadTrash();await authClient.restore(record.id);await authClient.refresh();authClient.showLibrary();
+    assert.equal(authCalls.length,total);
+  }
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+        result = subprocess.run([node], input="const LIBRARY=" + json.dumps(library) + ";\n" + scenario, capture_output=True, text=True, encoding="utf-8", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_page_dom_events(self):
         """完整页面脚本跑在最小 DOM 中，检查实际表单事件及保存后的回填。"""
         node = shutil.which("node")
@@ -192,15 +283,21 @@ class Element {
 }
 const nodes=Object.fromEntries(IDS.map(id=>[id,new Element()]));
 const document={body:new Element('body'),getElementById:id=>nodes[id],createElement:tag=>new Element(tag),querySelectorAll:()=>[]};
-let status=200, finishSave, slow=false; const calls=[], windowEvents={};
+let status=200, finishSave, slow=false,trash=[],storedTemplate; const calls=[], windowEvents={};
 const response=(body,code=200)=>({ok:code>=200&&code<300,status:code,json:async()=>body});
 const window={confirm:()=>true,location:{assign:()=>{}},addEventListener:(name,listener)=>windowEvents[name]=listener,fetch:async(url,options)=>{
   calls.push({url,options});
   if(url==='/api/v1/auth/me') return response({username:'admin'});
+  if(url==='/api/v1/modbus-templates/trash') return response(trash);
+  if(url.endsWith('/restore')) {
+    if(status!==200)return response({error:'点表库已满'},status);
+    trash=[];return response({id:'trash-id',revision:6,created_at:1,updated_at:3,template:storedTemplate});
+  }
   if(options.method==='GET') return response([]);
   if(slow) return await new Promise(resolve=>finishSave=resolve);
   if(status!==200) return response({error:'版本已变化'},status);
-  return response({id:'saved-id',revision:2,created_at:1,updated_at:2,template:JSON.parse(options.body)});
+  storedTemplate=JSON.parse(options.body);
+  return response({id:'saved-id',revision:2,created_at:1,updated_at:2,template:storedTemplate});
 }};
 const context=vm.createContext({document,window,crypto:require('node:crypto').webcrypto,TextEncoder,AbortController,setTimeout,clearTimeout});
 vm.runInContext(SCRIPT+'\nthis.api={client,createTemplate};',context);
@@ -245,6 +342,25 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   await nodes['download'].dispatch('click');assert.equal(document.body.children.at(-1).href,'/api/v1/modbus-templates/saved-id/download');
   await nodes['copy-template'].dispatch('click');assert.equal(client.snapshot().record,null);
   assert.equal(nodes['download'].disabled,true);assert.notEqual(client.snapshot().draft.id,posted.id);
+  // 回收站卡片只以文本展示导入名称，显示服务端时间，切换及恢复失败保留右侧草稿。
+  storedTemplate=posted;
+  const copied=JSON.parse(JSON.stringify(client.snapshot().draft));
+  trash=[{id:'trash-id',revision:5,name:posted.name,manufacturer:'厂家',models:[],point_count:1,deleted_at:1000,expires_at:2000}];
+  await nodes['trash-view'].dispatch('click');assert.equal(nodes['library-title'].textContent,'回收站');
+  assert.equal(nodes['trash-view'].attributes['aria-pressed'],'true');
+  const card=nodes['template-list'].children[0].children[0];
+  assert.equal(card.children[0].textContent,posted.name);
+  assert.match(card.children[3].textContent,/删除：/);assert.match(card.children[4].textContent,/到期：/);
+  assert.equal(card.children[3].textContent,'删除：'+new Date(1000).toLocaleString('zh-CN'));
+  assert.equal(card.children[4].textContent,'到期：'+new Date(2000).toLocaleString('zh-CN'));
+  status=422;await card.children[5].dispatch('click');assert.match(nodes['message'].textContent,/已满/);
+  assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
+  assert.equal(nodes['template-list'].children.length,1);
+  status=200;await nodes['template-list'].children[0].children[0].children[5].dispatch('click');
+  assert.equal(nodes['list-empty'].hidden,false);assert.match(nodes['list-empty'].textContent,/回收站为空/);
+  assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
+  await nodes['library-view'].dispatch('click');assert.equal(nodes['library-title'].textContent,'全部点表');
+  assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''
         command = "const SCRIPT=" + json.dumps(script) + ";\nconst IDS=" + json.dumps(identifiers) + ";\n" + scenario

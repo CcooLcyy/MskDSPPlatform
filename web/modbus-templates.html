@@ -100,11 +100,14 @@
     fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
     .actions { margin-top: 14px; }
     .library-actions button { flex: 1; }
+    .library-actions button[aria-pressed="true"] { border-color: var(--selected-border); background: var(--selected); }
     #template-list { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 10px; max-height: 65vh; overflow: auto; }
     .template-card { width: 100%; text-align: left; font-weight: 400; display: grid; gap: 4px; padding: 13px; overflow-wrap: anywhere; }
     .template-card strong { font-size: 15px; color: var(--text); }
     .template-card[aria-pressed="true"] { border-color: var(--selected-border); background: var(--selected); }
     .template-card span { color: var(--muted); font-size: 12px; }
+    .trash-card { border: 1px solid var(--control-border); border-radius: 8px; background: var(--subtle); }
+    .trash-card button { justify-self: start; }
     #message { margin: 0 0 18px; padding: 13px 16px; border: 1px solid var(--border); background: var(--notice); border-radius: 10px; overflow-wrap: anywhere; }
     #message.error { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-border); }
     .editor-actions { position: sticky; bottom: 12px; background: var(--sticky); padding: 12px; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 3px 16px var(--shadow); }
@@ -138,10 +141,12 @@
     <div id="message" role="status" aria-live="polite">正在读取点表库…</div>
     <div class="layout">
       <section aria-label="点表库列表">
-        <div class="section-heading"><h2>全部点表</h2><button id="refresh" type="button">刷新</button></div>
+        <div class="section-heading"><h2 id="library-title">全部点表</h2><button id="refresh" type="button">刷新</button></div>
+        <div class="actions library-actions" role="group" aria-label="点表库视图"><button id="library-view" type="button" aria-pressed="true">全部点表</button><button id="trash-view" type="button" aria-pressed="false">回收站</button></div>
         <label>搜索名称、厂家、型号或协议<input id="search" type="search" placeholder="搜索点表" autocomplete="off"></label>
         <div class="actions library-actions"><button id="new-template" type="button">新建</button><button id="import" type="button">导入 JSON</button><input id="import-file" type="file" accept=".json,application/json" hidden></div>
         <p class="hint">点表库最多 1000 张，每张最多 10 MiB / 10000 点。导入后可先检查，点击保存才写入点表库。</p>
+        <p class="hint">删除的点表在回收站保留 90 天，可在到期前恢复；回收站不占点表库名额。切换视图不会丢弃右侧草稿。</p>
         <ul id="template-list"></ul>
         <p id="list-empty" class="muted" hidden>暂无点表。新建或导入上位机模板开始使用。</p>
       </section>
@@ -323,16 +328,16 @@ function summary(record) {
   return {id:record.id,revision:record.revision,created_at:record.created_at,updated_at:record.updated_at,name,manufacturer,models,protocol_version,address_base,point_count:points.length};
 }
 function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,onUnauthorized = () => {}}) {
-  let list = [], record = null, draft = null, baseline = '', pending = false, error = '', notice = '', conflict = false, username = '', authorized = false, stopped = false;
+  let list = [], trash = [], view = 'library', record = null, draft = null, baseline = '', pending = false, error = '', notice = '', conflict = false, username = '', authorized = false, stopped = false;
   const dirty = () => draft !== null && JSON.stringify(draft) !== baseline;
-  const snapshot = () => ({list,record,draft,dirty:dirty(),pending,error,notice,conflict,username,authorized,stopped});
+  const snapshot = () => ({list,trash,view,record,draft,dirty:dirty(),pending,error,notice,conflict,username,authorized,stopped});
   const notify = () => onChange(snapshot());
   const editable = () => !pending && authorized && !stopped;
   const canLeave = () => editable() && (!dirty() || confirmDiscard());
-  function fail(cause) {
+  function fail(cause, restoring = false) {
     conflict = cause.httpStatus === 409 || cause.httpStatus === 428;
     error = cause.httpStatus ? cause.message : cause.name === 'AbortError' ? '请求超时，草稿已保留。请检查网络后重试。' : `无法连接平台，草稿已保留。${cause.message ? ' 请检查网络后重试。' : ''}`;
-    if (conflict) error += ' 当前草稿已保留。请先下载已保存版本进行核对，或重新读取最新版本（将放弃草稿）。';
+    if (conflict) error += restoring ? ' 回收站记录和当前草稿已保留。请刷新回收站后重试。' : ' 当前草稿已保留。请先下载已保存版本进行核对，或重新读取最新版本（将放弃草稿）。';
   }
   async function request(url, method = 'GET', body, revision, action = 'modbus-template') {
     const controller = new AbortController();
@@ -354,10 +359,10 @@ function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,on
       return result;
     } finally { clearTimeout(timer); }
   }
-  async function run(operation) {
+  async function run(operation, restoring = false) {
     if (pending || stopped) return;
     pending = true; error = ''; notice = ''; conflict = false; notify();
-    try { await operation(); } catch (cause) { fail(cause); }
+    try { await operation(); } catch (cause) { fail(cause,restoring); }
     finally { pending = false; notify(); }
   }
   function adopt(value) {
@@ -365,19 +370,46 @@ function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,on
     const next = validateTemplate(value.template);
     record = {...value,template:next}; draft = clone(next); baseline = JSON.stringify(draft);
   }
+  async function authenticate() {
+    if (authorized) return;
+    const user = await request('/api/v1/auth/me');
+    if (!user || typeof user.username !== 'string') throw new Error('无法确认当前登录会话');
+    username = user.username; authorized = true;
+  }
+  async function readList(target) {
+    const result = await request(target === 'trash' ? `${BASE}/trash` : BASE);
+    if (!Array.isArray(result)) throw new Error('点表接口返回了无法识别的列表');
+    if (target === 'trash') trash = result; else list = result;
+    notice = target === 'trash' ? `回收站有 ${trash.length} 张点表，删除后 90 天内可恢复。` : `已读取 ${list.length} 张点表。`;
+  }
   const client = {
     snapshot,
     async refresh() {
       await run(async () => {
-        if (!authorized) {
-          const user = await request('/api/v1/auth/me');
-          if (!user || typeof user.username !== 'string') throw new Error('无法确认当前登录会话');
-          username = user.username; authorized = true;
-        }
-        const result = await request(BASE);
-        if (!Array.isArray(result)) throw new Error('点表接口返回了无法识别的列表');
-        list = result; notice = `已读取 ${list.length} 张点表。`;
+        await authenticate(); await readList(view);
       });
+    },
+    showLibrary() {
+      if (!editable()) return;
+      view = 'library'; notify();
+    },
+    async loadTrash() {
+      await run(async () => { await authenticate(); await readList('trash'); view = 'trash'; });
+    },
+    async restore(id) {
+      if (!editable()) return;
+      const item = trash.find(value => value.id === id);
+      if (!item) return;
+      await run(async () => {
+        const restored = await request(`${BASE}/trash/${encodeURIComponent(id)}/restore`,'POST',undefined,item.revision);
+        if (!restored || restored.id !== id || !Number.isInteger(restored.revision)) throw new Error('恢复接口返回了无法识别的记录');
+        const template = validateTemplate(restored.template);
+        const value = {...restored,template};
+        list = [summary(value),...list.filter(existing => existing.id !== id)]; trash = trash.filter(existing => existing.id !== id);
+        // 恢复只更新目录，已有草稿继续保留；没有编辑内容时才回填恢复记录。
+        if (!draft) adopt(value);
+        notice = '点表已恢复到全部点表，原有草稿保持不变。';
+      },true);
     },
     async load(id) {
       if (!canLeave()) return;
@@ -385,12 +417,12 @@ function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,on
     },
     startNew() {
       if (!canLeave()) return false;
-      record = null; draft = createTemplate(); baseline = ''; error = ''; conflict = false; notice = '新建点表草稿，保存后加入点表库。'; notify(); return true;
+      view = 'library'; record = null; draft = createTemplate(); baseline = ''; error = ''; conflict = false; notice = '新建点表草稿，保存后加入点表库。'; notify(); return true;
     },
     copyTemplate() {
       if (!editable() || !draft) return;
       draft = clone(draft); draft.id = createId(); draft.name = `${draft.name.slice(0,252)} 副本`;
-      record = null; baseline = ''; error = ''; conflict = false; notice = '已生成使用新模板 ID 的副本，点击保存加入点表库。'; notify();
+      view = 'library'; record = null; baseline = ''; error = ''; conflict = false; notice = '已生成使用新模板 ID 的副本，点击保存加入点表库。'; notify();
     },
     async importFile(file) {
       if (!file || !canLeave()) return;
@@ -398,7 +430,7 @@ function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,on
         if (file.size > MAX_BYTES) { const cause = new Error('模板文件不能超过 10 MiB'); cause.httpStatus = 422; throw cause; }
         let imported;
         try { imported = parseTemplate(await file.text()); } catch (cause) { cause.httpStatus = 422; throw cause; }
-        record = null; draft = imported; baseline = ''; notice = `已导入 ${draft.points.length} 个点位。检查后点击保存加入点表库。`;
+        view = 'library'; record = null; draft = imported; baseline = ''; notice = `已导入 ${draft.points.length} 个点位。检查后点击保存加入点表库。`;
       });
     },
     editMetadata(key,value) {
@@ -430,14 +462,14 @@ function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,on
         try { value = validateTemplate(draft); } catch (cause) { cause.httpStatus = 422; throw cause; }
         const url = record ? `${BASE}/${encodeURIComponent(record.id)}` : BASE;
         adopt(await request(url,record ? 'PUT' : 'POST',value,record?.revision));
-        list = [summary(record),...list.filter(item => item.id !== record.id)]; notice = '点表已保存。';
+        view = 'library'; list = [summary(record),...list.filter(item => item.id !== record.id)]; notice = '点表已保存。';
       });
     },
     async remove() {
       if (!editable() || !record) return;
       await run(async () => {
         const id = record.id; await request(`${BASE}/${encodeURIComponent(id)}`,'DELETE',undefined,record.revision);
-        list = list.filter(item => item.id !== id); record = null; draft = null; baseline = ''; notice = '点表已删除。';
+        list = list.filter(item => item.id !== id); record = null; draft = null; baseline = ''; notice = '点表已移入回收站，90 天内可恢复已保存内容。';
       });
     },
     async logout() {
@@ -462,18 +494,28 @@ function formatTime(value) {
 }
 function confirmDiscard() { return window.confirm('有未保存的修改。是否放弃当前草稿？'); }
 function renderList(state) {
-  const items = filterTemplates(state.list,element('search').value);
-  const fingerprint = JSON.stringify([items,state.record?.id,state.pending,state.authorized]);
+  const collection = state.view === 'trash' ? state.trash : state.list;
+  const items = filterTemplates(collection,element('search').value);
+  const fingerprint = JSON.stringify([state.view,items,state.record?.id,state.pending,state.authorized]);
   if (fingerprint === renderedList) return;
   renderedList = fingerprint; element('template-list').replaceChildren();
+  element('library-title').textContent = state.view === 'trash' ? '回收站' : '全部点表';
+  element('library-view').setAttribute('aria-pressed',String(state.view === 'library'));
+  element('trash-view').setAttribute('aria-pressed',String(state.view === 'trash'));
   for (const item of items) {
+    if (state.view === 'trash') {
+      const row = make('li'), card = make('div',undefined,'template-card trash-card'), restore = make('button','恢复点表'); restore.type = 'button';
+      restore.disabled = state.pending || !state.authorized;
+      card.append(make('strong',item.name),make('span',`${item.manufacturer || '未填写厂家'} · ${(item.models || []).join(' / ') || '未填写型号'}`),make('span',`${item.point_count} 点 · 版本 ${item.revision}`),make('span',`删除：${formatTime(item.deleted_at)}`),make('span',`到期：${formatTime(item.expires_at)}`),restore);
+      restore.addEventListener('click',() => client.restore(item.id)); row.append(card); element('template-list').append(row); continue;
+    }
     const row = make('li'), button = make('button',undefined,'template-card'); button.type = 'button';
     button.setAttribute('aria-pressed',String(item.id === state.record?.id)); button.disabled = state.pending || !state.authorized;
     button.append(make('strong',item.name),make('span',`${item.manufacturer || '未填写厂家'} · ${(item.models || []).join(' / ') || '未填写型号'}`),make('span',`${item.point_count} 点 · ${item.address_base} 基 · ${item.protocol_version || '未填写协议'}`),make('span',`更新：${formatTime(item.updated_at)} · 版本 ${item.revision}`));
     button.addEventListener('click',() => client.load(item.id)); row.append(button); element('template-list').append(row);
   }
   element('list-empty').hidden = items.length > 0;
-  element('list-empty').textContent = state.list.length ? '没有匹配的点表。' : '暂无点表。新建或导入上位机模板开始使用。';
+  element('list-empty').textContent = collection.length ? '没有匹配的点表。' : state.view === 'trash' ? '回收站为空。删除的点表会在这里保留 90 天。' : '暂无点表。新建或导入上位机模板开始使用。';
 }
 function pointValues(point) {
   for (const key of POINT_FIELDS) element(`point-${key}`).value = point[key] ?? '';
@@ -531,7 +573,7 @@ function render(state) {
   element('message').textContent = state.error || (state.pending ? '正在处理，请稍候…' : state.notice || '选择或导入一张点表开始编辑。');
   element('message').classList.toggle('error',Boolean(state.error));
   element('editor-panel').setAttribute('aria-busy',String(state.pending));
-  for (const id of ['new-template','import','refresh','logout']) element(id).disabled = state.pending || state.stopped || (id !== 'refresh' && !state.authorized);
+  for (const id of ['new-template','import','refresh','logout','library-view','trash-view']) element(id).disabled = state.pending || state.stopped || (id !== 'refresh' && !state.authorized);
   element('import-file').disabled = state.pending || !state.authorized;
   renderList(state);
   element('editor').hidden = !state.draft; element('editor-empty').hidden = Boolean(state.draft);
@@ -569,6 +611,8 @@ for (const key of [...POINT_FIELDS,'default_selected','condition','enum_value','
 element('search').addEventListener('input',() => renderList(client.snapshot()));
 element('point-search').addEventListener('input',() => { if (client.snapshot().draft) renderPoints(client.snapshot()); });
 element('refresh').addEventListener('click',() => client.refresh());
+element('library-view').addEventListener('click',() => client.showLibrary());
+element('trash-view').addEventListener('click',() => client.loadTrash());
 element('new-template').addEventListener('click',() => client.startNew());
 element('import').addEventListener('click',() => element('import-file').click());
 element('import-file').addEventListener('change',async event => { await client.importFile(event.target.files[0]); event.target.value = ''; });
@@ -585,7 +629,7 @@ element('add-note').addEventListener('click',() => client.editMetadata('notes',[
 element('add-source').addEventListener('click',() => client.editMetadata('sources',[...client.snapshot().draft.sources,{file:'',sha256:''}]));
 element('delete-template').addEventListener('click',() => {
   const state = client.snapshot();
-  if (state.record && window.confirm(`确认删除点表“${state.record.template.name}”？此操作无法撤销。${state.dirty ? '未保存草稿也会被删除。' : ''}`)) client.remove();
+  if (state.record && window.confirm(`确认将点表“${state.record.template.name}”移入回收站？已保存内容在 90 天内可恢复。${state.dirty ? '未保存草稿将被丢弃，无法从回收站恢复。' : ''}`)) client.remove();
 });
 element('download').addEventListener('click',() => {
   const state = client.snapshot();

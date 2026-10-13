@@ -405,7 +405,7 @@ impl TemplateStore {
     }
 
     pub async fn initialize(&self) -> Result<(), StoreError> {
-        self.run(|_| Ok(())).await
+        self.purge_expired().await.map(|_| ())
     }
 
     pub async fn list(&self) -> Result<Vec<Value>, StoreError> {
@@ -442,6 +442,21 @@ impl TemplateStore {
         let id = id.to_owned();
         self.run(move |database| sqlite::delete(database, &id, revision))
             .await
+    }
+
+    pub async fn list_trash(&self) -> Result<Vec<Value>, StoreError> {
+        self.run(sqlite::list_trash).await
+    }
+
+    pub async fn restore(&self, id: &str, revision: u64) -> Result<Value, StoreError> {
+        valid_platform_id(id)?;
+        let id = id.to_owned();
+        self.run(move |database| sqlite::restore(database, &id, revision))
+            .await
+    }
+
+    pub async fn purge_expired(&self) -> Result<usize, StoreError> {
+        self.run(sqlite::purge_expired).await
     }
 }
 
@@ -869,6 +884,286 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleted_record_moves_to_trash_and_restores_full_data_with_new_revision() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let record = store.create(template()).await.unwrap();
+        let id = record["id"].as_str().unwrap();
+        store.delete(id, 1).await.unwrap();
+        assert!(store.list().await.unwrap().is_empty());
+        assert!(matches!(store.get(id).await, Err(StoreError::NotFound)));
+        let trash = store.list_trash().await.unwrap();
+        assert_eq!(trash.len(), 1);
+        assert_eq!(trash[0]["id"], id);
+        assert_eq!(trash[0]["revision"], 2);
+        assert_eq!(
+            trash[0]["expires_at"].as_u64().unwrap() - trash[0]["deleted_at"].as_u64().unwrap(),
+            7_776_000_000
+        );
+        assert!(trash[0].get("template").is_none());
+        assert!(matches!(
+            store.restore(id, 1).await,
+            Err(StoreError::Conflict)
+        ));
+        let restored = directory.store().restore(id, 2).await.unwrap();
+        assert_eq!(restored["id"], record["id"]);
+        assert_eq!(restored["created_at"], record["created_at"]);
+        assert_eq!(restored["revision"], 3);
+        assert_eq!(restored["template"], record["template"]);
+        assert!(store.list_trash().await.unwrap().is_empty());
+        store.delete(id, 3).await.unwrap();
+        assert_eq!(store.list_trash().await.unwrap()[0]["revision"], 4);
+    }
+
+    #[tokio::test]
+    async fn trash_ninety_day_expiration_is_exact_and_expired_restore_purges_record() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let record = store.create(template()).await.unwrap();
+        let id = record["id"].as_str().unwrap().to_owned();
+        store
+            .run(move |database| {
+                let deleted_at = 1700000000000;
+                let expires_at = deleted_at + 7_776_000_000;
+                sqlite::delete_at(database, &id, 1, deleted_at)?;
+                assert_eq!(sqlite::list_trash_at(database, expires_at - 1)?.len(), 1);
+                assert!(matches!(
+                    sqlite::restore_at(database, &id, 2, expires_at),
+                    Err(StoreError::NotFound)
+                ));
+                let count: usize = database
+                    .query_row("SELECT COUNT(*) FROM trash", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(
+                    count, 0,
+                    "到期恢复请求必须实际永久清理，不能因404回滚清理事务"
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn trash_overflow_refuses_delete_without_losing_active_record() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let record = store.create(template()).await.unwrap();
+        let id = record["id"].as_str().unwrap().to_owned();
+        store
+            .run(move |database| {
+                assert!(matches!(
+                    sqlite::delete_at(database, &id, 1, u64::MAX - 7_776_000_000 + 1),
+                    Err(StoreError::Storage(_))
+                ));
+                assert_eq!(sqlite::get(database, &id)?["revision"], 1);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(store.list_trash().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn future_updated_time_does_not_extend_retention_and_restore_keeps_it() {
+        let directory = TestDirectory::new();
+        let id = Uuid::new_v4().to_string();
+        let mut record = legacy_record(&id);
+        record["created_at"] = json!(u64::MAX - 1);
+        record["updated_at"] = json!(u64::MAX);
+        fs::write(
+            directory.0.join(format!("{id}.json")),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        let store = directory.store();
+        store.delete(&id, 7).await.unwrap();
+        let trash = store.list_trash().await.unwrap();
+        assert_eq!(
+            trash[0]["expires_at"].as_u64().unwrap() - trash[0]["deleted_at"].as_u64().unwrap(),
+            7_776_000_000
+        );
+        assert!(trash[0]["deleted_at"].as_u64().unwrap() < u64::MAX - 7_776_000_000);
+        assert_eq!(trash[0]["updated_at"], u64::MAX);
+        let restored = store.restore(&id, 8).await.unwrap();
+        assert_eq!(restored["updated_at"], u64::MAX);
+        assert_eq!(restored["revision"], 9);
+        assert_eq!(restored["template"], record["template"]);
+    }
+
+    #[tokio::test]
+    async fn restore_just_before_expiration_succeeds_and_explicit_and_startup_purge_remove_expired()
+    {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let record = store.create(template()).await.unwrap();
+        let id = record["id"].as_str().unwrap().to_owned();
+        let saved_id = id.clone();
+        store
+            .run(move |database| {
+                let deleted_at = 1700000000000;
+                sqlite::delete_at(database, &id, 1, deleted_at)?;
+                let restored =
+                    sqlite::restore_at(database, &id, 2, deleted_at + 7_776_000_000 - 1)?;
+                assert_eq!(restored["revision"], 3);
+                sqlite::delete_at(database, &id, 3, deleted_at)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(store.purge_expired().await.unwrap(), 1);
+        assert_eq!(store.purge_expired().await.unwrap(), 0);
+        assert!(matches!(
+            store.restore(&saved_id, 4).await,
+            Err(StoreError::NotFound)
+        ));
+        let record = store.create(template()).await.unwrap();
+        let id = record["id"].as_str().unwrap().to_owned();
+        store
+            .run(move |database| sqlite::delete_at(database, &id, 1, 1700000000000))
+            .await
+            .unwrap();
+        directory.store().initialize().await.unwrap();
+        store
+            .run(|database| {
+                let count: usize = database
+                    .query_row("SELECT COUNT(*) FROM trash", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(count, 0, "启动初始化必须永久清理已过期回收站记录");
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn independent_stores_cannot_restore_same_record_twice() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let independent = directory.store();
+        let record = store.create(template()).await.unwrap();
+        let id = record["id"].as_str().unwrap();
+        store.delete(id, 1).await.unwrap();
+        let (left, right) = tokio::join!(store.restore(id, 2), independent.restore(id, 2));
+        assert_ne!(left.is_ok(), right.is_ok());
+        let error = left.err().or_else(|| right.err()).unwrap();
+        assert!(matches!(error, StoreError::NotFound));
+        assert_eq!(store.get(id).await.unwrap()["revision"], 3);
+        assert!(store.list_trash().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn simultaneous_restore_respects_last_active_slot_and_preserves_failed_trash() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let left = store.create(template()).await.unwrap();
+        let right = store.create(template()).await.unwrap();
+        let left_id = left["id"].as_str().unwrap();
+        let right_id = right["id"].as_str().unwrap();
+        store.delete(left_id, 1).await.unwrap();
+        store.delete(right_id, 1).await.unwrap();
+        store.create(template()).await.unwrap();
+        store.run(|database| {
+            let transaction = database.transaction().unwrap();
+            for _ in 1..MAX_TEMPLATES - 1 {
+                transaction.execute("INSERT INTO templates SELECT ?1,revision,created_at,updated_at,name,manufacturer,models_json,protocol_version,address_base,point_count,template_json FROM templates LIMIT 1", [Uuid::new_v4().to_string()]).unwrap();
+            }
+            transaction.commit().unwrap();
+            Ok(())
+        }).await.unwrap();
+        let independent = directory.store();
+        let (left, right) =
+            tokio::join!(store.restore(left_id, 2), independent.restore(right_id, 2));
+        assert_ne!(left.is_ok(), right.is_ok());
+        assert!(matches!(
+            left.err().or_else(|| right.err()).unwrap(),
+            StoreError::Capacity
+        ));
+        assert_eq!(store.list().await.unwrap().len(), MAX_TEMPLATES);
+        assert_eq!(store.list_trash().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn restore_storage_failure_rolls_back_insert_and_keeps_trash_while_committing_expiration_cleanup()
+     {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let target = store.create(template()).await.unwrap();
+        let expired = store.create(template()).await.unwrap();
+        let target_id = target["id"].as_str().unwrap().to_owned();
+        let expired_id = expired["id"].as_str().unwrap().to_owned();
+        store.delete(&target_id, 1).await.unwrap();
+        let trigger_id = target_id.clone();
+        store.run(move |database| {
+            sqlite::delete_at(database, &expired_id, 1, 1700000000000)?;
+            database.execute_batch(&format!("CREATE TRIGGER restore_failure BEFORE DELETE ON trash WHEN OLD.id='{trigger_id}' BEGIN SELECT RAISE(ABORT,'模拟恢复存储故障'); END;")).unwrap();
+            Ok(())
+        }).await.unwrap();
+        assert!(matches!(
+            store.restore(&target_id, 2).await,
+            Err(StoreError::Storage(_))
+        ));
+        assert!(matches!(
+            store.get(&target_id).await,
+            Err(StoreError::NotFound)
+        ));
+        store
+            .run(|database| {
+                let count: usize = database
+                    .query_row("SELECT COUNT(*) FROM trash", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(count, 1, "存储故障必须回滚恢复插入，同时提交已过期记录清理");
+                database
+                    .execute("DROP TRIGGER restore_failure", [])
+                    .unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let trash = store.list_trash().await.unwrap();
+        assert_eq!(trash[0]["revision"], 2);
+        let restored = store.restore(&target_id, 2).await.unwrap();
+        assert_eq!(restored["template"], target["template"]);
+        assert_eq!(restored["revision"], 3);
+    }
+
+    #[tokio::test]
+    async fn database_v1_upgrade_preserves_rows_and_v2_missing_trash_is_rejected() {
+        let directory = TestDirectory::new();
+        let record = directory.store().create(template()).await.unwrap();
+        let id = record["id"].as_str().unwrap();
+        {
+            let database =
+                rusqlite::Connection::open(directory.0.join("templates.sqlite3")).unwrap();
+            database.execute("DROP TABLE trash", []).unwrap();
+            database.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let reopened = directory.store();
+        reopened.initialize().await.unwrap();
+        assert_eq!(reopened.get(id).await.unwrap(), record);
+        assert!(reopened.list_trash().await.unwrap().is_empty());
+        {
+            let database =
+                rusqlite::Connection::open(directory.0.join("templates.sqlite3")).unwrap();
+            let version: u32 = database
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 2);
+            database.execute("DROP TABLE trash", []).unwrap();
+        }
+        assert!(reopened.initialize().await.is_err());
+        let database = rusqlite::Connection::open(directory.0.join("templates.sqlite3")).unwrap();
+        let tables: u32 = database
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='trash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "不能把v2回收站缺表的数据损坏自动修成空回收站");
+    }
+
+    #[tokio::test]
     async fn rejects_unsafe_ids_and_reports_corruption_without_erasing_it() {
         let directory = TestDirectory::new();
         let store = directory.store();
@@ -1084,7 +1379,11 @@ mod tests {
             store.update(&id, u64::MAX, template()).await,
             Err(StoreError::Storage(_))
         ));
-        store.delete(&id, u64::MAX).await.unwrap();
+        assert!(matches!(
+            store.delete(&id, u64::MAX).await,
+            Err(StoreError::Storage(_))
+        ));
+        assert_eq!(store.get(&id).await.unwrap(), updated);
     }
 
     #[tokio::test]

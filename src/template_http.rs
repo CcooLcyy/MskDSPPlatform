@@ -9,7 +9,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde_json::{Value, json};
 use tracing::{info, warn};
@@ -26,6 +26,8 @@ pub fn router(auth: HttpState, templates: TemplateStore) -> Router {
     let state = TemplateState { auth, templates };
     Router::new()
         .route("/api/v1/modbus-templates", get(list).post(create))
+        .route("/api/v1/modbus-templates/trash", get(list_trash))
+        .route("/api/v1/modbus-templates/trash/{id}/restore", post(restore))
         .route(
             "/api/v1/modbus-templates/{id}",
             get(detail).put(update).delete(delete),
@@ -108,7 +110,7 @@ fn revision(headers: &HeaderMap) -> Result<u64, RequestError> {
     if values.is_empty() {
         return Err(request_error(
             StatusCode::PRECONDITION_REQUIRED,
-            "请提供点表版本后再保存或删除",
+            "请提供点表版本后再保存、删除或恢复",
         ));
     }
     if values.len() != 1 {
@@ -138,6 +140,34 @@ fn body(value: Result<Json<Value>, JsonRejection>) -> Result<Value, RequestError
 async fn list(State(state): State<TemplateState>) -> Response {
     match state.templates.list().await {
         Ok(records) => Json(records).into_response(),
+        Err(failure) => storage_error(failure),
+    }
+}
+
+async fn list_trash(State(state): State<TemplateState>) -> Response {
+    match state.templates.list_trash().await {
+        Ok(records) => Json(records).into_response(),
+        Err(failure) => storage_error(failure),
+    }
+}
+
+async fn restore(
+    State(state): State<TemplateState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = action(&headers) {
+        return response.into_response();
+    }
+    let revision = match revision(&headers) {
+        Ok(value) => value,
+        Err(response) => return response.into_response(),
+    };
+    match state.templates.restore(&id, revision).await {
+        Ok(record) => {
+            info!(id, revision = %record["revision"], "Modbus 点表已从回收站恢复");
+            Json(record).into_response()
+        }
         Err(failure) => storage_error(failure),
     }
 }
@@ -210,7 +240,7 @@ async fn delete(
     };
     match state.templates.delete(&id, revision).await {
         Ok(()) => {
-            info!(id = %id, revision, "Modbus 点表已删除");
+            info!(id = %id, revision, "Modbus 点表已移入回收站，保留90天");
             StatusCode::NO_CONTENT.into_response()
         }
         Err(failure) => storage_error(failure),

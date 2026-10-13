@@ -15,7 +15,7 @@ use std::{
 };
 use tokio::{net::TcpListener, sync::watch, time::timeout};
 use tonic::transport::Server;
-use tracing::info;
+use tracing::{info, warn};
 
 pub struct PlatformRuntime {
     config: AppConfig,
@@ -59,7 +59,7 @@ impl PlatformRuntime {
             .await
             .with_context(|| format!("初始化点表数据库失败：{}", templates_directory.display()))?;
         let http_router = http::router(http_state.clone())
-            .merge(crate::template_http::router(http_state, templates));
+            .merge(crate::template_http::router(http_state, templates.clone()));
         let http_listener = TcpListener::bind(self.config.server.http_addr)
             .await
             .with_context(|| format!("绑定 HTTP 地址失败: {}", self.config.server.http_addr))?;
@@ -84,16 +84,57 @@ impl PlatformRuntime {
                 .await
                 .context("gRPC 服务异常退出")
         };
-        run_services(
+        let mut maintenance = tokio::task::JoinSet::new();
+        let cleanup_shutdown = shutdown_tx.subscribe();
+        maintenance.spawn(run_trash_maintenance(
+            move || {
+                let templates = templates.clone();
+                async move { templates.purge_expired().await }
+            },
+            Duration::from_secs(3600),
+            cleanup_shutdown,
+        ));
+        let result = run_services(
             http_service,
             grpc_service,
             shutdown_signal(),
             shutdown_tx,
             Duration::from_secs(self.config.server.shutdown_timeout_seconds),
         )
-        .await?;
+        .await;
+        // 无论服务正常结束、失败还是任务被取消，后台清理都随所属运行时结束。
+        maintenance.abort_all();
+        while maintenance.join_next().await.is_some() {}
+        result?;
         info!("MskDSPPlatform 基础服务已停止");
         Ok(())
+    }
+}
+
+async fn run_trash_maintenance<P, F>(
+    mut purge: P,
+    period: Duration,
+    shutdown: watch::Receiver<bool>,
+) where
+    P: FnMut() -> F,
+    F: Future<Output = Result<usize, crate::modbus_templates::StoreError>>,
+{
+    let mut interval = tokio::time::interval(period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let stopping = wait_for_shutdown(shutdown);
+    tokio::pin!(stopping);
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut stopping => break,
+            _ = interval.tick() => {
+                match purge().await {
+                    Ok(count) if count > 0 => info!(count, "点表回收站过期记录已清理"),
+                    Ok(_) => {},
+                    Err(error) => warn!(error = %error, "点表回收站定时清理失败，将在下次定时任务重试"),
+                }
+            }
+        }
     }
 }
 
@@ -180,7 +221,7 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::{Notify, oneshot, watch};
 
     #[test]
@@ -321,5 +362,60 @@ mod tests {
         )
         .await;
         assert!(result.unwrap_err().to_string().contains("停止服务超时"));
+    }
+
+    // 定时清理一次失败后仍继续重试，退出信号终止任务，不能留下后台循环。
+    #[tokio::test]
+    async fn trash_maintenance_retries_errors_and_stops_on_shutdown() {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let retried = Arc::new(Notify::new());
+        let observed_calls = calls.clone();
+        let observed_retry = retried.clone();
+        let task = tokio::spawn(run_trash_maintenance(
+            move || {
+                let count = observed_calls.fetch_add(1, Ordering::SeqCst);
+                let retried = observed_retry.clone();
+                async move {
+                    if count == 0 {
+                        Err(crate::modbus_templates::StoreError::Storage(
+                            "模拟存储失败".into(),
+                        ))
+                    } else {
+                        retried.notify_one();
+                        Ok(1)
+                    }
+                }
+            },
+            Duration::from_millis(5),
+            shutdown_rx,
+        ));
+        timeout(Duration::from_secs(1), retried.notified())
+            .await
+            .unwrap();
+        shutdown_tx.send(true).unwrap();
+        timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(calls.load(Ordering::SeqCst) >= 2);
+    }
+
+    // 已收到停止通知时不得先执行新的清理事务。
+    #[tokio::test]
+    async fn trash_maintenance_skips_work_after_shutdown() {
+        let (_, shutdown_rx) = watch::channel(true);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        run_trash_maintenance(
+            move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                async { Ok(0) }
+            },
+            Duration::from_secs(3600),
+            shutdown_rx,
+        )
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

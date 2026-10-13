@@ -40,7 +40,8 @@ MskDSP 的服务端平台，面向上位机、下位机和后续网页管理端�
 ## 开发原则
 
 平台提供 [Modbus 点表管理](docs/Modbus点表管理.md) 页面 `/modbus-templates`，可保存上位机导出的 JSON 点表模板，
-支持新建、逐点编辑、导入、下载及删除，最多 1000 张、每张 10000 点及 10 MiB。
+支持新建、逐点编辑、导入、下载及回收站恢复，最多 1000 张、每张 10000 点及 10 MiB。
+删除后在 SQLite 回收站保留 90 天，到期不可恢复并定时清理；回收站不占正常点表库名额。
 默认使用 `data/modbus-templates/templates.sqlite3` SQLite 数据库，旧 JSON 自动导入后清理原文件及迁移备份，
 通过 `MSKDSP_PLATFORM_DATA_DIR` 设置数据根目录；未设置时优先使用 `MSKDSP_RUNTIME_DIR/data`，兼容旧容器更新。
 Docker 部署的宿主机工作目录统一为 `/home/daniel/mskplt`，配置与所有平台运行文件保存在其子目录内，程序更新和容器重建后仍保留。详见 [平台工作目录](docs/平台工作目录.md)。
