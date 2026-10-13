@@ -4,8 +4,10 @@ mod config;
 mod error;
 mod grpc;
 mod http;
+mod modbus_templates;
 mod runtime;
 mod state;
+mod template_http;
 
 use anyhow::Result;
 use config::AppConfig;

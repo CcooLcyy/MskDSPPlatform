@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MskDSPPlatform · Modbus 点表库</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3f5f8; color: #172638; font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { width: min(1380px, calc(100% - 40px)); margin: 34px auto; }
+    header, nav, .actions, .section-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    header { justify-content: space-between; margin-bottom: 24px; }
+    .brand, .muted, .hint { color: #627286; font-size: 13px; }
+    nav a { color: #516277; padding: 7px 13px; text-decoration: none; border-radius: 8px; }
+    nav a[aria-current] { background: #e9f0ff; color: #2455bc; font-weight: 650; }
+    h1 { font-size: 28px; line-height: 1.3; margin: 0 0 8px; }
+    h2 { font-size: 18px; margin: 0; }
+    h3 { font-size: 15px; margin: 0; }
+    .intro { color: #516277; margin: 0 0 22px; }
+    .layout { display: grid; grid-template-columns: 310px minmax(0, 1fr); gap: 20px; align-items: start; }
+    section, .panel { background: white; border: 1px solid #dce3eb; border-radius: 16px; padding: 22px; box-shadow: 0 8px 30px #17304b06; }
+    .section-heading { justify-content: space-between; margin-bottom: 16px; }
+    button { border: 1px solid #c6d0de; border-radius: 8px; background: white; color: #243d59; font: inherit; font-weight: 600; padding: 8px 13px; cursor: pointer; }
+    button.primary { background: #2563eb; color: white; border-color: #2563eb; }
+    button.danger { color: #ad2b37; }
+    button:hover:not(:disabled) { filter: brightness(.95); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button:focus-visible, a:focus-visible { outline: 3px solid #8bb5ff; outline-offset: 2px; }
+    input, select, textarea { width: 100%; min-width: 0; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px 10px; background: white; color: #172638; font: inherit; }
+    input:focus, select:focus, textarea:focus { outline: 2px solid #9cbdff; border-color: #4b7de5; }
+    input:disabled, select:disabled, textarea:disabled { background: #f2f5f8; color: #627286; }
+    textarea { resize: vertical; min-height: 72px; }
+    label { display: block; color: #516277; font-size: 13px; }
+    label input, label select, label textarea { margin-top: 5px; font-size: 14px; }
+    .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .wide { grid-column: 1 / -1; }
+    fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+    .actions { margin-top: 14px; }
+    .library-actions button { flex: 1; }
+    #template-list { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 10px; max-height: 65vh; overflow: auto; }
+    .template-card { width: 100%; text-align: left; font-weight: 400; display: grid; gap: 4px; padding: 13px; overflow-wrap: anywhere; }
+    .template-card strong { font-size: 15px; color: #243d59; }
+    .template-card[aria-pressed="true"] { border-color: #6090ee; background: #f2f6ff; }
+    .template-card span { color: #627286; font-size: 12px; }
+    #message { margin: 0 0 18px; padding: 13px 16px; border: 1px solid #dbe5f0; background: #eef3fa; border-radius: 10px; overflow-wrap: anywhere; }
+    #message.error { color: #a52c34; background: #fff1f2; border-color: #f2cbd0; }
+    .editor-actions { position: sticky; bottom: 12px; background: #fffffff2; padding: 12px; border: 1px solid #dce3eb; border-radius: 10px; box-shadow: 0 3px 16px #17304b0d; }
+    #draft-status { margin-right: auto; color: #627286; font-size: 13px; }
+    details { margin-top: 20px; padding-top: 14px; border-top: 1px solid #e4eaf1; }
+    summary { color: #3f5873; cursor: pointer; }
+    .array-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; margin: 10px 0; }
+    .source-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) auto; }
+    .point-area { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(0, 2fr); gap: 18px; margin-top: 16px; }
+    #point-list { display: grid; align-content: start; gap: 6px; max-height: 530px; overflow: auto; }
+    .point-row { text-align: left; display: grid; font-weight: 400; gap: 2px; overflow-wrap: anywhere; }
+    .point-row small { font-size: 12px; color: #627286; }
+    .point-row[aria-pressed="true"] { background: #eaf1ff; border-color: #6090ee; }
+    .point-form { padding: 16px; background: #f8fafc; border: 1px solid #e0e6ee; border-radius: 10px; }
+    .check-label { display: flex; align-items: center; gap: 7px; }
+    .check-label input { width: auto; margin: 0; }
+    .point-heading { border-top: 1px solid #e4eaf1; padding-top: 20px; margin-top: 20px; }
+    footer { color: #68788a; font-size: 13px; margin-top: 18px; }
+    [hidden] { display: none !important; }
+    @media (max-width: 1050px) { .layout { grid-template-columns: 250px minmax(0, 1fr); } .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .point-area { grid-template-columns: 1fr; } #point-list { max-height: 220px; } }
+    @media (max-width: 720px) { main { width: calc(100% - 24px); margin: 20px auto; } .layout { grid-template-columns: 1fr; } section { padding: 18px; } #template-list { max-height: 300px; } .source-row { grid-template-columns: 1fr; } .editor-actions { bottom: 6px; } .editor-actions button { flex: 1; } #draft-status { width: 100%; } }
+    @media (max-width: 420px) { .form-grid { grid-template-columns: 1fr; } h1 { font-size: 24px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header><div class="brand">MskDSPPlatform</div><nav aria-label="平台导航"><a href="/modbus-templates" aria-current="page">点表库</a><a href="/update">程序更新</a><span id="username" class="muted"></span><button id="logout" type="button" disabled>退出登录</button></nav></header>
+    <h1>Modbus 点表库</h1>
+    <p class="intro">管理 RTU / TCP 共用点表，导入、编辑并下载上位机兼容的 JSON 模板。</p>
+    <div id="message" role="status" aria-live="polite">正在读取点表库…</div>
+    <div class="layout">
+      <section aria-label="点表库列表">
+        <div class="section-heading"><h2>全部点表</h2><button id="refresh" type="button">刷新</button></div>
+        <label>搜索名称、厂家、型号或协议<input id="search" type="search" placeholder="搜索点表" autocomplete="off"></label>
+        <div class="actions library-actions"><button id="new-template" type="button">新建</button><button id="import" type="button">导入 JSON</button><input id="import-file" type="file" accept=".json,application/json" hidden></div>
+        <p class="hint">最多 2 MiB / 2000 点。导入后可先检查，点击保存才写入点表库。</p>
+        <ul id="template-list"></ul>
+        <p id="list-empty" class="muted" hidden>暂无点表。新建或导入上位机模板开始使用。</p>
+      </section>
+      <section id="editor-panel" aria-label="点表编辑器">
+        <div id="editor-empty" class="muted">选择左侧点表查看详情，或新建一张点表。</div>
+        <div id="editor" hidden>
+          <div class="section-heading"><h2>点表详情</h2><span id="record-info" class="muted"></span></div>
+          <fieldset id="metadata" class="form-grid">
+            <label>模板 ID<input id="meta-id" type="text" maxlength="128" autocomplete="off"></label>
+            <label>模板名称<input id="meta-name" type="text" maxlength="256"></label>
+            <label>厂家<input id="meta-manufacturer" type="text" maxlength="256"></label>
+            <label>协议版本<input id="meta-protocol_version" type="text" maxlength="256"></label>
+            <label>地址基准<select id="meta-address_base"><option value="0">0 基地址</option><option value="1">1 基地址</option></select></label>
+            <label>型号（每行一个）<textarea id="meta-models" rows="2"></textarea></label>
+          </fieldset>
+          <p class="hint">上位机已有相同模板 ID 时，请修改模板 ID 后保存，再下载导入。内置模板也需使用新的 ID；可点击“另存为新模板”生成副本。</p>
+          <details><summary>模板说明与来源文件</summary><p class="hint">导入的说明与 SHA256 将随模板完整保留。</p><div id="notes"></div><button id="add-note" type="button">添加说明</button><div id="sources"></div><button id="add-source" type="button">添加来源</button></details>
+          <div class="section-heading point-heading"><h2 id="point-count">点位</h2><button id="add-point" type="button">添加点位</button></div>
+          <label>搜索点位<input id="point-search" type="search" placeholder="标签 / 分组 / 地址" autocomplete="off"></label>
+          <div class="point-area">
+            <div id="point-list" role="group" aria-label="选择编辑点位"></div>
+            <fieldset id="point-editor" class="point-form">
+              <div class="section-heading"><h3 id="point-title">点位编辑</h3><button id="remove-point" class="danger" type="button">删除点位</button></div>
+              <div class="form-grid">
+                <label>点位 ID<input id="point-id" type="text" maxlength="128"></label>
+                <label>标签<input id="point-tag" type="text" maxlength="256"></label>
+                <label>分组<input id="point-group" type="text" maxlength="256"></label>
+                <label>单位<input id="point-unit" type="text" maxlength="64"></label>
+                <label>功能码<select id="point-function_code"><option value="1">01 · 读线圈</option><option value="3">03 · 读保持寄存器</option><option value="4">04 · 读输入寄存器</option><option value="5">05 · 写单线圈</option><option value="6">06 · 写单寄存器</option><option value="16">16 · 写多寄存器</option></select></label>
+                <label>地址<input id="point-address" type="text" inputmode="numeric"></label>
+                <label>数据类型<select id="point-data_type"><option>BOOL</option><option>UINT16</option><option>UINT32</option><option>INT16</option><option>INT32</option></select></label>
+                <label>寄存器数量<select id="point-reg_count"><option value="1">1</option><option value="2">2</option></select></label>
+                <label>倍率<input id="point-scale" type="text" placeholder="1 或 1e-3" spellcheck="false"></label>
+                <label>偏移<input id="point-offset" type="text" spellcheck="false"></label>
+                <label>死区<input id="point-deadband" type="text" spellcheck="false"></label>
+                <label>字序<select id="point-word_order"><option>HL</option><option>LH</option></select></label>
+                <label>字节序<select id="point-byte_order"><option>AB</option><option>BA</option></select></label>
+                <label>位索引（空为无）<input id="point-bit_index" type="text" inputmode="numeric"></label>
+                <label>来源页码<input id="point-source_page" type="text" inputmode="numeric"></label>
+                <label>默认选择<select id="point-default_selected"><option value="">未指定（使用上位机默认行为）</option><option value="true">选中</option><option value="false">不选中</option></select></label>
+                <label class="wide">点位说明<textarea id="point-description" maxlength="4096" rows="2"></textarea></label>
+                <div class="wide"><label class="check-label"><input id="point-condition_enabled" type="checkbox">保存适用条件（可选）</label><label>适用条件<textarea id="point-condition" maxlength="4096" rows="2"></textarea></label></div>
+                <div class="wide"><label class="check-label"><input id="point-enum_enabled" type="checkbox">保存枚举相等值（可选）</label><label>枚举相等值（空为 null，0 是有效值）<input id="point-enum_value" type="text" inputmode="numeric"></label></div>
+              </div>
+              <p class="hint">倍率 / 偏移 / 死区保留原始字符串与精度。位索引和枚举仅适用于寄存器 BOOL；两者不能同时设值。</p>
+            </fieldset>
+          </div>
+          <div class="actions editor-actions"><span id="draft-status"></span><button id="save" class="primary" type="button">保存点表</button><button id="copy-template" type="button">另存为新模板</button><button id="download" type="button">下载已保存 JSON</button><button id="reload-record" type="button">重新读取</button><button id="delete-template" class="danger" type="button">删除点表</button></div>
+        </div>
+      </section>
+    </div>
+    <footer>点表保存于平台。下载的 JSON 可直接导入上位机；保存点表不会向设备下发配置。</footer>
+    <noscript>请启用 JavaScript 以管理点表。</noscript>
+  </main>
+  <script type="module">
+const MAX_BYTES = 2 * 1024 * 1024;
+const BASE = '/api/v1/modbus-templates';
+const TEMPLATE_FIELDS = ['schema_version','id','name','manufacturer','models','protocol_version','address_base','notes','sources','points'];
+const POINT_FIELDS = ['id','tag','group','unit','function_code','address','data_type','reg_count','scale','offset','deadband','word_order','byte_order','bit_index','source_page','description'];
+const OPTIONAL_FIELDS = ['default_selected','condition','enum_value'];
+const clone = value => JSON.parse(JSON.stringify(value));
+const text = value => typeof value === 'string' ? value : '';
+const has = (value, key) => Object.hasOwn(value, key);
+function object(value, fields, label, optional = []) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label}必须是对象`);
+  for (const key of Object.keys(value)) if (!fields.includes(key) && !optional.includes(key)) throw new Error(`${label}包含未允许的字段：${key}`);
+  for (const key of fields) if (!has(value,key)) throw new Error(`${label}缺少字段：${key}`);
+  return value;
+}
+function validText(value, label, empty = false, max = 256) {
+  if (typeof value !== 'string' || value.length > max || (!empty && !value.trim()) || value.includes('\0')) throw new Error(`${label}必须是有效文本（最多 ${max} 字符）`);
+}
+function integer(value, min, max, label) {
+  if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${label}必须是 ${min} 到 ${max} 的整数`);
+}
+function array(value, max, label) {
+  if (!Array.isArray(value) || value.length > max) throw new Error(`${label}必须是数组且最多 ${max} 项`);
+  return value;
+}
+function decimal(value, label) {
+  if (typeof value !== 'string' || !value || value.length > 4096) throw new Error(`${label}必须是十进制字符串（最多 4096 字符）`);
+  const match = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?)(\d+))?$/.exec(value);
+  if (!match) throw new Error(`${label}必须是完整十进制数，可使用科学计数法且不能包含空白`);
+  const exponentText = (match[6] || '0').replace(/^0+/,'') || '0';
+  if (exponentText.length > 6 || BigInt(exponentText) > 100000n) throw new Error(`${label}的指数绝对值不能超过 100000`);
+  const fraction = match[3] ?? match[4] ?? '';
+  const significant = `${match[2] || ''}${fraction}`.replace(/^0+/,'');
+  const exponent = (match[5] === '-' ? -1n : 1n) * BigInt(exponentText);
+  if (significant && BigInt(significant.length) + exponent - BigInt(fraction.length) > 100n) throw new Error(`${label}的整数部分最多 100 位`);
+  if (!Number.isFinite(Number(value))) throw new Error(`${label}必须为有限数值`);
+}
+function validateTemplate(input) {
+  if (new TextEncoder().encode(JSON.stringify(input)).length > MAX_BYTES) throw new Error('模板文件不能超过 2 MiB');
+  const data = object(input,TEMPLATE_FIELDS,'模板');
+  if (data.schema_version !== 1) throw new Error('不支持的模板版本');
+  validText(data.id,'模板 ID',false,128);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(data.id)) throw new Error('模板 ID 仅支持字母、数字、下划线、点和连字符');
+  validText(data.name,'模板名称'); validText(data.manufacturer,'厂家',true); validText(data.protocol_version,'协议版本',true);
+  integer(data.address_base,0,1,'地址基准');
+  array(data.models,100,'型号').forEach(value => validText(value,'型号'));
+  array(data.notes,100,'说明').forEach(value => validText(value,'说明',false,4096));
+  array(data.sources,20,'来源').forEach(raw => {
+    const source = object(raw,['file','sha256'],'来源'); validText(source.file,'来源文件名',false,512);
+    if (typeof source.sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(source.sha256)) throw new Error('来源 SHA256 格式不合法');
+  });
+  const ids = new Set(), tags = new Set();
+  const points = array(data.points,2000,'模板点位');
+  if (!points.length) throw new Error('模板至少需要一个点位');
+  points.forEach((raw,index) => {
+    const label = `第 ${index + 1} 个点位`;
+    const point = object(raw,POINT_FIELDS,label,OPTIONAL_FIELDS);
+    validText(point.id,`${label} ID`,false,128); validText(point.tag,`${label}标签`);
+    if (point.tag !== point.tag.trim()) throw new Error(`${label}标签首尾不能包含空白`);
+    if (ids.has(point.id) || tags.has(point.tag)) throw new Error('模板存在重复点位 ID 或标签');
+    ids.add(point.id); tags.add(point.tag);
+    const allowed = {1:['BOOL'],3:['BOOL','UINT16','UINT32','INT16','INT32'],4:['BOOL','UINT16','UINT32','INT16','INT32'],5:['BOOL'],6:['BOOL','UINT16','INT16'],16:['UINT16','UINT32','INT16','INT32']};
+    integer(point.function_code,1,16,`${label}功能码`);
+    if (!has(allowed,point.function_code)) throw new Error(`${label}包含不支持的功能码`);
+    const counts = [1,5,6].includes(point.function_code) ? [1] : point.data_type === 'BOOL' ? [1,2] : ['UINT32','INT32'].includes(point.data_type) ? [2] : [1];
+    if (!allowed[point.function_code].includes(point.data_type) || !counts.includes(point.reg_count)) throw new Error(`${label}功能码、数据类型和寄存器数量不匹配`);
+    integer(point.address,data.address_base,65535 + data.address_base - point.reg_count + 1,`${label}地址`);
+    if (point.bit_index !== null) {
+      integer(point.bit_index,0,point.reg_count*16-1,`${label}位索引`);
+      if (point.data_type !== 'BOOL' || [1,5].includes(point.function_code)) throw new Error(`${label}仅寄存器 BOOL 允许位索引`);
+    }
+    if (has(point,'enum_value') && point.enum_value !== null) {
+      integer(point.enum_value,0,point.reg_count === 1 ? 65535 : 4294967295,`${label}枚举相等值`);
+      if (point.data_type !== 'BOOL' || ![3,4].includes(point.function_code) || point.bit_index !== null) throw new Error(`${label}枚举仅支持只读寄存器 BOOL，且不能同时配置位索引`);
+    }
+    if (!['HL','LH'].includes(point.word_order) || !['AB','BA'].includes(point.byte_order)) throw new Error(`${label}字序或字节序不合法`);
+    validText(point.group,`${label}分组`,true); validText(point.unit,`${label}单位`,true,64);
+    validText(point.description,`${label}说明`,true,4096); integer(point.source_page,0,100000,`${label}来源页码`);
+    for (const [key,name] of [['scale','倍率'],['offset','偏移'],['deadband','死区']]) decimal(point[key],`${label}${name}`);
+    if (has(point,'default_selected') && typeof point.default_selected !== 'boolean') throw new Error(`${label}默认选择必须为布尔值`);
+    if (has(point,'condition')) validText(point.condition,`${label}适用条件`,true,4096);
+  });
+  return clone(data);
+}
+function parseTemplate(value) {
+  if (new TextEncoder().encode(value).length > MAX_BYTES) throw new Error('模板文件不能超过 2 MiB');
+  let parsed;
+  try { parsed = JSON.parse(value.replace(/^\uFEFF/,'')); } catch { throw new Error('模板文件不是合法 JSON'); }
+  return validateTemplate(parsed);
+}
+function createId() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes,value => value.toString(16).padStart(2,'0')).join('');
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+}
+function createPoint(base = 0, ordinal = 1) {
+  return {id:createId(),tag:`点位${ordinal}`,group:'',unit:'',function_code:3,address:base,data_type:'UINT16',reg_count:1,scale:'1',offset:'0',deadband:'0',word_order:'HL',byte_order:'AB',bit_index:null,source_page:0,description:''};
+}
+function createTemplate() {
+  return {schema_version:1,id:createId(),name:'未命名点表',manufacturer:'',models:[],protocol_version:'',address_base:0,notes:[],sources:[],points:[createPoint()]};
+}
+const integerFields = ['function_code','address','reg_count','bit_index','source_page'];
+function numericInput(value, nullable = false) {
+  if (nullable && value === '') return null;
+  return typeof value === 'number' ? value : /^\d+$/.test(value) ? Number(value) : value;
+}
+function pointFromFields(original, values) {
+  const point = {...original};
+  for (const key of POINT_FIELDS) if (has(values,key)) point[key] = integerFields.includes(key) ? numericInput(values[key], key === 'bit_index') : values[key];
+  delete point.default_selected; delete point.condition; delete point.enum_value;
+  if (values.default_selected !== '') point.default_selected = values.default_selected === 'true';
+  if (values.condition_enabled) point.condition = values.condition;
+  if (values.enum_enabled) point.enum_value = numericInput(values.enum_value,true);
+  return point;
+}
+function filterTemplates(list, query) {
+  const needle = query.trim().toLocaleLowerCase();
+  return list.filter(item => [item.name,item.manufacturer,...(item.models || []),item.protocol_version].join(' ').toLocaleLowerCase().includes(needle));
+}
+function summary(record) {
+  const {name,manufacturer,models,protocol_version,address_base,points} = record.template;
+  return {id:record.id,revision:record.revision,created_at:record.created_at,updated_at:record.updated_at,name,manufacturer,models,protocol_version,address_base,point_count:points.length};
+}
+function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,onUnauthorized = () => {}}) {
+  let list = [], record = null, draft = null, baseline = '', pending = false, error = '', notice = '', conflict = false, username = '', authorized = false, stopped = false;
+  const dirty = () => draft !== null && JSON.stringify(draft) !== baseline;
+  const snapshot = () => ({list,record,draft,dirty:dirty(),pending,error,notice,conflict,username,authorized,stopped});
+  const notify = () => onChange(snapshot());
+  const editable = () => !pending && authorized && !stopped;
+  const canLeave = () => editable() && (!dirty() || confirmDiscard());
+  function fail(cause) {
+    conflict = cause.httpStatus === 409 || cause.httpStatus === 428;
+    error = cause.httpStatus ? cause.message : cause.name === 'AbortError' ? '请求超时，草稿已保留。请检查网络后重试。' : `无法连接平台，草稿已保留。${cause.message ? ' 请检查网络后重试。' : ''}`;
+    if (conflict) error += ' 当前草稿已保留。请先下载已保存版本进行核对，或重新读取最新版本（将放弃草稿）。';
+  }
+  async function request(url, method = 'GET', body, revision, action = 'modbus-template') {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(),15000);
+    try {
+      const options = {method,cache:'no-store',credentials:'same-origin',signal:controller.signal};
+      if (method !== 'GET') {
+        options.headers = {'X-MskDSP-Action':action};
+        if (body !== undefined) { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
+        if (revision !== undefined) options.headers['If-Match'] = String(revision);
+      }
+      const response = await fetchImpl(url,options);
+      const result = response.status === 204 ? null : await response.json().catch(() => null);
+      if (!response.ok) {
+        const cause = new Error(text(result?.error) || `请求失败（HTTP ${response.status}）`); cause.httpStatus = response.status;
+        if (response.status === 401 && !stopped) { stopped = true; authorized = false; onUnauthorized(); }
+        throw cause;
+      }
+      return result;
+    } finally { clearTimeout(timer); }
+  }
+  async function run(operation) {
+    if (pending || stopped) return;
+    pending = true; error = ''; notice = ''; conflict = false; notify();
+    try { await operation(); } catch (cause) { fail(cause); }
+    finally { pending = false; notify(); }
+  }
+  function adopt(value) {
+    if (!value || typeof value.id !== 'string' || !Number.isInteger(value.revision) || !value.template) throw new Error('点表接口返回了无法识别的记录');
+    const next = validateTemplate(value.template);
+    record = {...value,template:next}; draft = clone(next); baseline = JSON.stringify(draft);
+  }
+  const client = {
+    snapshot,
+    async refresh() {
+      await run(async () => {
+        if (!authorized) {
+          const user = await request('/api/v1/auth/me');
+          if (!user || typeof user.username !== 'string') throw new Error('无法确认当前登录会话');
+          username = user.username; authorized = true;
+        }
+        const result = await request(BASE);
+        if (!Array.isArray(result)) throw new Error('点表接口返回了无法识别的列表');
+        list = result; notice = `已读取 ${list.length} 张点表。`;
+      });
+    },
+    async load(id) {
+      if (!canLeave()) return;
+      await run(async () => { adopt(await request(`${BASE}/${encodeURIComponent(id)}`)); notice = '已读取点表，可以逐点编辑。'; });
+    },
+    startNew() {
+      if (!canLeave()) return false;
+      record = null; draft = createTemplate(); baseline = ''; error = ''; conflict = false; notice = '新建点表草稿，保存后加入点表库。'; notify(); return true;
+    },
+    copyTemplate() {
+      if (!editable() || !draft) return;
+      draft = clone(draft); draft.id = createId(); draft.name = `${draft.name.slice(0,252)} 副本`;
+      record = null; baseline = ''; error = ''; conflict = false; notice = '已生成使用新模板 ID 的副本，点击保存加入点表库。'; notify();
+    },
+    async importFile(file) {
+      if (!file || !canLeave()) return;
+      await run(async () => {
+        if (file.size > MAX_BYTES) { const cause = new Error('模板文件不能超过 2 MiB'); cause.httpStatus = 422; throw cause; }
+        let imported;
+        try { imported = parseTemplate(await file.text()); } catch (cause) { cause.httpStatus = 422; throw cause; }
+        record = null; draft = imported; baseline = ''; notice = `已导入 ${draft.points.length} 个点位。检查后点击保存加入点表库。`;
+      });
+    },
+    editMetadata(key,value) {
+      if (!editable() || !draft || !TEMPLATE_FIELDS.includes(key) || ['points','schema_version'].includes(key)) return;
+      draft[key] = value; notify();
+    },
+    editPoint(index,point) {
+      if (!editable() || !draft || !draft.points[index]) return;
+      draft.points[index] = clone(point); notify();
+    },
+    addPoint() {
+      if (!editable() || !draft) return;
+      if (draft.points.length >= 2000) { error = '每张点表最多 2000 个点位'; notify(); return; }
+      let ordinal = draft.points.length + 1;
+      while (draft.points.some(point => point.tag === `点位${ordinal}`)) ordinal++;
+      const point = createPoint(draft.address_base,ordinal);
+      const last = draft.points.at(-1);
+      if (last && Number.isInteger(last.address)) point.address = Math.min(65535 + draft.address_base,last.address + (Number(last.reg_count) || 1));
+      draft.points.push(point); notify();
+    },
+    removePoint(index) {
+      if (!editable() || !draft || !draft.points[index]) return;
+      draft.points.splice(index,1); notify();
+    },
+    async save() {
+      if (!editable() || !draft) return;
+      await run(async () => {
+        let value;
+        try { value = validateTemplate(draft); } catch (cause) { cause.httpStatus = 422; throw cause; }
+        const url = record ? `${BASE}/${encodeURIComponent(record.id)}` : BASE;
+        adopt(await request(url,record ? 'PUT' : 'POST',value,record?.revision));
+        list = [summary(record),...list.filter(item => item.id !== record.id)]; notice = '点表已保存。';
+      });
+    },
+    async remove() {
+      if (!editable() || !record) return;
+      await run(async () => {
+        const id = record.id; await request(`${BASE}/${encodeURIComponent(id)}`,'DELETE',undefined,record.revision);
+        list = list.filter(item => item.id !== id); record = null; draft = null; baseline = ''; notice = '点表已删除。';
+      });
+    },
+    async logout() {
+      if (!canLeave()) return;
+      await run(async () => { await request('/api/v1/auth/logout','POST',{},undefined,'auth'); authorized = false; stopped = true; baseline = JSON.stringify(draft); onUnauthorized(); });
+    },
+  };
+  return client;
+}
+
+// 页面启动
+const element = id => document.getElementById(id);
+let selectedPoint = 0, shownDraft = null, renderedList = '', renderedPoints = '', renderedExtras = '';
+function make(tag, content, className) {
+  const node = document.createElement(tag);
+  if (content !== undefined) node.textContent = content;
+  if (className) node.className = className;
+  return node;
+}
+function formatTime(value) {
+  const date = new Date(value); return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN');
+}
+function confirmDiscard() { return window.confirm('有未保存的修改。是否放弃当前草稿？'); }
+function renderList(state) {
+  const items = filterTemplates(state.list,element('search').value);
+  const fingerprint = JSON.stringify([items,state.record?.id,state.pending,state.authorized]);
+  if (fingerprint === renderedList) return;
+  renderedList = fingerprint; element('template-list').replaceChildren();
+  for (const item of items) {
+    const row = make('li'), button = make('button',undefined,'template-card'); button.type = 'button';
+    button.setAttribute('aria-pressed',String(item.id === state.record?.id)); button.disabled = state.pending || !state.authorized;
+    button.append(make('strong',item.name),make('span',`${item.manufacturer || '未填写厂家'} · ${(item.models || []).join(' / ') || '未填写型号'}`),make('span',`${item.point_count} 点 · ${item.address_base} 基 · ${item.protocol_version || '未填写协议'}`),make('span',`更新：${formatTime(item.updated_at)} · 版本 ${item.revision}`));
+    button.addEventListener('click',() => client.load(item.id)); row.append(button); element('template-list').append(row);
+  }
+  element('list-empty').hidden = items.length > 0;
+  element('list-empty').textContent = state.list.length ? '没有匹配的点表。' : '暂无点表。新建或导入上位机模板开始使用。';
+}
+function pointValues(point) {
+  for (const key of POINT_FIELDS) element(`point-${key}`).value = point[key] ?? '';
+  element('point-default_selected').value = has(point,'default_selected') ? String(point.default_selected) : '';
+  element('point-condition_enabled').checked = has(point,'condition'); element('point-condition').value = point.condition ?? '';
+  element('point-enum_enabled').checked = has(point,'enum_value'); element('point-enum_value').value = point.enum_value ?? '';
+  element('point-condition').disabled = !has(point,'condition'); element('point-enum_value').disabled = !has(point,'enum_value');
+}
+function renderPoints(state) {
+  const points = state.draft.points;
+  if (selectedPoint >= points.length) selectedPoint = Math.max(0,points.length-1);
+  const fingerprint = JSON.stringify([points,selectedPoint,element('point-search').value,state.pending,state.authorized]);
+  if (fingerprint !== renderedPoints) {
+    renderedPoints = fingerprint; element('point-list').replaceChildren();
+    const query = element('point-search').value.trim().toLocaleLowerCase();
+    points.forEach((point,index) => {
+      if (!`${point.tag} ${point.group} ${point.address}`.toLocaleLowerCase().includes(query)) return;
+      const button = make('button',undefined,'point-row'); button.type = 'button'; button.disabled = state.pending || !state.authorized;
+      button.setAttribute('aria-pressed',String(index === selectedPoint));
+      button.append(make('span',point.tag || '未填写标签'),make('small',`${point.address} · FC ${point.function_code} · ${point.data_type}`));
+      button.addEventListener('click',() => { selectedPoint = index; pointValues(client.snapshot().draft.points[index]); render(client.snapshot()); });
+      element('point-list').append(button);
+    });
+    if (!element('point-list').childElementCount) element('point-list').append(make('p',points.length ? '没有匹配的点位。' : '暂无点位，请添加至少一个点位。','muted'));
+  }
+  element('point-count').textContent = `点位 · ${points.length} / 2000`;
+  element('point-editor').hidden = !points.length;
+  element('point-title').textContent = `编辑第 ${selectedPoint+1} 个点位`;
+  element('point-editor').disabled = state.pending || !state.authorized;
+  element('point-condition').disabled = state.pending || !state.authorized || !element('point-condition_enabled').checked;
+  element('point-enum_value').disabled = state.pending || !state.authorized || !element('point-enum_enabled').checked;
+}
+function renderExtras(state) {
+  const fingerprint = JSON.stringify([state.draft.notes,state.draft.sources]);
+  if (fingerprint !== renderedExtras) {
+    renderedExtras = fingerprint; element('notes').replaceChildren(); element('sources').replaceChildren();
+    state.draft.notes.forEach((note,index) => {
+      const row = make('div',undefined,'array-row'), label = make('label',`说明 ${index+1}`), input = make('textarea'), remove = make('button','移除'); input.value = note; input.maxLength = 4096; remove.type = 'button';
+      input.addEventListener('input',() => { const notes = [...client.snapshot().draft.notes]; notes[index] = input.value; renderedExtras = JSON.stringify([notes,client.snapshot().draft.sources]); client.editMetadata('notes',notes); });
+      remove.addEventListener('click',() => client.editMetadata('notes',client.snapshot().draft.notes.filter((_,i) => i !== index))); label.append(input); row.append(label,remove); element('notes').append(row);
+    });
+    state.draft.sources.forEach((source,index) => {
+      const row = make('div',undefined,'array-row source-row');
+      for (const [key,title,max] of [['file','来源文件名',512],['sha256','SHA256',64]]) {
+        const label = make('label',title), input = make('input'); input.type = 'text'; input.value = source[key]; input.maxLength = max;
+        input.addEventListener('input',() => { const sources = clone(client.snapshot().draft.sources); sources[index][key] = input.value; renderedExtras = JSON.stringify([client.snapshot().draft.notes,sources]); client.editMetadata('sources',sources); }); label.append(input); row.append(label);
+      }
+      const remove = make('button','移除'); remove.type = 'button'; remove.addEventListener('click',() => client.editMetadata('sources',client.snapshot().draft.sources.filter((_,i) => i !== index))); row.append(remove); element('sources').append(row);
+    });
+  }
+  for (const node of document.querySelectorAll('#notes input, #notes textarea, #notes button, #sources input, #sources button')) node.disabled = state.pending || !state.authorized;
+}
+function render(state) {
+  element('username').textContent = state.username;
+  element('message').textContent = state.error || (state.pending ? '正在处理，请稍候…' : state.notice || '选择或导入一张点表开始编辑。');
+  element('message').classList.toggle('error',Boolean(state.error));
+  element('editor-panel').setAttribute('aria-busy',String(state.pending));
+  for (const id of ['new-template','import','refresh','logout']) element(id).disabled = state.pending || state.stopped || (id !== 'refresh' && !state.authorized);
+  element('import-file').disabled = state.pending || !state.authorized;
+  renderList(state);
+  element('editor').hidden = !state.draft; element('editor-empty').hidden = Boolean(state.draft);
+  if (!state.draft) { shownDraft = null; return; }
+  if (shownDraft !== state.draft) {
+    shownDraft = state.draft; selectedPoint = 0; renderedPoints = ''; renderedExtras = ''; element('point-search').value = '';
+    for (const key of ['id','name','manufacturer','protocol_version','address_base']) element(`meta-${key}`).value = state.draft[key];
+    element('meta-models').value = state.draft.models.join('\n');
+    if (state.draft.points.length) pointValues(state.draft.points[0]);
+  }
+  element('metadata').disabled = state.pending || !state.authorized;
+  for (const id of ['save','copy-template','add-point','add-note','add-source']) element(id).disabled = state.pending || !state.authorized;
+  for (const id of ['download','delete-template','reload-record']) element(id).disabled = state.pending || !state.authorized || !state.record;
+  element('add-point').disabled ||= state.draft.points.length >= 2000;
+  element('add-note').disabled ||= state.draft.notes.length >= 100;
+  element('add-source').disabled ||= state.draft.sources.length >= 20;
+  element('record-info').textContent = state.record ? `版本 ${state.record.revision} · 更新 ${formatTime(state.record.updated_at)}` : '尚未保存';
+  element('draft-status').textContent = state.dirty ? '● 有未保存修改' : '已保存';
+  renderPoints(state); renderExtras(state);
+}
+const client = createTemplateClient({fetchImpl:window.fetch.bind(window),onChange:render,confirmDiscard,onUnauthorized:() => { window.location.assign('/login'); }});
+for (const key of ['id','name','manufacturer','protocol_version','address_base','models']) element(`meta-${key}`).addEventListener('input',event => {
+  const value = event.target.value;
+  client.editMetadata(key,key === 'address_base' ? Number(value) : key === 'models' ? value.split(/\r?\n/).filter(line => line.trim()) : value);
+});
+function editSelectedPoint() {
+  const state = client.snapshot(), point = state.draft?.points[selectedPoint];
+  if (!point || state.pending) return;
+  const values = {};
+  for (const key of [...POINT_FIELDS,'default_selected','condition','enum_value']) values[key] = element(`point-${key}`).value;
+  values.condition_enabled = element('point-condition_enabled').checked; values.enum_enabled = element('point-enum_enabled').checked;
+  client.editPoint(selectedPoint,pointFromFields(point,values));
+}
+for (const key of [...POINT_FIELDS,'default_selected','condition','enum_value','condition_enabled','enum_enabled']) element(`point-${key}`).addEventListener('input',editSelectedPoint);
+element('search').addEventListener('input',() => renderList(client.snapshot()));
+element('point-search').addEventListener('input',() => { if (client.snapshot().draft) renderPoints(client.snapshot()); });
+element('refresh').addEventListener('click',() => client.refresh());
+element('new-template').addEventListener('click',() => client.startNew());
+element('import').addEventListener('click',() => element('import-file').click());
+element('import-file').addEventListener('change',async event => { await client.importFile(event.target.files[0]); event.target.value = ''; });
+element('save').addEventListener('click',() => client.save());
+element('copy-template').addEventListener('click',() => client.copyTemplate());
+element('logout').addEventListener('click',() => client.logout());
+element('reload-record').addEventListener('click',() => { const state = client.snapshot(); if (state.record) client.load(state.record.id); });
+element('add-point').addEventListener('click',() => { const previous = client.snapshot().draft.points.length; client.addPoint(); const state = client.snapshot(); if (state.draft.points.length > previous) { selectedPoint = state.draft.points.length-1; pointValues(state.draft.points[selectedPoint]); render(state); } });
+element('remove-point').addEventListener('click',() => {
+  const point = client.snapshot().draft?.points[selectedPoint];
+  if (point && window.confirm(`删除点位“${point.tag}”？保存点表后才会生效。`)) { client.removePoint(selectedPoint); const state = client.snapshot(); if (state.draft.points.length) pointValues(state.draft.points[selectedPoint]); render(state); }
+});
+element('add-note').addEventListener('click',() => client.editMetadata('notes',[...client.snapshot().draft.notes,'']));
+element('add-source').addEventListener('click',() => client.editMetadata('sources',[...client.snapshot().draft.sources,{file:'',sha256:''}]));
+element('delete-template').addEventListener('click',() => {
+  const state = client.snapshot();
+  if (state.record && window.confirm(`确认删除点表“${state.record.template.name}”？此操作无法撤销。${state.dirty ? '未保存草稿也会被删除。' : ''}`)) client.remove();
+});
+element('download').addEventListener('click',() => {
+  const state = client.snapshot();
+  if (!state.record || state.pending || (state.dirty && !window.confirm('当前草稿尚未保存。下载内容为平台已保存版本，是否继续？'))) return;
+  const link = make('a'); link.href = `${BASE}/${encodeURIComponent(state.record.id)}/download`; link.download = `${state.record.template.id}.json`; document.body.append(link); link.click(); link.remove();
+});
+window.addEventListener('beforeunload',event => { if (client.snapshot().dirty) { event.preventDefault(); event.returnValue = ''; } });
+render(client.snapshot());
+client.refresh();
+  </script>
+</body>
+</html>

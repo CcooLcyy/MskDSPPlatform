@@ -36,6 +36,10 @@ MskDSP 的服务端平台，面向上位机、下位机和后续网页管理端�
 
 ## 开发原则
 
+平台提供 [Modbus 点表管理](docs/Modbus点表管理.md) 页面 `/modbus-templates`，可保存上位机导出的 JSON 点表模板，
+支持新建、逐点编辑、导入、下载及删除。默认存储在 `data/modbus-templates`，
+通过 `MSKDSP_PLATFORM_DATA_DIR` 设置数据根目录；Docker 使用现有持久卷保存，程序更新后仍保留。
+
 - 上位机与平台之间使用带 TLS 的 gRPC 通信。
 - 大文件使用流式上传，并在服务端校验 SHA256。
 - 现场日志和配置中的敏感信息必须脱敏。

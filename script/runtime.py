@@ -501,7 +501,10 @@ class RuntimeHandler(BaseHTTPRequestHandler):
         connection = http.client.HTTPConnection(self.server.manager.child_http, timeout=10)
         sent = False
         try:
-            raw = self.body(1024 * 1024)
+            # 点表与上位机一致支持 2 MiB，其他代理请求沿用原有上限。
+            path = urlsplit(self.path).path
+            template_request = path == "/api/v1/modbus-templates" or path.startswith("/api/v1/modbus-templates/")
+            raw = self.body((2 if template_request else 1) * 1024 * 1024)
             blocked = HOP_HEADERS | {part.strip().lower() for part in self.headers.get("Connection", "").split(",")}
             # 保留浏览器访问的 Host 以便 Rust 校验 Origin，丢弃客户端伪造的代理身份头。
             headers = {name: value for name, value in self.headers.items()

@@ -34,6 +34,14 @@ impl PlatformRuntime {
             protocol_version: protocol_version.clone(),
             auth: AdminAuth::new(self.config.auth.clone())?,
         };
+        let templates = crate::modbus_templates::TemplateStore::new(
+            std::env::var_os("MSKDSP_PLATFORM_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("data"))
+                .join("modbus-templates"),
+        )?;
+        let http_router = http::router(http_state.clone())
+            .merge(crate::template_http::router(http_state, templates));
         let http_listener = TcpListener::bind(self.config.server.http_addr)
             .await
             .with_context(|| format!("绑定 HTTP 地址失败: {}", self.config.server.http_addr))?;
@@ -46,7 +54,7 @@ impl PlatformRuntime {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let http_shutdown = shutdown_rx.clone();
         let http_service = async move {
-            axum::serve(http_listener, http::router(http_state))
+            axum::serve(http_listener, http_router)
                 .with_graceful_shutdown(wait_for_shutdown(http_shutdown))
                 .await
                 .context("HTTP 服务异常退出")

@@ -26,6 +26,7 @@ pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/", get(update_page))
         .route("/update", get(update_page))
+        .route("/modbus-templates", get(crate::template_http::page))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_admin,

@@ -52,6 +52,7 @@ RUN UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL}" python3 -c 'import json,os; ope
 ENV MSKDSP_PLATFORM_CONFIG=/app/config.toml \
     MSKDSP_UPDATER_CONFIG=/app/updater.json \
     MSKDSP_RUNTIME_DIR=/var/lib/mskdsp-platform \
+    MSKDSP_PLATFORM_DATA_DIR=/var/lib/mskdsp-platform/data \
     MSKDSP_MANAGER_LISTEN=0.0.0.0:8080 \
     MSKDSP_CHILD_HTTP_ADDR=127.0.0.1:8081 \
     PYTHONDONTWRITEBYTECODE=1 \
