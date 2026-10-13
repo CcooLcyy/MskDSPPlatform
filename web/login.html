@@ -3,28 +3,91 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
+  <script id="theme-script">
+// 在首屏绘制前恢复主题，所有页面使用同一份偏好。
+(() => {
+  const key = 'mskdsp-platform-theme';
+  const valid = value => ['system', 'light', 'dark'].includes(value);
+  const system = window.matchMedia('(prefers-color-scheme: dark)');
+  let preference = 'system';
+  try {
+    const saved = window.localStorage.getItem(key);
+    if (valid(saved)) preference = saved;
+  } catch { /* 存储受限时仍可在当前页面切换主题。 */ }
+  function apply() {
+    document.documentElement.dataset.theme = preference === 'system' ? (system.matches ? 'dark' : 'light') : preference;
+    const select = document.getElementById('theme-select');
+    if (select) select.value = preference;
+  }
+  apply();
+  system.addEventListener('change', apply);
+  window.addEventListener('storage', event => {
+    if (event.key !== key && event.key !== null) return;
+    preference = valid(event.newValue) ? event.newValue : 'system';
+    apply();
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    const select = document.getElementById('theme-select');
+    apply();
+    select.addEventListener('change', () => {
+      preference = valid(select.value) ? select.value : 'system';
+      try { window.localStorage.setItem(key, preference); }
+      catch { /* 保存失败不影响当前页面的显示。 */ }
+      apply();
+    });
+  });
+})();
+  </script>
   <title>MskDSPPlatform · 管理员登录</title>
   <style>
+    /* 三个页面共用语义色，系统主题在脚本不可用时仍然生效。 */
+    :root { color-scheme: light;
+      --page: #f3f5f8; --text: #172638; --muted: #516277;
+      --surface: #ffffff; --subtle: #f4f7fb; --border: #dce3eb; --control-border: #c6d0de;
+      --selected: #e9f0ff; --selected-border: #6090ee; --link: #2455bc;
+      --notice: #eef3fa; --danger: #a52c34; --danger-bg: #fff1f2; --danger-border: #f2cbd0;
+      --warning: #9b4b1b; --focus: #8bb5ff; --sticky: #fffffff2; --shadow: #17304b0d; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { color-scheme: dark;
+      --page: #0f1723; --text: #e5edf7; --muted: #a6b5c8;
+      --surface: #182334; --subtle: #121d2c; --border: #35465d; --control-border: #536780;
+      --selected: #233b60; --selected-border: #78a7ff; --link: #9fc1ff;
+      --notice: #1b304a; --danger: #ffadb7; --danger-bg: #3c202d; --danger-border: #98505d;
+      --warning: #ffc18d; --focus: #8bb5ff; --sticky: #182334f2; --shadow: #00000033; }
+    }
+    :root[data-theme="dark"] { color-scheme: dark;
+      --page: #0f1723; --text: #e5edf7; --muted: #a6b5c8;
+      --surface: #182334; --subtle: #121d2c; --border: #35465d; --control-border: #536780;
+      --selected: #233b60; --selected-border: #78a7ff; --link: #9fc1ff;
+      --notice: #1b304a; --danger: #ffadb7; --danger-bg: #3c202d; --danger-border: #98505d;
+      --warning: #ffc18d; --focus: #8bb5ff; --sticky: #182334f2; --shadow: #00000033; }
+    a { color: var(--link); }
+    input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
+    input[type="checkbox"] { accent-color: #2563eb; }
+    .theme-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+    .theme-control select { width: auto; margin: 0; border: 1px solid var(--control-border); border-radius: 8px; padding: 6px 10px; background: var(--surface); color: var(--text); font: inherit; }
+    .theme-control select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
     * { box-sizing: border-box; }
-    body { margin: 0; background: #f3f5f8; color: #172638; font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    body { margin: 0; background: var(--page); color: var(--text); font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
     main { width: min(460px, calc(100% - 32px)); margin: 64px auto; }
-    .brand { color: #516277; font-size: 13px; letter-spacing: .05em; margin-bottom: 10px; }
+    .brand { color: var(--muted); font-size: 13px; letter-spacing: .05em; margin-bottom: 10px; }
     h1 { font-size: 28px; line-height: 1.3; margin: 0 0 10px; }
-    .intro { color: #516277; margin: 0 0 28px; }
-    section { background: white; border: 1px solid #dce3eb; border-radius: 16px; padding: 28px; box-shadow: 0 8px 30px #17304b06; }
+    .intro { color: var(--muted); margin: 0 0 28px; }
+    section { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 28px; box-shadow: 0 8px 30px var(--shadow); }
     label { display: block; margin: 0 0 6px; font-weight: 600; }
-    input { width: 100%; margin-bottom: 20px; border: 1px solid #c6d0de; border-radius: 9px; padding: 10px 12px; font: inherit; color: inherit; background: white; }
+    input { width: 100%; margin-bottom: 20px; border: 1px solid var(--control-border); border-radius: 9px; padding: 10px 12px; font: inherit; color: inherit; background: var(--surface); }
     button { width: 100%; border: 1px solid #2563eb; border-radius: 9px; padding: 10px 20px; font: inherit; font-weight: 600; color: white; background: #2563eb; cursor: pointer; }
     button:hover:not(:disabled) { filter: brightness(.95); }
     button:disabled { opacity: .55; cursor: not-allowed; }
-    input:focus-visible, button:focus-visible { outline: 3px solid #8bb5ff; outline-offset: 3px; }
-    #message { margin: 16px 0 0; min-height: 25px; color: #9b4b1b; overflow-wrap: anywhere; }
+    input:focus-visible, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+    #message { margin: 16px 0 0; min-height: 25px; color: var(--warning); overflow-wrap: anywhere; }
     @media (max-width: 520px) { main { margin: 30px auto; } section { padding: 22px 18px; } h1 { font-size: 25px; } }
   </style>
 </head>
 <body>
   <main>
+    <label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
     <div class="brand">MskDSPPlatform</div>
     <h1>管理员登录</h1>
     <p class="intro">登录后可查看平台版本并管理程序更新。</p>

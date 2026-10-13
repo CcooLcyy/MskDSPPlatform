@@ -3,38 +3,101 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
+  <script id="theme-script">
+// 在首屏绘制前恢复主题，所有页面使用同一份偏好。
+(() => {
+  const key = 'mskdsp-platform-theme';
+  const valid = value => ['system', 'light', 'dark'].includes(value);
+  const system = window.matchMedia('(prefers-color-scheme: dark)');
+  let preference = 'system';
+  try {
+    const saved = window.localStorage.getItem(key);
+    if (valid(saved)) preference = saved;
+  } catch { /* 存储受限时仍可在当前页面切换主题。 */ }
+  function apply() {
+    document.documentElement.dataset.theme = preference === 'system' ? (system.matches ? 'dark' : 'light') : preference;
+    const select = document.getElementById('theme-select');
+    if (select) select.value = preference;
+  }
+  apply();
+  system.addEventListener('change', apply);
+  window.addEventListener('storage', event => {
+    if (event.key !== key && event.key !== null) return;
+    preference = valid(event.newValue) ? event.newValue : 'system';
+    apply();
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    const select = document.getElementById('theme-select');
+    apply();
+    select.addEventListener('change', () => {
+      preference = valid(select.value) ? select.value : 'system';
+      try { window.localStorage.setItem(key, preference); }
+      catch { /* 保存失败不影响当前页面的显示。 */ }
+      apply();
+    });
+  });
+})();
+  </script>
   <title>MskDSPPlatform · 程序更新</title>
   <style>
+    /* 三个页面共用语义色，系统主题在脚本不可用时仍然生效。 */
+    :root { color-scheme: light;
+      --page: #f3f5f8; --text: #172638; --muted: #516277;
+      --surface: #ffffff; --subtle: #f4f7fb; --border: #dce3eb; --control-border: #c6d0de;
+      --selected: #e9f0ff; --selected-border: #6090ee; --link: #2455bc;
+      --notice: #eef3fa; --danger: #a52c34; --danger-bg: #fff1f2; --danger-border: #f2cbd0;
+      --warning: #9b4b1b; --focus: #8bb5ff; --sticky: #fffffff2; --shadow: #17304b0d; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { color-scheme: dark;
+      --page: #0f1723; --text: #e5edf7; --muted: #a6b5c8;
+      --surface: #182334; --subtle: #121d2c; --border: #35465d; --control-border: #536780;
+      --selected: #233b60; --selected-border: #78a7ff; --link: #9fc1ff;
+      --notice: #1b304a; --danger: #ffadb7; --danger-bg: #3c202d; --danger-border: #98505d;
+      --warning: #ffc18d; --focus: #8bb5ff; --sticky: #182334f2; --shadow: #00000033; }
+    }
+    :root[data-theme="dark"] { color-scheme: dark;
+      --page: #0f1723; --text: #e5edf7; --muted: #a6b5c8;
+      --surface: #182334; --subtle: #121d2c; --border: #35465d; --control-border: #536780;
+      --selected: #233b60; --selected-border: #78a7ff; --link: #9fc1ff;
+      --notice: #1b304a; --danger: #ffadb7; --danger-bg: #3c202d; --danger-border: #98505d;
+      --warning: #ffc18d; --focus: #8bb5ff; --sticky: #182334f2; --shadow: #00000033; }
+    a { color: var(--link); }
+    input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
+    input[type="checkbox"] { accent-color: #2563eb; }
+    .theme-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+    .theme-control select { width: auto; margin: 0; border: 1px solid var(--control-border); border-radius: 8px; padding: 6px 10px; background: var(--surface); color: var(--text); font: inherit; }
+    .theme-control select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
     * { box-sizing: border-box; }
-    body { margin: 0; background: #f3f5f8; color: #172638; font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    body { margin: 0; background: var(--page); color: var(--text); font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
     main { width: min(760px, calc(100% - 32px)); margin: 64px auto; }
-    .brand { color: #516277; font-size: 13px; letter-spacing: .05em; margin-bottom: 10px; }
-    .account { display: flex; align-items: center; justify-content: flex-end; gap: 12px; color: #516277; margin-bottom: 20px; }
+    .brand { color: var(--muted); font-size: 13px; letter-spacing: .05em; margin-bottom: 10px; }
+    .account { display: flex; align-items: center; justify-content: flex-end; gap: 12px; color: var(--muted); margin-bottom: 20px; }
     .account button { padding: 6px 12px; }
     h1 { font-size: 28px; line-height: 1.3; margin: 0 0 10px; }
-    .intro { color: #516277; margin: 0 0 28px; }
-    section { background: white; border: 1px solid #dce3eb; border-radius: 16px; padding: 28px; box-shadow: 0 8px 30px #17304b06; }
+    .intro { color: var(--muted); margin: 0 0 28px; }
+    section { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 28px; box-shadow: 0 8px 30px var(--shadow); }
     dl { margin: 0; display: grid; grid-template-columns: 110px 1fr; gap: 18px 22px; }
-    dt { color: #627286; }
+    dt { color: var(--muted); }
     dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
     .version { font-weight: 650; }
-    .result { margin-top: 25px; background: #f4f7fb; border-radius: 10px; padding: 16px; min-height: 70px; }
-    .result strong { font-size: 13px; color: #627286; font-weight: 500; }
+    .result { margin-top: 25px; background: var(--subtle); border-radius: 10px; padding: 16px; min-height: 70px; }
+    .result strong { font-size: 13px; color: var(--muted); font-weight: 500; }
     #message { margin: 4px 0 0; overflow-wrap: anywhere; }
-    #connection { margin: 8px 0 0; font-size: 13px; color: #9b4b1b; }
+    #connection { margin: 8px 0 0; font-size: 13px; color: var(--warning); }
     .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
-    button { border: 1px solid #c6d0de; border-radius: 9px; background: white; color: #243d59; font: inherit; font-weight: 600; padding: 10px 20px; cursor: pointer; }
+    button { border: 1px solid var(--control-border); border-radius: 9px; background: var(--surface); color: var(--text); font: inherit; font-weight: 600; padding: 10px 20px; cursor: pointer; }
     button.primary { background: #2563eb; color: white; border-color: #2563eb; }
     button:hover:not(:disabled) { filter: brightness(.95); }
     button:disabled { opacity: .45; cursor: not-allowed; }
-    button:focus-visible { outline: 3px solid #8bb5ff; outline-offset: 3px; }
-    footer { color: #68788a; font-size: 13px; margin-top: 18px; }
+    button:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+    footer { color: var(--muted); font-size: 13px; margin-top: 18px; }
     @media (max-width: 520px) { main { margin: 30px auto; } section { padding: 22px 18px; } dl { grid-template-columns: 80px 1fr; gap: 16px; } h1 { font-size: 25px; } .actions button { flex: 1; padding: 10px 12px; } }
   </style>
 </head>
 <body>
   <main>
+    <label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
     <div class="brand">MskDSPPlatform</div>
     <nav aria-label="平台功能"><a href="/modbus-templates">Modbus 点表库</a> · <a href="/update" aria-current="page">程序更新</a></nav>
     <div class="account"><span>管理员：<span id="username">正在确认</span></span><button id="logout" type="button" disabled>退出登录</button></div>

@@ -3,35 +3,97 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
+  <script id="theme-script">
+// 在首屏绘制前恢复主题，所有页面使用同一份偏好。
+(() => {
+  const key = 'mskdsp-platform-theme';
+  const valid = value => ['system', 'light', 'dark'].includes(value);
+  const system = window.matchMedia('(prefers-color-scheme: dark)');
+  let preference = 'system';
+  try {
+    const saved = window.localStorage.getItem(key);
+    if (valid(saved)) preference = saved;
+  } catch { /* 存储受限时仍可在当前页面切换主题。 */ }
+  function apply() {
+    document.documentElement.dataset.theme = preference === 'system' ? (system.matches ? 'dark' : 'light') : preference;
+    const select = document.getElementById('theme-select');
+    if (select) select.value = preference;
+  }
+  apply();
+  system.addEventListener('change', apply);
+  window.addEventListener('storage', event => {
+    if (event.key !== key && event.key !== null) return;
+    preference = valid(event.newValue) ? event.newValue : 'system';
+    apply();
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    const select = document.getElementById('theme-select');
+    apply();
+    select.addEventListener('change', () => {
+      preference = valid(select.value) ? select.value : 'system';
+      try { window.localStorage.setItem(key, preference); }
+      catch { /* 保存失败不影响当前页面的显示。 */ }
+      apply();
+    });
+  });
+})();
+  </script>
   <title>MskDSPPlatform · Modbus 点表库</title>
   <style>
+    /* 三个页面共用语义色，系统主题在脚本不可用时仍然生效。 */
+    :root { color-scheme: light;
+      --page: #f3f5f8; --text: #172638; --muted: #516277;
+      --surface: #ffffff; --subtle: #f4f7fb; --border: #dce3eb; --control-border: #c6d0de;
+      --selected: #e9f0ff; --selected-border: #6090ee; --link: #2455bc;
+      --notice: #eef3fa; --danger: #a52c34; --danger-bg: #fff1f2; --danger-border: #f2cbd0;
+      --warning: #9b4b1b; --focus: #8bb5ff; --sticky: #fffffff2; --shadow: #17304b0d; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { color-scheme: dark;
+      --page: #0f1723; --text: #e5edf7; --muted: #a6b5c8;
+      --surface: #182334; --subtle: #121d2c; --border: #35465d; --control-border: #536780;
+      --selected: #233b60; --selected-border: #78a7ff; --link: #9fc1ff;
+      --notice: #1b304a; --danger: #ffadb7; --danger-bg: #3c202d; --danger-border: #98505d;
+      --warning: #ffc18d; --focus: #8bb5ff; --sticky: #182334f2; --shadow: #00000033; }
+    }
+    :root[data-theme="dark"] { color-scheme: dark;
+      --page: #0f1723; --text: #e5edf7; --muted: #a6b5c8;
+      --surface: #182334; --subtle: #121d2c; --border: #35465d; --control-border: #536780;
+      --selected: #233b60; --selected-border: #78a7ff; --link: #9fc1ff;
+      --notice: #1b304a; --danger: #ffadb7; --danger-bg: #3c202d; --danger-border: #98505d;
+      --warning: #ffc18d; --focus: #8bb5ff; --sticky: #182334f2; --shadow: #00000033; }
+    a { color: var(--link); }
+    input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
+    input[type="checkbox"] { accent-color: #2563eb; }
+    .theme-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+    .theme-control select { width: auto; margin: 0; border: 1px solid var(--control-border); border-radius: 8px; padding: 6px 10px; background: var(--surface); color: var(--text); font: inherit; }
+    .theme-control select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
     * { box-sizing: border-box; }
-    body { margin: 0; background: #f3f5f8; color: #172638; font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    body { margin: 0; background: var(--page); color: var(--text); font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
     main { width: min(1380px, calc(100% - 40px)); margin: 34px auto; }
     header, nav, .actions, .section-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
     header { justify-content: space-between; margin-bottom: 24px; }
-    .brand, .muted, .hint { color: #627286; font-size: 13px; }
-    nav a { color: #516277; padding: 7px 13px; text-decoration: none; border-radius: 8px; }
-    nav a[aria-current] { background: #e9f0ff; color: #2455bc; font-weight: 650; }
+    .brand, .muted, .hint { color: var(--muted); font-size: 13px; }
+    nav a { color: var(--muted); padding: 7px 13px; text-decoration: none; border-radius: 8px; }
+    nav a[aria-current] { background: var(--selected); color: var(--link); font-weight: 650; }
     h1 { font-size: 28px; line-height: 1.3; margin: 0 0 8px; }
     h2 { font-size: 18px; margin: 0; }
     h3 { font-size: 15px; margin: 0; }
-    .intro { color: #516277; margin: 0 0 22px; }
+    .intro { color: var(--muted); margin: 0 0 22px; }
     .layout { display: grid; grid-template-columns: 310px minmax(0, 1fr); gap: 20px; align-items: start; }
-    section, .panel { background: white; border: 1px solid #dce3eb; border-radius: 16px; padding: 22px; box-shadow: 0 8px 30px #17304b06; }
+    section, .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 22px; box-shadow: 0 8px 30px var(--shadow); }
     .section-heading { justify-content: space-between; margin-bottom: 16px; }
-    button { border: 1px solid #c6d0de; border-radius: 8px; background: white; color: #243d59; font: inherit; font-weight: 600; padding: 8px 13px; cursor: pointer; }
+    button { border: 1px solid var(--control-border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-weight: 600; padding: 8px 13px; cursor: pointer; }
     button.primary { background: #2563eb; color: white; border-color: #2563eb; }
-    button.danger { color: #ad2b37; }
+    button.danger { color: var(--danger); }
     button:hover:not(:disabled) { filter: brightness(.95); }
     button:disabled { opacity: .45; cursor: not-allowed; }
-    button:focus-visible, a:focus-visible { outline: 3px solid #8bb5ff; outline-offset: 2px; }
-    input, select, textarea { width: 100%; min-width: 0; border: 1px solid #cbd5e1; border-radius: 7px; padding: 8px 10px; background: white; color: #172638; font: inherit; }
-    input:focus, select:focus, textarea:focus { outline: 2px solid #9cbdff; border-color: #4b7de5; }
-    input:disabled, select:disabled, textarea:disabled { background: #f2f5f8; color: #627286; }
+    button:focus-visible, a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+    input, select, textarea { width: 100%; min-width: 0; border: 1px solid var(--control-border); border-radius: 7px; padding: 8px 10px; background: var(--surface); color: var(--text); font: inherit; }
+    input:focus, select:focus, textarea:focus { outline: 2px solid var(--focus); border-color: var(--selected-border); }
+    input:disabled, select:disabled, textarea:disabled { background: var(--subtle); color: var(--muted); }
     textarea { resize: vertical; min-height: 72px; }
-    label { display: block; color: #516277; font-size: 13px; }
+    label { display: block; color: var(--muted); font-size: 13px; }
     label input, label select, label textarea { margin-top: 5px; font-size: 14px; }
     .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
     .wide { grid-column: 1 / -1; }
@@ -40,35 +102,36 @@
     .library-actions button { flex: 1; }
     #template-list { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 10px; max-height: 65vh; overflow: auto; }
     .template-card { width: 100%; text-align: left; font-weight: 400; display: grid; gap: 4px; padding: 13px; overflow-wrap: anywhere; }
-    .template-card strong { font-size: 15px; color: #243d59; }
-    .template-card[aria-pressed="true"] { border-color: #6090ee; background: #f2f6ff; }
-    .template-card span { color: #627286; font-size: 12px; }
-    #message { margin: 0 0 18px; padding: 13px 16px; border: 1px solid #dbe5f0; background: #eef3fa; border-radius: 10px; overflow-wrap: anywhere; }
-    #message.error { color: #a52c34; background: #fff1f2; border-color: #f2cbd0; }
-    .editor-actions { position: sticky; bottom: 12px; background: #fffffff2; padding: 12px; border: 1px solid #dce3eb; border-radius: 10px; box-shadow: 0 3px 16px #17304b0d; }
-    #draft-status { margin-right: auto; color: #627286; font-size: 13px; }
-    details { margin-top: 20px; padding-top: 14px; border-top: 1px solid #e4eaf1; }
-    summary { color: #3f5873; cursor: pointer; }
+    .template-card strong { font-size: 15px; color: var(--text); }
+    .template-card[aria-pressed="true"] { border-color: var(--selected-border); background: var(--selected); }
+    .template-card span { color: var(--muted); font-size: 12px; }
+    #message { margin: 0 0 18px; padding: 13px 16px; border: 1px solid var(--border); background: var(--notice); border-radius: 10px; overflow-wrap: anywhere; }
+    #message.error { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-border); }
+    .editor-actions { position: sticky; bottom: 12px; background: var(--sticky); padding: 12px; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 3px 16px var(--shadow); }
+    #draft-status { margin-right: auto; color: var(--muted); font-size: 13px; }
+    details { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); }
+    summary { color: var(--text); cursor: pointer; }
     .array-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; margin: 10px 0; }
     .source-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) auto; }
     .point-area { display: grid; grid-template-columns: minmax(180px, .7fr) minmax(0, 2fr); gap: 18px; margin-top: 16px; }
     #point-list { display: grid; align-content: start; gap: 6px; max-height: 530px; overflow: auto; }
     .point-row { text-align: left; display: grid; font-weight: 400; gap: 2px; overflow-wrap: anywhere; }
-    .point-row small { font-size: 12px; color: #627286; }
-    .point-row[aria-pressed="true"] { background: #eaf1ff; border-color: #6090ee; }
-    .point-form { padding: 16px; background: #f8fafc; border: 1px solid #e0e6ee; border-radius: 10px; }
+    .point-row small { font-size: 12px; color: var(--muted); }
+    .point-row[aria-pressed="true"] { background: var(--selected); border-color: var(--selected-border); }
+    .point-form { padding: 16px; background: var(--subtle); border: 1px solid var(--border); border-radius: 10px; }
     .check-label { display: flex; align-items: center; gap: 7px; }
     .check-label input { width: auto; margin: 0; }
-    .point-heading { border-top: 1px solid #e4eaf1; padding-top: 20px; margin-top: 20px; }
-    footer { color: #68788a; font-size: 13px; margin-top: 18px; }
+    .point-heading { border-top: 1px solid var(--border); padding-top: 20px; margin-top: 20px; }
+    footer { color: var(--muted); font-size: 13px; margin-top: 18px; }
     [hidden] { display: none !important; }
     @media (max-width: 1050px) { .layout { grid-template-columns: 250px minmax(0, 1fr); } .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .point-area { grid-template-columns: 1fr; } #point-list { max-height: 220px; } }
-    @media (max-width: 720px) { main { width: calc(100% - 24px); margin: 20px auto; } .layout { grid-template-columns: 1fr; } section { padding: 18px; } #template-list { max-height: 300px; } .source-row { grid-template-columns: 1fr; } .editor-actions { bottom: 6px; } .editor-actions button { flex: 1; } #draft-status { width: 100%; } }
+    @media (max-width: 720px) { main { width: calc(100% - 24px); margin: 20px auto; } .layout { grid-template-columns: 1fr; } section { padding: 18px; } #template-list { max-height: 300px; } .source-row { grid-template-columns: 1fr; } .editor-actions { position: static; } .editor-actions button { flex: 1 1 130px; } #draft-status { width: 100%; } }
     @media (max-width: 420px) { .form-grid { grid-template-columns: 1fr; } h1 { font-size: 24px; } }
   </style>
 </head>
 <body>
   <main>
+    <label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
     <header><div class="brand">MskDSPPlatform</div><nav aria-label="平台导航"><a href="/modbus-templates" aria-current="page">点表库</a><a href="/update">程序更新</a><span id="username" class="muted"></span><button id="logout" type="button" disabled>退出登录</button></nav></header>
     <h1>Modbus 点表库</h1>
     <p class="intro">管理 RTU / TCP 共用点表，导入、编辑并下载上位机兼容的 JSON 模板。</p>
