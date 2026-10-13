@@ -54,6 +54,10 @@ impl PlatformRuntime {
         );
         let templates = crate::modbus_templates::TemplateStore::new(templates_directory.clone())
             .with_context(|| format!("初始化点表存储失败：{}", templates_directory.display()))?;
+        templates
+            .initialize()
+            .await
+            .with_context(|| format!("初始化点表数据库失败：{}", templates_directory.display()))?;
         let http_router = http::router(http_state.clone())
             .merge(crate::template_http::router(http_state, templates));
         let http_listener = TcpListener::bind(self.config.server.http_addr)

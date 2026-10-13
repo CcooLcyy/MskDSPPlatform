@@ -40,7 +40,7 @@ class ProxyTests(unittest.TestCase):
     def request(self, path, length):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
         try:
-            limit = (2 if path == "/api/v1/modbus-templates" or path.startswith("/api/v1/modbus-templates/") else 1) * 1024 * 1024
+            limit = (10 if path == "/api/v1/modbus-templates" or path.startswith("/api/v1/modbus-templates/") else 1) * 1024 * 1024
             # 超限在长度头处拒绝，避免 Windows 对尚未读完的大请求触发连接重置。
             connection.request("POST", path, b" " * length if length <= limit else None,
                                {"Content-Length": str(length), "If-Match": "12", "X-MskDSP-Action": "modbus-template"})
@@ -49,14 +49,14 @@ class ProxyTests(unittest.TestCase):
         finally:
             connection.close()
 
-    # 大于 1 MiB 的点表允许通过，版本与操作标记不丢失，超过 2 MiB 被拒绝。
+    # 点表允许通过 10 MiB，版本与操作标记不丢失，超过上限被拒绝。
     def test_template_limits_and_header_forwarding(self):
         base = "/api/v1/modbus-templates"
         for path in (base, base + "/test-id"):
-            status, body = self.request(path, 2 * 1024 * 1024)
+            status, body = self.request(path, 10 * 1024 * 1024)
             self.assertEqual(status, 201)
-            self.assertEqual(body, {"length": 2 * 1024 * 1024, "revision": "12", "action": "modbus-template"})
-            self.assertEqual(self.request(path, 2 * 1024 * 1024 + 1)[0], 413)
+            self.assertEqual(body, {"length": 10 * 1024 * 1024, "revision": "12", "action": "modbus-template"})
+            self.assertEqual(self.request(path, 10 * 1024 * 1024 + 1)[0], 413)
 
     # 其它业务请求及类似前缀保留 1 MiB 限制。
     def test_other_proxy_limits_unchanged(self):

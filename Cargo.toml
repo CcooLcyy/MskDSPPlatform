@@ -18,6 +18,7 @@ tokio-stream = "0.1"
 toml = "0.8"
 tonic = "0.13"
 prost = "0.13"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }

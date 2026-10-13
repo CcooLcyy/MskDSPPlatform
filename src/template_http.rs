@@ -14,7 +14,7 @@ use axum::{
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-const LIMIT: usize = 2 * 1024 * 1024;
+const LIMIT: usize = 10 * 1024 * 1024;
 
 #[derive(Clone)]
 struct TemplateState {
@@ -127,7 +127,7 @@ fn body(value: Result<Json<Value>, JsonRejection>) -> Result<Value, RequestError
         request_error(
             rejection.status(),
             if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                "点表文件不能超过 2 MiB"
+                "点表文件不能超过 10 MiB"
             } else {
                 "点表请求必须是合法 JSON，内容类型为 application/json"
             },

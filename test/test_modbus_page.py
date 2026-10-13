@@ -65,9 +65,11 @@ values.enum_enabled=false; values.condition_enabled=false; values.default_select
 const omitted=pointFromFields(original,values);
 for(const field of ['enum_value','condition','default_selected']) assert.equal(Object.hasOwn(omitted,field),false);
 assert.throws(()=>parseTemplate('{'),/JSON/);
-assert.throws(()=>parseTemplate(' '.repeat(2*1024*1024+1)),/2 MiB/);
+assert.throws(()=>parseTemplate(' '.repeat(10*1024*1024+1)),/10 MiB/);
 assert.throws(()=>validateTemplate({...template,points:[]}),/至少/);
-assert.throws(()=>validateTemplate({...template,points:Array(2001).fill(template.points[0])}),/2000/);
+const expanded={...template,points:Array.from({length:10000},(_,index)=>({...template.points[0],id:`point-${index}`,tag:`点位${index}`}))};
+assert.equal(validateTemplate(expanded).points.length,10000);
+assert.throws(()=>validateTemplate({...expanded,points:[...expanded.points,{...template.points[0],id:'overflow',tag:'超限'}]}),/10000/);
 assert.throws(()=>validateTemplate({...template,extra:true}),/字段/);
 assert.throws(()=>validateTemplate({...template,points:[{...template.points[0],scale:0.1}]}),/倍率/);
 assert.throws(()=>validateTemplate({...template,points:[{...template.points[0],data_type:'UINT32',reg_count:1}]}),/不匹配/);
@@ -109,8 +111,8 @@ const client=createTemplateClient({fetchImpl:async(url,options)=>{
   assert.equal(client.snapshot().record.revision,2); assert.deepEqual(plain(client.snapshot().draft.notes),template.notes);
   assert.deepEqual(plain(client.snapshot().draft.sources),template.sources);
   allowDiscard=true;
-  await client.importFile({size:2*1024*1024+1,text:async()=>JSON.stringify(template)});
-  assert.match(client.snapshot().error,/2 MiB/); assert.equal(client.snapshot().record.revision,2);
+  await client.importFile({size:10*1024*1024+1,text:async()=>JSON.stringify(template)});
+  assert.match(client.snapshot().error,/10 MiB/); assert.equal(client.snapshot().record.revision,2);
   await client.importFile({size:100,text:async()=>JSON.stringify(template)});
   assert.equal(client.snapshot().record,null); assert.equal(client.snapshot().dirty,true);
   assert.equal(client.snapshot().draft.points[0].scale,template.points[0].scale);

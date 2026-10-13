@@ -141,7 +141,7 @@
         <div class="section-heading"><h2>全部点表</h2><button id="refresh" type="button">刷新</button></div>
         <label>搜索名称、厂家、型号或协议<input id="search" type="search" placeholder="搜索点表" autocomplete="off"></label>
         <div class="actions library-actions"><button id="new-template" type="button">新建</button><button id="import" type="button">导入 JSON</button><input id="import-file" type="file" accept=".json,application/json" hidden></div>
-        <p class="hint">最多 2 MiB / 2000 点。导入后可先检查，点击保存才写入点表库。</p>
+        <p class="hint">点表库最多 1000 张，每张最多 10 MiB / 10000 点。导入后可先检查，点击保存才写入点表库。</p>
         <ul id="template-list"></ul>
         <p id="list-empty" class="muted" hidden>暂无点表。新建或导入上位机模板开始使用。</p>
       </section>
@@ -197,7 +197,8 @@
     <noscript>请启用 JavaScript 以管理点表。</noscript>
   </main>
   <script type="module">
-const MAX_BYTES = 2 * 1024 * 1024;
+const MAX_BYTES = 10 * 1024 * 1024;
+const MAX_POINTS = 10000;
 const BASE = '/api/v1/modbus-templates';
 const TEMPLATE_FIELDS = ['schema_version','id','name','manufacturer','models','protocol_version','address_base','notes','sources','points'];
 const POINT_FIELDS = ['id','tag','group','unit','function_code','address','data_type','reg_count','scale','offset','deadband','word_order','byte_order','bit_index','source_page','description'];
@@ -234,7 +235,7 @@ function decimal(value, label) {
   if (!Number.isFinite(Number(value))) throw new Error(`${label}必须为有限数值`);
 }
 function validateTemplate(input) {
-  if (new TextEncoder().encode(JSON.stringify(input)).length > MAX_BYTES) throw new Error('模板文件不能超过 2 MiB');
+  if (new TextEncoder().encode(JSON.stringify(input)).length > MAX_BYTES) throw new Error('模板文件不能超过 10 MiB');
   const data = object(input,TEMPLATE_FIELDS,'模板');
   if (data.schema_version !== 1) throw new Error('不支持的模板版本');
   validText(data.id,'模板 ID',false,128);
@@ -248,7 +249,7 @@ function validateTemplate(input) {
     if (typeof source.sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(source.sha256)) throw new Error('来源 SHA256 格式不合法');
   });
   const ids = new Set(), tags = new Set();
-  const points = array(data.points,2000,'模板点位');
+  const points = array(data.points,MAX_POINTS,'模板点位');
   if (!points.length) throw new Error('模板至少需要一个点位');
   points.forEach((raw,index) => {
     const label = `第 ${index + 1} 个点位`;
@@ -281,7 +282,7 @@ function validateTemplate(input) {
   return clone(data);
 }
 function parseTemplate(value) {
-  if (new TextEncoder().encode(value).length > MAX_BYTES) throw new Error('模板文件不能超过 2 MiB');
+  if (new TextEncoder().encode(value).length > MAX_BYTES) throw new Error('模板文件不能超过 10 MiB');
   let parsed;
   try { parsed = JSON.parse(value.replace(/^\uFEFF/,'')); } catch { throw new Error('模板文件不是合法 JSON'); }
   return validateTemplate(parsed);
@@ -394,7 +395,7 @@ function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,on
     async importFile(file) {
       if (!file || !canLeave()) return;
       await run(async () => {
-        if (file.size > MAX_BYTES) { const cause = new Error('模板文件不能超过 2 MiB'); cause.httpStatus = 422; throw cause; }
+        if (file.size > MAX_BYTES) { const cause = new Error('模板文件不能超过 10 MiB'); cause.httpStatus = 422; throw cause; }
         let imported;
         try { imported = parseTemplate(await file.text()); } catch (cause) { cause.httpStatus = 422; throw cause; }
         record = null; draft = imported; baseline = ''; notice = `已导入 ${draft.points.length} 个点位。检查后点击保存加入点表库。`;
@@ -410,7 +411,7 @@ function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,on
     },
     addPoint() {
       if (!editable() || !draft) return;
-      if (draft.points.length >= 2000) { error = '每张点表最多 2000 个点位'; notify(); return; }
+      if (draft.points.length >= MAX_POINTS) { error = '每张点表最多 10000 个点位'; notify(); return; }
       let ordinal = draft.points.length + 1;
       while (draft.points.some(point => point.tag === `点位${ordinal}`)) ordinal++;
       const point = createPoint(draft.address_base,ordinal);
@@ -498,7 +499,7 @@ function renderPoints(state) {
     });
     if (!element('point-list').childElementCount) element('point-list').append(make('p',points.length ? '没有匹配的点位。' : '暂无点位，请添加至少一个点位。','muted'));
   }
-  element('point-count').textContent = `点位 · ${points.length} / 2000`;
+  element('point-count').textContent = `点位 · ${points.length} / ${MAX_POINTS}`;
   element('point-editor').hidden = !points.length;
   element('point-title').textContent = `编辑第 ${selectedPoint+1} 个点位`;
   element('point-editor').disabled = state.pending || !state.authorized;
@@ -544,7 +545,7 @@ function render(state) {
   element('metadata').disabled = state.pending || !state.authorized;
   for (const id of ['save','copy-template','add-point','add-note','add-source']) element(id).disabled = state.pending || !state.authorized;
   for (const id of ['download','delete-template','reload-record']) element(id).disabled = state.pending || !state.authorized || !state.record;
-  element('add-point').disabled ||= state.draft.points.length >= 2000;
+  element('add-point').disabled ||= state.draft.points.length >= MAX_POINTS;
   element('add-note').disabled ||= state.draft.notes.length >= 100;
   element('add-source').disabled ||= state.draft.sources.length >= 20;
   element('record-info').textContent = state.record ? `版本 ${state.record.revision} · 更新 ${formatTime(state.record.updated_at)}` : '尚未保存';

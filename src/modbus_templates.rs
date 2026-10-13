@@ -2,8 +2,8 @@ use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
 use std::{
     collections::HashSet,
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    fs::{self, File},
+    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -11,9 +11,12 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-const MAX_TEMPLATE_BYTES: usize = 2 * 1024 * 1024;
+#[path = "modbus_templates_sqlite.rs"]
+mod sqlite;
+
+const MAX_TEMPLATE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = MAX_TEMPLATE_BYTES + 4096;
-const MAX_TEMPLATES: usize = 100;
+const MAX_TEMPLATES: usize = 1000;
 const TEMPLATE_FIELDS: &[&str] = &[
     "schema_version",
     "id",
@@ -53,9 +56,9 @@ pub enum StoreError {
     NotFound,
     #[error("点表版本已变化，请重新读取后再保存或删除")]
     Conflict,
-    #[error("模板文件不能超过 2 MiB")]
+    #[error("模板文件不能超过 10 MiB")]
     TooLarge,
-    #[error("点表库最多保存 100 张点表")]
+    #[error("点表库最多保存 1000 张点表")]
     Capacity,
     #[error("{0}")]
     Storage(String),
@@ -245,7 +248,7 @@ pub fn validate_template(input: &Value) -> Result<(), StoreError> {
         return Err(invalid("模板 ID 仅支持字母、数字、下划线、点和连字符"));
     }
     let base = integer(&data["address_base"], 0, 1, "地址基准")?;
-    let points = array(&data["points"], "模板点位", 2000)?;
+    let points = array(&data["points"], "模板点位", 10000)?;
     if points.is_empty() {
         return Err(invalid("模板至少需要一个点位"));
     }
@@ -388,47 +391,37 @@ impl TemplateStore {
     async fn run<T, F>(&self, operation: F) -> Result<T, StoreError>
     where
         T: Send + 'static,
-        F: FnOnce(&Path) -> Result<T, StoreError> + Send + 'static,
+        F: FnOnce(&mut rusqlite::Connection) -> Result<T, StoreError> + Send + 'static,
     {
         let guard = self.lock.clone().lock_owned().await;
         let root = self.root.clone();
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
-            operation(&root)
+            let mut database = sqlite::open_initialized(&root)?;
+            operation(&mut database)
         })
         .await
         .map_err(|error| StoreError::Storage(format!("点表存储任务失败：{error}")))?
     }
 
+    pub async fn initialize(&self) -> Result<(), StoreError> {
+        self.run(|_| Ok(())).await
+    }
+
     pub async fn list(&self) -> Result<Vec<Value>, StoreError> {
-        self.run(|root| {
-            let mut records = read_records(root)?;
-            records.sort_by(|left, right| {
-                right["updated_at"].as_u64().cmp(&left["updated_at"].as_u64()).then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
-            });
-            Ok(records.into_iter().map(|record| {
-                let template = &record["template"];
-                json!({"id":record["id"],"revision":record["revision"],"name":template["name"],"manufacturer":template["manufacturer"],"models":template["models"],"protocol_version":template["protocol_version"],"address_base":template["address_base"],"point_count":template["points"].as_array().map_or(0, Vec::len),"created_at":record["created_at"],"updated_at":record["updated_at"]})
-            }).collect())
-        }).await
+        self.run(sqlite::list).await
     }
 
     pub async fn get(&self, id: &str) -> Result<Value, StoreError> {
         valid_platform_id(id)?;
         let id = id.to_owned();
-        self.run(move |root| read_record(root, &id)).await
+        self.run(move |database| sqlite::get(database, &id)).await
     }
 
     pub async fn create(&self, template: Value) -> Result<Value, StoreError> {
         validate_template(&template)?;
-        self.run(move |root| {
-            if read_records(root)?.len() >= MAX_TEMPLATES { return Err(StoreError::Capacity); }
-            let id = Uuid::new_v4().to_string();
-            let timestamp = now_millis()?;
-            let record = json!({"id":id,"revision":1,"created_at":timestamp,"updated_at":timestamp,"template":template});
-            persist(root, &id, &record)?;
-            Ok(record)
-        }).await
+        self.run(move |database| sqlite::create(database, template))
+            .await
     }
 
     pub async fn update(
@@ -440,30 +433,15 @@ impl TemplateStore {
         valid_platform_id(id)?;
         validate_template(&template)?;
         let id = id.to_owned();
-        self.run(move |root| {
-            let old = read_record(root, &id)?;
-            if old["revision"].as_u64() != Some(revision) { return Err(StoreError::Conflict); }
-            let next = revision.checked_add(1).ok_or_else(|| StoreError::Storage("点表版本号已达到上限".into()))?;
-            let timestamp = now_millis()?.max(old["updated_at"].as_u64().unwrap());
-            let record = json!({"id":id,"revision":next,"created_at":old["created_at"],"updated_at":timestamp,"template":template});
-            persist(root, &id, &record)?;
-            Ok(record)
-        }).await
+        self.run(move |database| sqlite::update(database, &id, revision, template))
+            .await
     }
 
     pub async fn delete(&self, id: &str, revision: u64) -> Result<(), StoreError> {
         valid_platform_id(id)?;
         let id = id.to_owned();
-        self.run(move |root| {
-            let old = read_record(root, &id)?;
-            if old["revision"].as_u64() != Some(revision) {
-                return Err(StoreError::Conflict);
-            }
-            fs::remove_file(root.join(format!("{id}.json")))
-                .map_err(|error| StoreError::Storage(format!("删除点表文件失败：{error}")))?;
-            sync_directory(root)
-        })
-        .await
+        self.run(move |database| sqlite::delete(database, &id, revision))
+            .await
     }
 }
 
@@ -482,6 +460,7 @@ fn now_millis() -> Result<u64, StoreError> {
         .map_err(|_| StoreError::Storage("系统时间超出支持范围".into()))
 }
 
+#[cfg(test)]
 fn read_records(root: &Path) -> Result<Vec<Value>, StoreError> {
     let mut records = Vec::new();
     for entry in fs::read_dir(root)
@@ -502,14 +481,19 @@ fn read_records(root: &Path) -> Result<Vec<Value>, StoreError> {
         records.push(read_record(root, id)?);
         if records.len() > MAX_TEMPLATES {
             return Err(StoreError::Storage(
-                "点表存储文件数量超过 100 张上限".into(),
+                "点表存储文件数量超过 1000 张上限".into(),
             ));
         }
     }
     Ok(records)
 }
 
+#[cfg(test)]
 fn read_record(root: &Path, id: &str) -> Result<Value, StoreError> {
+    read_record_with_bytes(root, id).map(|(record, _)| record)
+}
+
+fn read_record_with_bytes(root: &Path, id: &str) -> Result<(Value, Vec<u8>), StoreError> {
     let path = root.join(format!("{id}.json"));
     let metadata = fs::symlink_metadata(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -562,32 +546,7 @@ fn read_record(root: &Path, id: &str) -> Result<Value, StoreError> {
         validate_template(&fields["template"])
     };
     verify().map_err(|error| StoreError::Storage(format!("点表存储记录损坏：{error}")))?;
-    Ok(record)
-}
-
-fn persist(root: &Path, id: &str, record: &Value) -> Result<(), StoreError> {
-    let target = root.join(format!("{id}.json"));
-    let temporary = root.join(format!(".{id}.{}.tmp", Uuid::new_v4()));
-    let result = (|| -> Result<(), StoreError> {
-        let bytes = serde_json::to_vec(record)
-            .map_err(|error| StoreError::Storage(format!("序列化点表记录失败：{error}")))?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|error| StoreError::Storage(format!("创建点表临时文件失败：{error}")))?;
-        file.write_all(&bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|error| StoreError::Storage(format!("写入并同步点表文件失败：{error}")))?;
-        drop(file);
-        fs::rename(&temporary, &target)
-            .map_err(|error| StoreError::Storage(format!("原子替换点表文件失败：{error}")))?;
-        sync_directory(root)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+    Ok((record, bytes))
 }
 
 fn sync_directory(root: &Path) -> Result<(), StoreError> {
@@ -798,10 +757,10 @@ mod tests {
     fn rejects_point_limit_and_byte_limit() {
         let mut data = template();
         let point = data["points"][0].clone();
-        data["points"] = json!(vec![point.clone(); 2001]);
+        data["points"] = json!(vec![point.clone(); 10001]);
         assert!(validate_template(&data).is_err());
         let mut points = Vec::new();
-        for index in 0..600 {
+        for index in 0..2600 {
             let mut next = point.clone();
             next["id"] = json!(format!("p{index}"));
             next["tag"] = json!(format!("tag{index}"));
@@ -816,11 +775,27 @@ mod tests {
     }
 
     #[test]
+    fn accepts_ten_thousand_unique_points_within_file_limit() {
+        let mut data = template();
+        let point = data["points"][0].clone();
+        let points: Vec<_> = (0..10000)
+            .map(|index| {
+                let mut next = point.clone();
+                next["id"] = json!(format!("p{index}"));
+                next["tag"] = json!(format!("tag{index}"));
+                next
+            })
+            .collect();
+        data["points"] = json!(points);
+        validate_template(&data).unwrap();
+    }
+
+    #[test]
     fn rejects_compact_template_when_formatted_download_exceeds_import_limit() {
         let mut data = template();
         let point = data["points"][0].clone();
         let mut points = Vec::new();
-        for index in 0..500 {
+        for index in 0..2600 {
             let mut next = point.clone();
             next["id"] = json!(format!("p{index}"));
             next["tag"] = json!(format!("tag{index}"));
@@ -828,7 +803,7 @@ mod tests {
         }
         data["points"] = json!(points);
         let overhead = serde_json::to_vec(&data).unwrap().len();
-        let description_length = (MAX_TEMPLATE_BYTES - 1024 - overhead) / 500;
+        let description_length = (MAX_TEMPLATE_BYTES - 1024 - overhead) / 2600;
         assert!(description_length <= 4096);
         for point in data["points"].as_array_mut().unwrap() {
             point["description"] = json!("x".repeat(description_length));
@@ -863,13 +838,17 @@ mod tests {
     async fn serializes_concurrent_updates_and_rejects_stale_delete() {
         let directory = TestDirectory::new();
         let store = directory.store();
+        let independent = directory.store();
         let record = store.create(template()).await.unwrap();
         let id = record["id"].as_str().unwrap();
         let mut first = template();
         first["name"] = json!("版本 A");
         let mut second = template();
         second["name"] = json!("版本 B");
-        let (left, right) = tokio::join!(store.update(id, 1, first), store.update(id, 1, second));
+        let (left, right) = tokio::join!(
+            store.update(id, 1, first),
+            independent.update(id, 1, second)
+        );
         assert_ne!(left.is_ok(), right.is_ok());
         let error = if let Err(error) = left {
             error
@@ -911,29 +890,378 @@ mod tests {
     async fn enforces_capacity_without_overwriting_duplicate_names() {
         let directory = TestDirectory::new();
         let store = directory.store();
-        for _ in 0..100 {
-            store.create(template()).await.unwrap();
-        }
+        store.create(template()).await.unwrap();
+        store.run(|database| {
+            let transaction = database.transaction().unwrap();
+            for _ in 1..MAX_TEMPLATES - 1 {
+                transaction.execute("INSERT INTO templates SELECT ?1,revision,created_at,updated_at,name,manufacturer,models_json,protocol_version,address_base,point_count,template_json FROM templates LIMIT 1", [Uuid::new_v4().to_string()]).unwrap();
+            }
+            transaction.commit().unwrap();
+            Ok(())
+        }).await.unwrap();
+        let independent = directory.store();
+        let (left, right) = tokio::join!(store.create(template()), independent.create(template()));
+        assert_ne!(
+            left.is_ok(),
+            right.is_ok(),
+            "跨存储实例只允许一张占用最后容量"
+        );
         assert_eq!(
             store.create(template()).await.unwrap_err().status(),
             axum::http::StatusCode::CONFLICT
         );
-        assert_eq!(store.list().await.unwrap().len(), 100);
+        assert_eq!(store.list().await.unwrap().len(), MAX_TEMPLATES);
     }
 
     #[tokio::test]
     async fn refuses_storage_path_that_is_not_a_regular_file() {
         let directory = TestDirectory::new();
         let store = directory.store();
-        let record = store.create(template()).await.unwrap();
-        let id = record["id"].as_str().unwrap();
-        let path = directory.0.join(format!("{id}.json"));
-        std::fs::remove_file(&path).unwrap();
+        let path = directory.0.join("templates.sqlite3");
         std::fs::create_dir(&path).unwrap();
         assert_eq!(
-            store.update(id, 1, template()).await.unwrap_err().status(),
+            store.create(template()).await.unwrap_err().status(),
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    fn legacy_record(id: &str) -> Value {
+        json!({"id":id,"revision":7,"created_at":1700000000000u64,"updated_at":1700000000123u64,"template":template()})
+    }
+
+    async fn pending_archive(directory: &TestDirectory, id: &str, record: &Value) -> Vec<u8> {
+        let filename = format!("{id}.json");
+        let bytes = serde_json::to_vec(record).unwrap();
+        fs::write(directory.0.join(&filename), &bytes).unwrap();
+        directory.store().initialize().await.unwrap();
+        {
+            let database =
+                rusqlite::Connection::open(directory.0.join("templates.sqlite3")).unwrap();
+            database
+                .execute(
+                    "UPDATE storage_meta SET value='pending' WHERE key='legacy_migration'",
+                    [],
+                )
+                .unwrap();
+            database
+                .execute(
+                    "INSERT INTO legacy_files VALUES (?1,?2)",
+                    rusqlite::params![id, bytes],
+                )
+                .unwrap();
+        }
+        let archive = directory.0.join("legacy-json");
+        if archive.exists() {
+            fs::remove_file(archive.join(&filename)).unwrap();
+            fs::remove_dir(&archive).unwrap();
+        }
+        fs::write(directory.0.join(&filename), &bytes).unwrap();
+        let marker = directory.0.join("database-required.json");
+        if marker.is_dir() {
+            fs::remove_dir(marker).unwrap();
+        } else {
+            fs::remove_file(marker).unwrap();
+        }
+        bytes
+    }
+
+    #[tokio::test]
+    async fn migrates_legacy_records_once_and_blocks_old_json_access() {
+        let directory = TestDirectory::new();
+        let id = Uuid::new_v4().to_string();
+        let record = legacy_record(&id);
+        let original = serde_json::to_vec_pretty(&record).unwrap();
+        let filename = format!("{id}.json");
+        fs::write(directory.0.join(&filename), &original).unwrap();
+        let store = directory.store();
+        assert_eq!(store.get(&id).await.unwrap(), record);
+        assert!(directory.0.join("templates.sqlite3").is_file());
+        assert!(directory.0.join("database-required.json").is_dir());
+        assert!(!directory.0.join(&filename).exists());
+        assert!(!directory.0.join("legacy-json").exists());
+        assert!(
+            fs::read_dir(&directory.0).unwrap().all(|entry| {
+                let path = entry.unwrap().path();
+                !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("json")
+            }),
+            "迁移完成不能保留任何 JSON 业务或标记文件"
+        );
+        assert!(
+            read_records(&directory.0).is_err(),
+            "旧版本必须拒绝创建空 JSON 库"
+        );
+        store.delete(&id, 7).await.unwrap();
+        assert!(matches!(
+            directory.store().get(&id).await,
+            Err(StoreError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn corrupt_legacy_record_rolls_back_entire_migration_then_can_retry() {
+        let directory = TestDirectory::new();
+        let id = Uuid::new_v4().to_string();
+        let record = legacy_record(&id);
+        let filename = format!("{id}.json");
+        let corrupt = directory.0.join(format!("{}.json", Uuid::new_v4()));
+        fs::write(
+            directory.0.join(&filename),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        fs::write(&corrupt, b"{broken").unwrap();
+        assert!(directory.store().list().await.is_err());
+        assert!(directory.0.join(&filename).is_file());
+        assert_eq!(fs::read(&corrupt).unwrap(), b"{broken");
+        let database = rusqlite::Connection::open(directory.0.join("templates.sqlite3")).unwrap();
+        let tables: u32 = database
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='templates'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "损坏记录必须回滚整个迁移事务，包含表结构");
+        drop(database);
+        fs::remove_file(corrupt).unwrap();
+        assert_eq!(directory.store().get(&id).await.unwrap(), record);
+    }
+
+    #[tokio::test]
+    async fn interrupted_archive_refuses_service_and_retries_without_importing_twice() {
+        let directory = TestDirectory::new();
+        let id = Uuid::new_v4().to_string();
+        let record = legacy_record(&id);
+        fs::write(
+            directory.0.join(format!("{id}.json")),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        File::create(directory.0.join("templates.sqlite3")).unwrap();
+        fs::write(directory.0.join("legacy-json"), "阻止归档").unwrap();
+        assert!(directory.store().list().await.is_err());
+        assert!(directory.0.join("database-required.json").is_dir());
+        fs::remove_file(directory.0.join("legacy-json")).unwrap();
+        let store = directory.store();
+        assert_eq!(store.list().await.unwrap().len(), 1);
+        assert_eq!(store.get(&id).await.unwrap(), record);
+    }
+
+    #[tokio::test]
+    async fn summary_uses_metadata_index_without_reading_template_content() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let record = store.create(template()).await.unwrap();
+        store.run(|database| {
+            database.execute("UPDATE templates SET template_json='{broken'", []).unwrap();
+            let plan: String = database.query_row("EXPLAIN QUERY PLAN SELECT id FROM templates ORDER BY updated_at DESC,id ASC", [], |row| row.get(3)).unwrap();
+            assert!(plan.contains("templates_updated"), "摘要排序必须使用数据库索引");
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(store.list().await.unwrap()[0]["name"], "测试点表");
+        assert!(store.get(record["id"].as_str().unwrap()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn migration_preserves_full_unsigned_metadata_and_exact_decimal_text() {
+        let directory = TestDirectory::new();
+        let id = Uuid::new_v4().to_string();
+        let mut record = legacy_record(&id);
+        record["revision"] = json!(u64::MAX - 1);
+        record["created_at"] = json!(u64::MAX - 1);
+        record["updated_at"] = json!(u64::MAX);
+        fs::write(
+            directory.0.join(format!("{id}.json")),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        let store = directory.store();
+        assert_eq!(store.get(&id).await.unwrap(), record);
+        let updated = store.update(&id, u64::MAX - 1, template()).await.unwrap();
+        assert_eq!(updated["revision"], u64::MAX);
+        assert_eq!(updated["updated_at"], u64::MAX);
+        assert!(matches!(
+            store.update(&id, u64::MAX, template()).await,
+            Err(StoreError::Storage(_))
+        ));
+        store.delete(&id, u64::MAX).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn migration_commit_then_marker_failure_retries_without_losing_records() {
+        let directory = TestDirectory::new();
+        let id = Uuid::new_v4().to_string();
+        let record = legacy_record(&id);
+        pending_archive(&directory, &id, &record).await;
+        // 模拟标记落盘失败，数据库已提交后仍应保留待归档状态。
+        fs::write(directory.0.join("database-required.json"), "阻止保护目录").unwrap();
+        assert!(directory.store().initialize().await.is_err());
+        fs::remove_file(directory.0.join("database-required.json")).unwrap();
+        assert_eq!(directory.store().get(&id).await.unwrap(), record);
+    }
+
+    #[tokio::test]
+    async fn pending_archive_rejects_legacy_edits_and_conflicting_backups_without_erasing_them() {
+        let directory = TestDirectory::new();
+        let id = Uuid::new_v4().to_string();
+        let record = legacy_record(&id);
+        let original = pending_archive(&directory, &id, &record).await;
+        let path = directory.0.join(format!("{id}.json"));
+        let backup = directory.0.join("legacy-json").join(format!("{id}.json"));
+        let mut changed = record.clone();
+        changed["template"]["name"] = json!("旧程序迁移后更新");
+        let bytes = serde_json::to_vec(&changed).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(directory.store().initialize().await.is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::write(&path, &original).unwrap();
+        fs::create_dir_all(directory.0.join("legacy-json")).unwrap();
+        fs::write(&backup, &bytes).unwrap();
+        assert!(directory.store().initialize().await.is_err());
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_file(&backup).unwrap();
+        assert_eq!(directory.store().get(&id).await.unwrap(), record);
+    }
+
+    #[tokio::test]
+    async fn lost_database_cannot_reinitialize_empty_store_from_archived_json() {
+        let directory = TestDirectory::new();
+        directory.store().create(template()).await.unwrap();
+        fs::remove_file(directory.0.join("templates.sqlite3")).unwrap();
+        assert!(directory.store().initialize().await.is_err());
+        assert!(!directory.0.join("templates.sqlite3").exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_retries_when_original_and_backup_were_already_removed() {
+        let directory = TestDirectory::new();
+        let id = Uuid::new_v4().to_string();
+        let record = legacy_record(&id);
+        pending_archive(&directory, &id, &record).await;
+        fs::remove_file(directory.0.join(format!("{id}.json"))).unwrap();
+        assert_eq!(directory.store().get(&id).await.unwrap(), record);
+        assert!(!directory.0.join("legacy-json").exists());
+    }
+
+    #[tokio::test]
+    async fn interrupted_marker_conversion_keeps_old_version_blocked_and_can_resume() {
+        let directory = TestDirectory::new();
+        let id = Uuid::new_v4().to_string();
+        let record = legacy_record(&id);
+        pending_archive(&directory, &id, &record).await;
+        fs::write(
+            directory.0.join("database-required-previous.json"),
+            b"{\"storage\":\"sqlite\",\"schema_version\":1}\n",
+        )
+        .unwrap();
+        assert!(
+            read_records(&directory.0).is_err(),
+            "标记转换中断后旧版仍须拒绝创建空库"
+        );
+        assert_eq!(directory.store().get(&id).await.unwrap(), record);
+        assert!(directory.0.join("database-required.json").is_dir());
+        assert!(!directory.0.join("database-required-previous.json").exists());
+        assert!(!directory.0.join(format!("{id}.json")).exists());
+    }
+
+    fn old_marker_file(directory: &TestDirectory) {
+        let marker = directory.0.join("database-required.json");
+        if marker.is_dir() {
+            fs::remove_dir(&marker).unwrap();
+        }
+        fs::write(marker, b"{\"storage\":\"sqlite\",\"schema_version\":1}\n").unwrap();
+    }
+
+    #[tokio::test]
+    async fn cleans_previous_complete_migration_without_reviving_deleted_or_old_records() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let live = store.create(template()).await.unwrap();
+        let deleted = store.create(template()).await.unwrap();
+        let live_id = live["id"].as_str().unwrap();
+        let deleted_id = deleted["id"].as_str().unwrap();
+        let mut updated_template = template();
+        updated_template["name"] = json!("已更新的数据库点表");
+        let updated = store.update(live_id, 1, updated_template).await.unwrap();
+        store.delete(deleted_id, 1).await.unwrap();
+        old_marker_file(&directory);
+        let archive = directory.0.join("legacy-json");
+        fs::create_dir(&archive).unwrap();
+        for record in [live.clone(), deleted.clone()] {
+            fs::write(
+                archive.join(format!("{}.json", record["id"].as_str().unwrap())),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+        }
+        let reopened = directory.store();
+        reopened.initialize().await.unwrap();
+        assert_eq!(reopened.get(live_id).await.unwrap(), updated);
+        assert!(matches!(
+            reopened.get(deleted_id).await,
+            Err(StoreError::NotFound)
+        ));
+        assert!(!archive.exists());
+        assert!(directory.0.join("database-required.json").is_dir());
+        assert!(reopened.list().await.unwrap().len() == 1);
+    }
+
+    #[tokio::test]
+    async fn refuses_archive_with_unrelated_files_without_deleting_them() {
+        let directory = TestDirectory::new();
+        directory.store().initialize().await.unwrap();
+        old_marker_file(&directory);
+        let archive = directory.0.join("legacy-json");
+        fs::create_dir(&archive).unwrap();
+        let unrelated = archive.join("用户资料.txt");
+        fs::write(&unrelated, "不要删除").unwrap();
+        assert!(directory.store().initialize().await.is_err());
+        assert_eq!(fs::read_to_string(unrelated).unwrap(), "不要删除");
+    }
+
+    #[tokio::test]
+    async fn missing_database_table_is_rejected_without_recreating_empty_library() {
+        let directory = TestDirectory::new();
+        directory.store().create(template()).await.unwrap();
+        {
+            let database =
+                rusqlite::Connection::open(directory.0.join("templates.sqlite3")).unwrap();
+            database.execute("DROP TABLE templates", []).unwrap();
+        }
+        assert!(directory.store().initialize().await.is_err());
+        let database = rusqlite::Connection::open(directory.0.join("templates.sqlite3")).unwrap();
+        let tables: u32 = database
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='templates'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "不能把缺表的数据损坏掩盖成空库");
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_database_version_and_missing_or_corrupt_marker() {
+        let directory = TestDirectory::new();
+        directory.store().initialize().await.unwrap();
+        let marker = directory.0.join("database-required.json");
+        if marker.is_dir() {
+            fs::remove_dir(&marker).unwrap();
+        } else {
+            fs::remove_file(&marker).unwrap();
+        }
+        assert!(directory.store().initialize().await.is_err());
+        fs::write(&marker, "损坏标记").unwrap();
+        assert!(directory.store().initialize().await.is_err());
+        fs::remove_file(&marker).unwrap();
+        fs::create_dir(&marker).unwrap();
+        {
+            let database =
+                rusqlite::Connection::open(directory.0.join("templates.sqlite3")).unwrap();
+            database.pragma_update(None, "user_version", 999).unwrap();
+        }
+        assert!(directory.store().initialize().await.is_err());
     }
 
     #[tokio::test]

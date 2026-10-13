@@ -1,14 +1,17 @@
 """以真实平台进程验证点表 HTTP 合约、重启持久化及版本冲突。"""
 import copy
+from contextlib import closing
 import http.client
 import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
 import unittest
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = ROOT / "target" / "debug" / ("mskdsp-platform.exe" if os.name == "nt" else "mskdsp-platform")
@@ -130,11 +133,55 @@ class TemplateApiTests(unittest.TestCase):
             status, raw, _ = self.request("POST", base, invalid)
             self.assertEqual(status, 400, raw)
             self.assertTrue(json.loads(raw)["error"])
-        self.assertEqual(self.request("POST", base, {"padding": "x" * (2 * 1024 * 1024)})[0], 413)
+        self.assertEqual(self.request("POST", base, {"padding": "x" * (10 * 1024 * 1024)})[0], 413)
         record = json.loads(self.request("POST", base, template())[1])
         self.assertEqual(self.request("PUT", base + "/" + record["id"], template())[0], 428)
         self.assertEqual(self.request("DELETE", base + "/" + record["id"], headers={"If-Match": "abc"})[0], 400)
         self.assertEqual(json.loads(self.request("GET", base)[1])[0]["point_count"], 1)
+
+    # 迁移保留旧记录身份、时间和精度，重启不复活数据库中删除的记录。
+    def test_legacy_json_migrates_to_sqlite_once(self):
+        self.stop()
+        directory = self.folder / "data" / "modbus-templates"
+        # 使用全新目录模拟尚未运行数据库版程序的现场。
+        legacy_directory = self.folder / "legacy-data"
+        directory.rename(legacy_directory)
+        directory.mkdir()
+        identifier = str(uuid.uuid4())
+        record = {"id": identifier, "revision": 7, "created_at": 123, "updated_at": 456, "template": template()}
+        filename = identifier + ".json"
+        (directory / filename).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        self.start()
+        path = "/api/v1/modbus-templates/" + identifier
+        self.assertEqual(json.loads(self.request("GET", path)[1]), record)
+        database = directory / "templates.sqlite3"
+        self.assertTrue(database.is_file())
+        with closing(sqlite3.connect(database)) as connection:
+            self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone(), ("ok",))
+        self.assertFalse((directory / "legacy-json").exists())
+        self.assertFalse((directory / filename).exists())
+        self.assertTrue((directory / "database-required.json").is_dir())
+        self.assertEqual(list(directory.glob("*.json")), [directory / "database-required.json"])
+        self.assertEqual(self.request("DELETE", path, headers={"If-Match": "7"})[0], 204)
+        self.stop()
+        self.start()
+        self.assertEqual(self.request("GET", path)[0], 404)
+        self.assertEqual(json.loads(self.request("GET", "/api/v1/modbus-templates")[1]), [])
+
+    # 新容量允许 10000 点完整往返，10001 点仍返回校验错误。
+    def test_expanded_point_capacity_roundtrip(self):
+        data = template()
+        point = data["points"][0]
+        data["points"] = [dict(point, id=f"point-{index}", tag=f"点位{index}") for index in range(10000)]
+        status, raw, _ = self.request("POST", "/api/v1/modbus-templates", data)
+        self.assertEqual(status, 201, raw[:1000])
+        record = json.loads(raw)
+        self.assertEqual(record["template"], data)
+        download = self.request("GET", "/api/v1/modbus-templates/" + record["id"] + "/download")
+        self.assertEqual(download[0], 200)
+        self.assertEqual(json.loads(download[1]), data)
+        data["points"].append(dict(point, id="overflow", tag="超限点位"))
+        self.assertEqual(self.request("POST", "/api/v1/modbus-templates", data)[0], 400)
 
     # 平台入口和点表页面均可访问，现有程序更新页面继续保留。
     def test_pages_and_builtin_fixture_compatibility(self):
