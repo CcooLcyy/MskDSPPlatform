@@ -96,6 +96,8 @@ jobs:
           curl --fail "http://127.0.0.1:$http_port/" | grep '检查更新'
           curl --fail "http://127.0.0.1:$http_port/api/update/status"
           docker restart platform-smoke
+          http_port=$(docker port platform-smoke 8080/tcp | cut -d: -f2)
+          grpc_port=$(docker port platform-smoke 50051/tcp | cut -d: -f2)
           python script/smoke_container.py --http-url "http://127.0.0.1:$http_port" --grpc-port "$grpc_port" --expected-version "$VERSION" --expected-channel "$CHANNEL" --expected-commit "$COMMIT" --expected-build-time "$BUILD_TIME"
       - name: 验证容器内真实程序更新与重启恢复
         env:
