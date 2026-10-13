@@ -36,7 +36,7 @@ class LoginPageTests(unittest.TestCase):
         self.assertNotIn("innerHTML", page)
         self.assertIn("textContent", page)
         self.assertIn("/api/v1/auth/login", page)
-        self.assertIn("/update", page)
+        self.assertIn("window.location.replace('/modbus-templates')", page)
         self.assertNotRegex(page, r'type="password"[^>]*value=')
 
     # 验证重复提交、登录失败、限流、断网与成功跳转的请求边界。

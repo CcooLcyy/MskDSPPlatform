@@ -9,7 +9,7 @@ PAGE = Path(__file__).resolve().parents[1] / "web" / "update.html"
 
 
 class UpdatePageTests(unittest.TestCase):
-    # 更新页共用平台导航，当前版本、可用版本、任务状态和技术详情分别呈现。
+    # 更新页共用平台导航，当前版本、可用版本、任务状态分别呈现。
     def test_shared_shell_and_separate_update_regions(self):
         page = PAGE.read_text(encoding="utf-8")
         self.assertIn('href="/assets/platform.css"', page)
@@ -19,7 +19,9 @@ class UpdatePageTests(unittest.TestCase):
         self.assertIn('aria-labelledby="current-heading"', page)
         self.assertIn('aria-labelledby="available-heading"', page)
         self.assertIn('id="task-status"', page)
-        self.assertRegex(page, r'<details[^>]*>[\s\S]*?<summary>技术详情</summary>')
+        self.assertNotIn('技术详情', page)
+        self.assertNotIn('更新来源', page)
+        self.assertNotIn('source_url', page)
         self.assertNotIn('--page:', page)
         self.assertNotIn("document.querySelector('section')", page)
 
@@ -27,7 +29,7 @@ class UpdatePageTests(unittest.TestCase):
     def test_page_contract(self):
         page = PAGE.read_text(encoding="utf-8")
         self.assertIn('name="viewport"', page)
-        for field in ("current", "latest", "channel", "source", "state", "message", "check", "apply", "username", "logout"):
+        for field in ("current", "latest", "channel", "state", "message", "check", "apply", "username", "logout"):
             self.assertIn(f'id="{field}"', page)
         self.assertNotIn("innerHTML", page)
         self.assertIn("textContent", page)

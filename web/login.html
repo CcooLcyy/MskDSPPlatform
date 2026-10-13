@@ -90,7 +90,7 @@
           <button id="submit" class="primary" type="submit">登录</button>
           <p id="message" class="login-feedback" role="status" aria-live="polite"></p>
         </form>
-        <p class="login-footnote">请使用已配置的平台账号。登录成功后进入程序更新页面。</p>
+        <p class="login-footnote">请使用已配置的平台账号。登录成功后进入点表工作台。</p>
         <noscript>请启用 JavaScript 以登录管理平台。</noscript>
       </section>
     </main>
@@ -141,7 +141,7 @@ function createLoginClient({fetchImpl, onChange, onSuccess}) {
 const element = id => document.getElementById(id);
 const client = createLoginClient({
   fetchImpl:window.fetch.bind(window),
-  onSuccess:() => window.location.replace('/update'),
+  onSuccess:() => window.location.replace('/modbus-templates'),
   onChange:({pending, finished, error}) => {
     element('submit').disabled = pending || finished;
     element('submit').textContent = pending ? '正在登录…' : finished ? '登录成功' : '登录';

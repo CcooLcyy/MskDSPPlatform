@@ -274,8 +274,12 @@ class TemplateApiTests(unittest.TestCase):
 
     # 平台入口和点表页面均可访问，现有程序更新页面继续保留。
     def test_pages_and_builtin_fixture_compatibility(self):
-        self.assertIn("点表".encode(), self.request("GET", "/modbus-templates")[1])
-        self.assertIn(b"/modbus-templates", self.request("GET", "/")[1])
+        workbench = self.request("GET", "/modbus-templates")[1]
+        self.assertIn("点表".encode(), workbench)
+        self.assertEqual(self.request("GET", "/")[1], workbench)
+        login = self.request("GET", "/login")
+        self.assertEqual(login[0], 303)
+        self.assertEqual(login[2]["location"], "/modbus-templates")
         self.assertEqual(self.request("GET", "/update")[0], 200)
         fixtures = sorted((ROOT / "test/fixtures/modbus-templates").glob("*.json"))
         self.assertGreaterEqual(len(fixtures), 3, "平台仓库需包含三个厂家点表夹具")

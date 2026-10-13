@@ -193,7 +193,7 @@ pub async fn require_admin(
 
 pub async fn login_page(State(state): State<HttpState>, headers: HeaderMap) -> Response {
     if state.auth.authenticated(&headers).await {
-        Redirect::to("/update").into_response()
+        Redirect::to("/modbus-templates").into_response()
     } else {
         Html(include_str!("../web/login.html")).into_response()
     }
@@ -484,7 +484,7 @@ mod tests {
             StatusCode::OK
         );
         let response = request(&app, "GET", "/login", &second, "", "", "").await;
-        assert_eq!(response.headers()[header::LOCATION], "/update");
+        assert_eq!(response.headers()[header::LOCATION], "/modbus-templates");
         let response = request(
             &app,
             "POST",

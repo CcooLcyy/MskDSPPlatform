@@ -63,14 +63,9 @@
     #message { margin: 0; min-height: 24px; overflow-wrap: anywhere; }
     #message.error { color: var(--danger); }
     #connection { margin: 12px 0 0; padding: 10px 13px; border: 1px solid var(--danger-border); border-radius: 8px; background: var(--danger-bg); color: var(--danger); font-size: 12px; }
-    .update-details { padding: 16px 20px; margin-bottom: 22px; box-shadow: none; }
-    .update-details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
-    .technical-grid { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 12px; margin: 17px 0 0; font-size: 12px; }
-    .technical-grid dt { color: var(--muted); }
-    .technical-grid dd { margin: 0; overflow-wrap: anywhere; }
     .update-footer { max-width: 820px; }
     @media (max-width: 900px) { .version-panel { padding: 22px; } .version-grid { gap: 16px; } .version-code { font-size: 24px; } }
-    @media (max-width: 650px) { .version-grid { grid-template-columns: 1fr; } .version-panel { padding: 22px; } .version-heading { margin-bottom: 16px; } .version-panel .hint { min-height: 0; margin-bottom: 18px; } .version-panel .actions { padding-top: 18px; } .technical-grid { grid-template-columns: 1fr; gap: 4px; } .technical-grid dd { margin-bottom: 10px; } }
+    @media (max-width: 650px) { .version-grid { grid-template-columns: 1fr; } .version-panel { padding: 22px; } .version-heading { margin-bottom: 16px; } .version-panel .hint { min-height: 0; margin-bottom: 18px; } .version-panel .actions { padding-top: 18px; } }
   </style>
 </head>
 <body>
@@ -110,7 +105,6 @@
           <div class="panel-heading"><h2 id="task-heading">任务状态</h2><span id="state" class="task-indicator">正在读取</span></div>
           <div class="panel-body" role="status" aria-live="polite"><p id="message">正在读取更新状态…</p><p id="connection" hidden></p></div>
         </section>
-        <details class="update-details panel"><summary>技术详情</summary><dl class="technical-grid"><dt>更新来源</dt><dd id="source">正在读取</dd></dl></details>
         <footer class="update-footer">更新由你手动发起。安装期间服务会短暂重连，更新失败时将尝试恢复上一版本。更新成功后若会话失效，请重新登录。</footer>
         <noscript>请启用 JavaScript 以查看更新状态并操作更新。</noscript>
       </main>
@@ -256,7 +250,6 @@ const client = createUpdateClient({
     element('current').textContent = text(status?.current_version) || '—';
     element('latest').textContent = text(status?.latest_version) || '待检查';
     element('channel').textContent = channels[status?.channel] || text(status?.channel) || '—';
-    element('source').textContent = text(status?.source_url) || '未配置';
     element('state').textContent = disconnected ? '连接中断' : pending ? '正在提交' : labels[status?.state] || '正在读取';
     element('message').textContent = actionError || text(status?.message) || (status?.enabled === false ? '网页更新未启用，请由管理员配置更新源。' : '点击“检查更新”获取最新版本。');
     element('connection').hidden = !disconnected;
