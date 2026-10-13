@@ -27,7 +27,7 @@ ARG CHANNEL=dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 ARG SOURCE
-ARG UPDATE_MANIFEST_URL=https://pub-19f3d71852b04011b120b1b814141c12.r2.dev/mskdsp-platform/ci/latest.json
+ARG UPDATE_MANIFEST_URL=https://update.clsclear.top/mskdsp-platform/ci/latest.json
 LABEL org.opencontainers.image.title="MskDSPPlatform" \
     org.opencontainers.image.description="MskDSP 远程服务平台基础服务" \
     org.opencontainers.image.version="${VERSION}" \

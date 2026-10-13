@@ -19,7 +19,7 @@ permissions:
 env:
   R2_BUCKET: ${{ vars.R2_BUCKET || 'mskdsp-update' }}
   R2_PREFIX: ${{ vars.R2_PREFIX || 'mskdsp-platform' }}
-  R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL || 'https://pub-19f3d71852b04011b120b1b814141c12.r2.dev' }}
+  R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL || 'https://update.clsclear.top' }}
 
 jobs:
   publish:

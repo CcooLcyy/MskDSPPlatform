@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 5
     env:
       R2_BUCKET: ${{ vars.R2_BUCKET || 'mskdsp-update' }}
-      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL || 'https://pub-19f3d71852b04011b120b1b814141c12.r2.dev' }}
+      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL || 'https://update.clsclear.top' }}
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

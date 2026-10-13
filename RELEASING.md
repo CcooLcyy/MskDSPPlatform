@@ -23,7 +23,7 @@ PR 只检查，不发布。版本来源、配置、打包范围见 [发布方案
 
 - `R2_BUCKET`：默认 `mskdsp-update`。
 - `R2_PREFIX`：默认 `mskdsp-platform`，不得复用其他项目的前缀。
-- `R2_PUBLIC_BASE_URL`：默认 `https://pub-19f3d71852b04011b120b1b814141c12.r2.dev`。
+- `R2_PUBLIC_BASE_URL`：默认 `https://update.clsclear.top`。
 
 先校验所有版本资产，再推进 `latest.json`，验证入口后才精确清理当前通道旧对象。
 正式版本拒绝不同提交或内容覆盖，CI/Beta 拒绝过期分支构建覆盖滚动入口。
