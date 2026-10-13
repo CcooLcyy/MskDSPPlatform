@@ -1,0 +1,61 @@
+name: R2 下载映射检查
+
+on:
+  workflow_dispatch:
+    inputs:
+      object_key:
+        description: '本平台已上传对象键，例如 mskdsp-platform/ci/版本/SHA256SUMS'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      R2_BUCKET: ${{ vars.R2_BUCKET || 'mskdsp-update' }}
+      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL || 'https://pub-19f3d71852b04011b120b1b814141c12.r2.dev' }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      OBJECT_KEY: ${{ inputs.object_key }}
+    steps:
+      - name: 只读比较存储桶对象与公开下载内容
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,subprocess,tempfile
+          from pathlib import Path
+          from urllib.request import Request,urlopen
+          from urllib.error import HTTPError
+          root=os.environ['R2_PUBLIC_BASE_URL'].rstrip('/')
+          endpoint='https://'+os.environ['R2_ACCOUNT_ID']+'.r2.cloudflarestorage.com'
+          key=os.environ['OBJECT_KEY']
+          if not key.startswith('mskdsp-platform/') or any(p in ('..','.') for p in key.split('/')):
+              raise SystemExit('对象检查仅允许本平台前缀')
+          with tempfile.TemporaryDirectory() as folder:
+              for index,object_key in enumerate(['mskdsp-upper/ci/latest.json',key]):
+                  target=Path(folder)/str(index)
+                  command=['aws','s3api','get-object','--bucket',os.environ['R2_BUCKET'],'--key',object_key,'--endpoint-url',endpoint,'--region','auto',str(target)]
+                  response=subprocess.run(command,capture_output=True,text=True)
+                  print('对象键：'+object_key)
+                  private=None
+                  if response.returncode==0:
+                      private=target.read_bytes()
+                      print('S3 对象存在，字节数：'+str(len(private)))
+                  else:
+                      print('S3 读取失败：'+response.stderr.strip())
+                  try:
+                      with urlopen(Request(root+'/'+object_key,headers={'User-Agent':'mskdsp-platform-publisher/1','Cache-Control':'no-cache'}),timeout=20) as public:
+                          data=public.read(1024*1024)
+                          print('公开 HTTP：'+str(public.status)+'，字节数：'+str(len(data)))
+                      if private is not None:
+                          print('S3 与公开内容一致：'+str(hashlib.sha256(private).digest()==hashlib.sha256(data).digest()))
+                  except HTTPError as error:
+                      print('公开 HTTP：'+str(error.code))
+          PY
