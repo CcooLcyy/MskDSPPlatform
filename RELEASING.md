@@ -76,7 +76,7 @@ HTTP 就绪、版本身份和真实 gRPC Hello/Welcome/Goodbye 握手均通过�
 
 1. 在 main 完成修改、测试并提交，统一 Cargo.toml 与 Cargo.lock 基础版本。
 2. 推送已确认的提交到 Beta：`git push origin <SHA>:refs/heads/beta/0.0.1`。
-3. 等待 Beta 构建、容器验证和 R2 发布成功。
+3. 等待 Beta 构建、打包校验和 R2 发布成功。
 4. 在同一提交创建标签：`git tag -a v0.0.1 <SHA> -m 'Release v0.0.1'`。
 5. 推送标签：`git push origin v0.0.1`，等待 Stable 发布完成。
 
@@ -93,6 +93,7 @@ cargo test --locked --all-targets
 docker build --platform linux/amd64 -t mskdsp-platform:dev .
 ```
 
-CI 还运行真实容器、原生 Rust gRPC 握手、网页入口、容器重启，以及从旧版本测试
-起点下载真实 Rust 程序并切换、持久化重启的完整链路。
+CI 自动运行工具测试、Rust 检查、镜像构建、交付包身份与摘要校验及发布。
+容器运行和程序更新恢复烟测不在自动发布流程中；保留 `script/smoke_container.py`
+和 `script/smoke_runtime.py` 供手动验证。
 当前平台仍为基础连接服务；原生 TLS、诊断上传、用户权限及数据库不在本次范围内。

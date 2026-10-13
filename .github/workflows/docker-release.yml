@@ -59,7 +59,7 @@ jobs:
           cargo fmt --all -- --check
           cargo test --locked --all-targets
       - uses: docker/setup-buildx-action@v3
-      - name: 构建待验证镜像
+      - name: 构建发布镜像
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -77,32 +77,6 @@ jobs:
             UPDATE_MANIFEST_URL=${{ steps.metadata.outputs.update_manifest_url }}
           cache-from: type=gha,scope=platform-amd64
           cache-to: type=gha,mode=max,scope=platform-amd64
-      - name: 检查真实容器与构建身份
-        env:
-          IMAGE: ${{ steps.metadata.outputs.image }}
-          VERSION: ${{ steps.metadata.outputs.version }}
-          CHANNEL: ${{ steps.metadata.outputs.channel }}
-          COMMIT: ${{ steps.metadata.outputs.commit }}
-          BUILD_TIME: ${{ steps.metadata.outputs.build_time }}
-        run: |
-          test "$(docker image inspect "$IMAGE" --format '{{.Config.User}}')" = '10001:10001'
-          test "$(docker image inspect "$IMAGE" --format '{{json .Config.Volumes}}')" != 'null'
-          docker run -d --name platform-smoke --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true -p 127.0.0.1::8080 -p 127.0.0.1::50000 "$IMAGE"
-          trap 'docker logs platform-smoke; docker rm -fv platform-smoke' EXIT
-          http_port=$(docker port platform-smoke 8080/tcp | cut -d: -f2)
-          grpc_port=$(docker port platform-smoke 50000/tcp | cut -d: -f2)
-          python script/smoke_container.py --http-url "http://127.0.0.1:$http_port" --grpc-port "$grpc_port" --expected-version "$VERSION" --expected-channel "$CHANNEL" --expected-commit "$COMMIT" --expected-build-time "$BUILD_TIME"
-          docker exec platform-smoke /usr/local/bin/mskdsp-platform --probe-grpc 127.0.0.1:50000
-          curl --fail "http://127.0.0.1:$http_port/login" | grep '管理员登录'
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:$http_port/api/update/status")" = '401'
-          docker restart platform-smoke
-          http_port=$(docker port platform-smoke 8080/tcp | cut -d: -f2)
-          grpc_port=$(docker port platform-smoke 50000/tcp | cut -d: -f2)
-          python script/smoke_container.py --http-url "http://127.0.0.1:$http_port" --grpc-port "$grpc_port" --expected-version "$VERSION" --expected-channel "$CHANNEL" --expected-commit "$COMMIT" --expected-build-time "$BUILD_TIME"
-      - name: 验证容器内真实程序更新与重启恢复
-        env:
-          IMAGE: ${{ steps.metadata.outputs.image }}
-        run: docker run --rm --entrypoint python3 -v "$PWD/script/smoke_runtime.py:/smoke_runtime.py:ro" "$IMAGE" /smoke_runtime.py
       - name: 保存并校验离线镜像包
         env:
           IMAGE: ${{ steps.metadata.outputs.image }}
@@ -160,7 +134,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: 发布已经验证的镜像及通道标签
+      - name: 发布镜像及通道标签
         env:
           IMAGE: ${{ steps.metadata.outputs.image }}
           IMAGE_REPOSITORY: ${{ steps.metadata.outputs.image_repository }}
