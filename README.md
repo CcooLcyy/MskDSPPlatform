@@ -15,7 +15,21 @@ MskDSP 的服务端平台，面向上位机、下位机和后续网页管理端�
 
 - `MskDSPUpper`：Windows 上位机
 - `mskdsp`：Linux 下位机
-- `MskDSPProto`：上下位机及平台共用的 Protocol Buffers 定义
+- `MskDSPProto`：上位机与下位机之间的 Protocol Buffers 定义
+- `MskDSPPlatformProto`：平台对外的 Protocol Buffers 定义，通过 `platform-proto/` 子模块引用
+
+## 平台协议子模块
+
+克隆本仓库后，在仓库根目录初始化平台协议子模块：
+
+```bash
+git submodule update --init --recursive
+```
+
+子模块来源为内网 GitLab 的 `mskdsp/mskdspplatformproto`，需要相应的仓库读取权限。
+父仓库固定引用具体提交，初始化时不会自动跟随协议仓库的最新版本。
+当前共享协议仓库仅完成初始化，现有 Agent 协议仍由 `proto/platform/v1/agent.proto` 提供；
+后续迁移或新增平台接口时，再统一调整协议文件与构建引用。
 
 ## 当前状态
 

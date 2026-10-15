@@ -1,0 +1,3 @@
+[submodule "platform-proto"]
+	path = platform-proto
+	url = http://192.168.10.198:8929/mskdsp/mskdspplatformproto.git
