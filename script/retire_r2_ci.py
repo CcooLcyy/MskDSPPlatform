@@ -100,6 +100,16 @@ def object_metadata(item, *, head=False, key=None):
         raise RetirementError("远端对象键、大小、摘要标识或时间不符合已确认范围") from None
 
 
+def head_matches(expected, response):
+    """HEAD 时间只精确到秒；完整列举及盘点仍保留原始毫秒并严格比较。"""
+    actual = object_metadata(response, head=True, key=expected["key"])
+    if any(actual[field] != expected[field] for field in ("key", "size", "etag")):
+        return False
+    moments = [datetime.fromisoformat(item["last_modified"].replace("Z", "+00:00")).replace(microsecond=0)
+               for item in (expected, actual)]
+    return moments[0] == moments[1]
+
+
 def list_objects(store, *, allow_empty=False):
     found, seen_tokens, token = {}, set(), None
     while True:
@@ -222,7 +232,7 @@ def snapshot(store, output, *, bucket):
         item = remote[key]
         if not isinstance(response, dict) or response.get("ETag") != item["etag"]:
             raise RetirementError("下载响应的对象标识与列举不一致")
-        if object_metadata(store.head(key), head=True, key=key) != item:
+        if not head_matches(item, store.head(key)):
             raise RetirementError("备份期间远端对象发生变化")
         objects.append(dict(item, sha256=file_sha256(regular(destination)), backup_path=relative))
     validate_backup(output, objects)
@@ -260,12 +270,12 @@ def apply(store, snapshot_dir, inventory_sha256, report_path, *, bucket):
         if list_objects(store) != expected:
             raise RetirementError("远端列表已变化，禁止删除")
         for key in KEYS:
-            if object_metadata(store.head(key), head=True, key=key) != expected[key]:
+            if not head_matches(expected[key], store.head(key)):
                 raise RetirementError("远端对象已变化，禁止删除")
         for key in KEYS:
             report.update(stage="逐对象删除前复核", failed_key=key)
             write_json(report_path, report)
-            if object_metadata(store.head(key), head=True, key=key) != expected[key]:
+            if not head_matches(expected[key], store.head(key)):
                 raise RetirementError("删除前对象已变化，停止后续删除")
             report["stage"] = "删除单个已确认对象"
             report["uncertain_keys"] = [key]
