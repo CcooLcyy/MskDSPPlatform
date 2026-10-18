@@ -139,21 +139,49 @@ def write_immutable(path: Path, content: bytes) -> None:
     path.write_bytes(content)
 
 
+def write_immutable_file(path: Path, source: Path, sha256: str, size: int) -> None:
+    """只复用同进程已计算的摘要，避免将完整镜像载入内存。"""
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != size or digest(path) != sha256:
+            raise ValueError(f"拒绝覆盖已有发布文件：{path.name}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, path)
+
+
 def prepare(*, metadata: Path, image_archive: Path, binary: Path, output: Path,
             public_base_url: str, prefix: str = PROJECT, identity_reader=None,
             bundle_output: Path | None = None, bundle_source: Path = Path(".")) -> dict:
-    base, prefix = public_url(public_base_url), valid_prefix(prefix)
     data = json.loads(Path(metadata).read_text(encoding="utf-8"))
+    validate_metadata(data)
+    public_url(public_base_url)
+    valid_prefix(prefix)
+    image_archive = Path(image_archive)
+    if image_archive.is_symlink() or not image_archive.is_file() or image_archive.stat().st_size == 0:
+        raise ValueError("缺少完整镜像包")
+    with tempfile.TemporaryDirectory(prefix="platform-image-") as temporary:
+        staged_image = Path(temporary) / "image.tar.gz"
+        shutil.copyfile(image_archive, staged_image)
+        image_id = inspect_archive(staged_image, data)
+        return _prepare_verified(data=data, image_archive=staged_image, binary=Path(binary), output=Path(output),
+                                 public_base_url=public_base_url, prefix=prefix, image_id=image_id,
+                                 image_sha256=digest(staged_image), identity_reader=identity_reader,
+                                 bundle_output=bundle_output, bundle_source=bundle_source)
+
+
+def _prepare_verified(*, data: dict, image_archive: Path, binary: Path, output: Path,
+                      public_base_url: str, prefix: str, image_id: str, image_sha256: str,
+                      identity_reader=None, bundle_output: Path | None = None,
+                      bundle_source: Path = Path(".")) -> dict:
+    """仅供同进程校验/生成镜像后调用；CLI 不接受外部缓存的校验结果。"""
+    base, prefix = public_url(public_base_url), valid_prefix(prefix)
     tag = validate_metadata(data)
-    binary, image_archive, output = Path(binary), Path(image_archive), Path(output)
     if bundle_output is not None:
         bundle_output = Path(bundle_output)
         if bundle_output.exists():
             raise ValueError("交付输出目录已存在，请使用新目录避免混入旧产物")
     if binary.is_symlink() or not binary.is_file() or not 0 < binary.stat().st_size <= MAX_BINARY:
         raise ValueError("缺少程序或程序大小超过 128 MiB")
-    if image_archive.is_symlink() or not image_archive.is_file() or image_archive.stat().st_size == 0:
-        raise ValueError("缺少完整镜像包")
     identity = (identity_reader or read_binary_identity)(binary)
     if not isinstance(identity, dict) or identity.get("service") != PROJECT or any(identity.get(key) != data[key] for key in ("version", "channel", "commit", "build_time")):
         raise ValueError("程序身份与发布元数据不一致")
@@ -163,17 +191,14 @@ def prepare(*, metadata: Path, image_archive: Path, binary: Path, output: Path,
     with tempfile.TemporaryDirectory(prefix="platform-release-") as temporary:
         staging = Path(temporary)
         image_name, binary_name = f"{PROJECT}-{tag}-{PLATFORM}-image.tar.gz", f"{PROJECT}-{tag}-{PLATFORM}-binary.tar.gz"
-        shutil.copyfile(image_archive, staging / image_name)
-        # 镜像只校验一次；离线包使用这份已校验的临时副本和摘要。
-        image_id = inspect_archive(staging / image_name, data)
         binary_package(staging / binary_name, binary)
         if (staging / binary_name).stat().st_size > MAX_BINARY:
             raise ValueError("程序压缩包超过 128 MiB 更新限制")
         entry = {"image": data["image"], "image_id": image_id}
         checksums = []
         for marker, name in (("", image_name), ("binary_", binary_name)):
-            path = staging / name
-            sha = digest(path)
+            path = image_archive if name == image_name else staging / name
+            sha = image_sha256 if name == image_name else digest(path)
             entry.update({marker + "url": encoded_url(base, f"{prefix}/{data['channel']}/{tag}/{PLATFORM}/{name}"),
                           marker + "sha256": sha, marker + "size": path.stat().st_size})
             checksums.append(f"{sha}  {PLATFORM}/{name}")
@@ -182,13 +207,14 @@ def prepare(*, metadata: Path, image_archive: Path, binary: Path, output: Path,
         if existing.exists() and not same_release(json.loads(existing.read_text(encoding="utf-8")), manifest):
             raise ValueError("拒绝覆盖输出目录中不同版本或内容的发布")
         # 所有身份和归档检查完成后才落盘，失败不产生可发布入口。
-        for name in (image_name, binary_name):
-            write_immutable(output / "assets" / tag / PLATFORM / name, (staging / name).read_bytes())
+        for name, marker in ((image_name, ""), (binary_name, "binary_")):
+            path = image_archive if name == image_name else staging / name
+            write_immutable_file(output / "assets" / tag / PLATFORM / name, path, entry[marker + "sha256"], entry[marker + "size"])
         write_immutable(output / "SHA256SUMS", ("\n".join(checksums) + "\n").encode("utf-8"))
         write_immutable(output / "release.json", json_bytes(manifest))
         write_immutable(output / "latest.json", json_bytes(manifest))
         if bundle_output is not None:
-            _write_verified_bundle(data, staging / image_name, bundle_output, Path(bundle_source), image_id, entry["sha256"])
+            _write_verified_bundle(data, image_archive, bundle_output, Path(bundle_source), image_id, entry["sha256"])
     print(f"R2 资产准备完成：通道={data['channel']} 版本={data['version']} 镜像ID={image_id}")
     return manifest
 
@@ -286,18 +312,8 @@ def cleanup_old_versions(*, bucket: str, endpoint: str, channel_root: str, keep_
     return len(obsolete)
 
 
-def publish(*, output_dir: Path, bucket: str, public_base_url: str, prefix: str = PROJECT,
-            account_id: str | None = None, before_latest: Callable[[], None] | None = None) -> dict:
-    environment = aws_environment()
-    missing = [name for name in ("R2_ACCOUNT_ID", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY") if not environment.get(name)]
-    if missing:
-        raise ValueError("缺少 R2 发布环境变量：" + ", ".join(missing))
-    account = environment["R2_ACCOUNT_ID"]
-    if not re.fullmatch(r"[0-9a-f]{32}", account) or account_id is not None and account_id != account:
-        raise ValueError("R2 账号必须来自环境变量且为 32 位小写十六进制")
-    endpoint = f"https://{account}.r2.cloudflarestorage.com"
-    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket):
-        raise ValueError("R2 桶名称不合法")
+def validate_local_assets(*, output_dir: Path, public_base_url: str, prefix: str = PROJECT) -> tuple:
+    """跨任务读取产物时重新验证完整身份、公开地址、长度和摘要，无网络或凭据需求。"""
     base, prefix = public_url(public_base_url), valid_prefix(prefix)
     output_dir = Path(output_dir)
     manifest = json.loads((output_dir / "release.json").read_text(encoding="utf-8"))
@@ -328,6 +344,25 @@ def publish(*, output_dir: Path, bucket: str, public_base_url: str, prefix: str 
     if sums.read_text(encoding="utf-8") != "\n".join(checksums) + "\n":
         raise ValueError("SHA256SUMS 与发布清单不一致")
     assets.append((sums, version_key + "/SHA256SUMS", encoded_url(base, version_key + "/SHA256SUMS"), digest(sums), sums.stat().st_size, "text/plain; charset=utf-8"))
+    return manifest, tag, assets
+
+
+def publish(*, output_dir: Path, bucket: str, public_base_url: str, prefix: str = PROJECT,
+            account_id: str | None = None, before_latest: Callable[[], None] | None = None) -> dict:
+    environment = aws_environment()
+    missing = [name for name in ("R2_ACCOUNT_ID", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY") if not environment.get(name)]
+    if missing:
+        raise ValueError("缺少 R2 发布环境变量：" + ", ".join(missing))
+    account = environment["R2_ACCOUNT_ID"]
+    if not re.fullmatch(r"[0-9a-f]{32}", account) or account_id is not None and account_id != account:
+        raise ValueError("R2 账号必须来自环境变量且为 32 位小写十六进制")
+    endpoint = f"https://{account}.r2.cloudflarestorage.com"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket):
+        raise ValueError("R2 桶名称不合法")
+    base, prefix = public_url(public_base_url), valid_prefix(prefix)
+    output_dir = Path(output_dir)
+    manifest, tag, assets = validate_local_assets(output_dir=output_dir, public_base_url=base, prefix=prefix)
+    version_key = f"{prefix}/{manifest['channel']}/{tag}"
     immutable_url = encoded_url(base, version_key + "/release.json")
     existing = get_json(immutable_url, missing_ok=True)
     if existing is not None and not same_release(existing, manifest):

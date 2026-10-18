@@ -93,7 +93,7 @@ class PublishHeadTests(unittest.TestCase):
                 gitlab_ci, "git", side_effect=["gitlab\norigin", "", SHA]) as git:
             gitlab_ci.publish_head_check(self.metadata)
             self.assertEqual(git.call_args_list[1].args,
-                             ("fetch", "--no-tags", "gitlab", "+refs/heads/main:refs/remotes/gitlab/main"))
+                             ("fetch", "--no-tags", "--depth=1", "gitlab", "+refs/heads/main:refs/remotes/gitlab/main"))
 
     def test_old_pipeline_cannot_publish_latest(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(
@@ -122,7 +122,7 @@ class PublishHeadTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True), patch.object(
                 gitlab_ci, "git", side_effect=["origin", "", SHA]) as git:
             gitlab_ci.publish_head_check(self.metadata)
-            self.assertEqual(git.call_args_list[1].args[2], "origin")
+            self.assertEqual(git.call_args_list[1].args[3], "origin")
 
     def test_server_url_can_route_project_to_internal_gitlab(self):
         env = {"CI_SERVER_URL": "http://internal.test:8929", "CI_JOB_TOKEN": "secret-token"}
@@ -130,7 +130,7 @@ class PublishHeadTests(unittest.TestCase):
                 gitlab_ci, "git", side_effect=["", SHA]) as git:
             gitlab_ci.publish_head_check(self.metadata)
             fetch = git.call_args_list[0]
-            self.assertEqual(fetch.args[2], "http://internal.test:8929/mskdsp/platform.git")
+            self.assertEqual(fetch.args[3], "http://internal.test:8929/mskdsp/platform.git")
             self.assertIn("GIT_CONFIG_VALUE_0", fetch.kwargs["env"])
             self.assertNotIn("secret-token", repr(fetch.args))
 
@@ -139,6 +139,37 @@ class PublishHeadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 gitlab_ci.publish_head_check(self.metadata | {"channel": "stable"})
             git.assert_not_called()
+
+    def test_shallow_fetch_still_rejects_old_head_and_accepts_latest(self):
+        # 使用本地真实 Git 传输验证浅历史，不依赖网络或服务器凭据。
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, checkout = root / "source", root / "checkout"
+            source.mkdir()
+            def run(*args, cwd=source):
+                return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True,
+                                      text=True, encoding="utf-8").stdout.strip()
+            run("init", "--initial-branch=main")
+            run("config", "user.name", "CI test")
+            run("config", "user.email", "ci-test@example.invalid")
+            (source / "file").write_text("first", encoding="utf-8")
+            run("add", "file")
+            run("commit", "-m", "first")
+            old = run("rev-parse", "HEAD")
+            run("clone", "--depth=1", source.as_uri(), str(checkout), cwd=root)
+            (source / "file").write_text("second", encoding="utf-8")
+            run("commit", "-am", "second")
+            latest = run("rev-parse", "HEAD")
+            original_git = gitlab_ci.git
+            def local_git(*args, **kwargs):
+                # 不改全局 cwd，避免影响并行测试或其他任务。
+                return original_git("-C", str(checkout), *args, **kwargs)
+            with patch.dict(os.environ, {"CI_REPOSITORY_URL": "", "CI_SERVER_URL": ""}), \
+                    patch.object(gitlab_ci, "git", side_effect=local_git):
+                with self.assertRaisesRegex(ValueError, "旧构建"):
+                    gitlab_ci.publish_head_check(self.metadata | {"commit": old})
+                gitlab_ci.publish_head_check(self.metadata | {"commit": latest})
+            self.assertEqual(run("rev-list", "--count", "refs/remotes/origin/main", cwd=checkout), "1")
 
 
 class PublishCommandTests(unittest.TestCase):

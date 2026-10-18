@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 import re
@@ -88,9 +89,10 @@ def sha256_file(path: Path) -> str:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def inspect_archive(path: Path, metadata: dict) -> str:
+def inspect_archive(path: Path | tarfile.TarFile, metadata: dict) -> str:
     # 只读取成员，不解压到文件系统；校验 Docker save 包内真正的镜像身份。
-    with tarfile.open(path, "r:gz") as archive:
+    context = nullcontext(path) if isinstance(path, tarfile.TarFile) else tarfile.open(path, "r:*")
+    with context as archive:
         manifest_file = archive.extractfile("manifest.json")
         if manifest_file is None:
             raise ValueError("镜像包缺少 Docker manifest.json")

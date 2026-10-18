@@ -14,12 +14,14 @@ default:
   interruptible: true
 
 variables:
-  GIT_SUBMODULE_STRATEGY: normal
-  GIT_DEPTH: "0"
+  GIT_SUBMODULE_STRATEGY: none
+  GIT_DEPTH: "20"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
   CARGO_BUILD_JOBS: "8"
   CARGO_TERM_COLOR: always
   PYTHONDONTWRITEBYTECODE: "1"
+  PLATFORM_VERIFY_IMAGE: "mskdsp-platform-ci-verify:rust1.94.1-v1"
+  PLATFORM_TOOLS_IMAGE: "mskdsp-platform-ci-tools:bookworm-v1"
   PLATFORM_RUST_IMAGE: "docker.m.daocloud.io/library/rust:1.94.1-bookworm"
   PLATFORM_RUNTIME_IMAGE: "docker.m.daocloud.io/library/debian:bookworm-slim"
   PLATFORM_BUILDKIT_IMAGE: "docker.m.daocloud.io/moby/buildkit@sha256:65eca3c01cd1180c8f64565c4e3c5983af5145818b0e6fa863385d099eb73855"

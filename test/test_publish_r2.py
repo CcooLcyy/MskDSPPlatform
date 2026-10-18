@@ -66,6 +66,27 @@ class PublishingTests(unittest.TestCase):
         (source / "deploy/updater.json").write_text(json.dumps({"manifest_url": BASE + "/mskdsp-platform/stable/latest.json"}), encoding="utf-8")
         return source
 
+    def test_image_is_validated_before_binary_identity_execution(self):
+        def identity(_):
+            self.assertEqual(inspect.call_count, 1)
+            return {"service": "mskdsp-platform", **{key: self.metadata[key] for key in ("version", "channel", "commit", "build_time")}}
+        with patch.object(release, "inspect_archive", wraps=release.inspect_archive) as inspect:
+            self.prepare(identity_reader=identity)
+
+    def test_immutable_file_writes_stream_and_reject_changed_content(self):
+        destination = self.root / "immutable/image.tar.gz"
+        sha, size = release.digest(self.image), self.image.stat().st_size
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("禁止整包读取")):
+            release.write_immutable_file(destination, self.image, sha, size)
+            release.write_immutable_file(destination, self.image, sha, size)
+            destination.write_bytes(b"changed")
+            with self.assertRaises(ValueError):
+                release.write_immutable_file(destination, self.image, sha, size)
+
+    def test_prepare_streams_large_assets_without_read_bytes(self):
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("禁止整包读取")):
+            self.prepare()
+
     # 联合准备复用镜像校验和摘要，交付文件与独立命令完全一致。
     def test_combined_prepare_reuses_image_checks_and_preserves_bundle(self):
         source = self.bundle_source()

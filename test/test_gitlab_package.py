@@ -64,11 +64,73 @@ class GitlabPackageTests(unittest.TestCase):
                 member.size = len(data)
                 archive.addfile(member, io.BytesIO(data))
 
-    def prepare(self, suffix="one"):
+    def prepare(self, suffix="one", **changes):
         return package.prepare(metadata=self.meta, image_tar=self.image, public_base_url="https://updates.example",
                                package_dir=self.root / suffix / "package", r2_output=self.root / suffix / "r2",
                                bundle_output=self.root / suffix / "bundle", release_output=self.root / suffix / "release",
-                               bundle_source=self.source)
+                               bundle_source=self.source, **changes)
+
+    def offline(self, suffix="one", **changes):
+        return package.offline_bundle(metadata=self.meta, output_dir=self.root / suffix / "r2",
+                                      public_base_url="https://updates.example", bundle_source=self.source,
+                                      bundle_output=self.root / suffix / "bundle", release_output=self.root / suffix / "release",
+                                      **changes)
+
+    def test_lightweight_prepare_and_manual_offline_delivery(self):
+        self.image_with([layer_bytes([(TARGET, b"binary")])])
+        with patch.object(package.publish_r2, "read_binary_identity", return_value=self.identity):
+            expected = self.prepare(skip_offline=True)
+        self.assertTrue((self.root / "one/r2/release.json").is_file())
+        self.assertFalse((self.root / "one/bundle").exists())
+        self.assertFalse((self.root / "one/release").exists())
+        self.image.unlink()
+        with patch.object(package.publish_r2, "read_binary_identity") as identity:
+            actual = self.offline()
+        identity.assert_not_called()
+        self.assertEqual(actual, expected)
+        self.assertTrue(next((self.root / "one/release").glob("*.zip")).is_file())
+
+    def test_single_image_inspection_and_streaming_asset_writes(self):
+        self.image_with([layer_bytes([(TARGET, b"binary")])])
+        original = Path.read_bytes
+        def forbid_large_read(path):
+            if path.name.endswith((".tar.gz", ".tar")):
+                self.fail("归档必须流式处理")
+            return original(path)
+        with patch.object(package.publish_r2, "read_binary_identity", return_value=self.identity), \
+             patch.object(package, "inspect_archive", wraps=package.inspect_archive) as inspect, \
+             patch.object(package.publish_r2, "inspect_archive", wraps=package.publish_r2.inspect_archive) as r2_inspect, \
+             patch.object(Path, "read_bytes", forbid_large_read):
+            self.prepare(skip_offline=True)
+        self.assertEqual(inspect.call_count + r2_inspect.call_count, 1)
+
+    def test_manual_offline_rejects_tampered_cross_job_assets(self):
+        self.image_with([layer_bytes([(TARGET, b"binary")])])
+        with patch.object(package.publish_r2, "read_binary_identity", return_value=self.identity):
+            self.prepare(skip_offline=True)
+        next((self.root / "one/r2/assets").rglob("*-image.tar.gz")).write_bytes(b"tampered")
+        with self.assertRaises(ValueError):
+            self.offline()
+        self.assertFalse((self.root / "one/release").exists())
+
+    def test_manual_offline_rejects_unrelated_metadata(self):
+        self.image_with([layer_bytes([(TARGET, b"binary")])])
+        with patch.object(package.publish_r2, "read_binary_identity", return_value=self.identity):
+            self.prepare(skip_offline=True)
+        self.metadata["commit"] = "f" * 40
+        self.meta.write_text(json.dumps(self.metadata), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.offline()
+        self.assertFalse((self.root / "one/release").exists())
+
+    def test_manual_offline_rejects_tampered_updater_manifest(self):
+        self.image_with([layer_bytes([(TARGET, b"binary")])])
+        with patch.object(package.publish_r2, "read_binary_identity", return_value=self.identity):
+            self.prepare(skip_offline=True)
+        (self.root / "one/r2/latest.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "更新入口"):
+            self.offline()
+        self.assertFalse((self.root / "one/release").exists())
 
     def test_complete_delivery_and_stable_gzip(self):
         self.image_with([layer_bytes([(TARGET, b"old")]), layer_bytes([(TARGET, b"final executable")])])
@@ -85,6 +147,7 @@ class GitlabPackageTests(unittest.TestCase):
         self.assertEqual(json.loads((release / "updater-manifest.json").read_text()), manifest)
         with zipfile.ZipFile(next(release.glob("*.zip"))) as zipped:
             self.assertEqual(zipped.read("image.tar.gz"), compressed)
+            self.assertEqual(zipped.getinfo("image.tar.gz").compress_type, zipfile.ZIP_STORED)
         for line in (release / "SHA256SUMS").read_text().splitlines():
             sha, name = line.split("  ")
             self.assertEqual(sha, sha256_file(release / name))
@@ -144,6 +207,22 @@ class GitlabPackageTests(unittest.TestCase):
         with patch.object(package.publish_r2, "read_binary_identity") as identity, self.assertRaisesRegex(ValueError, "镜像层内容"):
             self.prepare()
         identity.assert_not_called()
+
+    def test_layer_digest_covers_bytes_after_tar_eof(self):
+        layer = layer_bytes([(TARGET, b"binary")]) + b"\0" * 65536 + b"original tail"
+        self.image_with([layer])
+        self.image.write_bytes(self.image.read_bytes().replace(b"original tail", b"tampered tail"))
+        with patch.object(package.publish_r2, "read_binary_identity") as identity, self.assertRaisesRegex(ValueError, "镜像层内容"):
+            self.prepare()
+        identity.assert_not_called()
+
+    def test_offline_cli_contract(self):
+        argv = ["gitlab_package.py", "offline-bundle", "--metadata", str(self.meta), "--output-dir", "r2",
+                "--public-base-url", "https://updates.example"]
+        with patch.object(sys, "argv", argv), patch.object(package, "offline_bundle") as offline:
+            package.main()
+        self.assertEqual(offline.call_args.kwargs["output_dir"], Path("r2"))
+        self.assertEqual(offline.call_args.kwargs["release_output"], Path("release"))
 
     def test_cli_contract(self):
         argv = ["gitlab_package.py", "prepare", "--metadata", str(self.meta), "--image-tar", str(self.image),

@@ -3,15 +3,19 @@
     - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE =~ /^(push|web)$/'
 
 .python-tools:
-  image: "$PLATFORM_RUST_IMAGE"
-  before_script:
-    - apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::http::Pipeline-Depth=0 update
-    - apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends python3 nodejs protobuf-compiler ca-certificates
+  image:
+    name: "$PLATFORM_TOOLS_IMAGE"
+    pull_policy: if-not-present
 
 verify:
   extends: .python-tools
+  image:
+    name: "$PLATFORM_VERIFY_IMAGE"
+    pull_policy: if-not-present
   stage: verify
   timeout: 30m
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
   cache:
     key:
       prefix: rust-1.94.1-linux-amd64
@@ -23,7 +27,6 @@ verify:
     - set -o pipefail
     - mkdir -p package/logs .ci-tmp
     - export TMPDIR="$CI_PROJECT_DIR/.ci-tmp"
-    - rustup component add rustfmt --toolchain 1.94.1
     - cargo fmt --all -- --check
     - cargo build --locked 2>&1 | tee package/logs/cargo-build.log
     - test -x target/debug/mskdsp-platform
@@ -54,6 +57,8 @@ build-image:
     name: "$PLATFORM_BUILDKIT_IMAGE"
     entrypoint: [""]
   timeout: 45m
+  variables:
+    GIT_SUBMODULE_STRATEGY: normal
   needs: [verify, metadata]
   resource_group: platform-ci-image-build
   environment:
@@ -91,10 +96,23 @@ package:
   timeout: 20m
   needs: [metadata, build-image]
   script:
-    - python3 -B script/gitlab_package.py prepare --metadata package/metadata.json --image-tar package/image.tar --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"
+    - python3 -B script/gitlab_package.py prepare --metadata package/metadata.json --image-tar package/image.tar --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX" --skip-offline
   artifacts:
     expire_in: 14 days
-    paths: [release/, r2/, package/metadata.json]
+    paths: [r2/, package/metadata.json]
+
+offline-bundle:
+  extends: [.python-tools, .ci-main]
+  stage: publish
+  timeout: 20m
+  needs: [package]
+  when: manual
+  allow_failure: true
+  script:
+    - python3 -B script/gitlab_package.py offline-bundle --metadata package/metadata.json --output-dir r2 --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"
+  artifacts:
+    expire_in: 14 days
+    paths: [release/]
 
 publish-r2:
   extends: [.python-tools, .ci-main]
@@ -113,5 +131,4 @@ publish-r2:
     AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
   script:
     - test -n "$R2_ACCOUNT_ID" && test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY"
-    - apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends awscli
     - python3 -B script/gitlab_ci.py publish-r2 --metadata package/metadata.json --output-dir r2 --bucket "$R2_BUCKET" --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"

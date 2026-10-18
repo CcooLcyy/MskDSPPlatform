@@ -122,7 +122,7 @@ def publish_head_check(data: dict, remote: str | None = None) -> None:
         raise CIError("发布检查需要 main CI 的冻结元数据")
     target, env = _fetch_target(data, remote)
     tracking = f"refs/remotes/{target}/main" if target in ("gitlab", "origin") else "refs/gitlab-ci/publish-main"
-    git("fetch", "--no-tags", target, f"+refs/heads/main:{tracking}", env=env)
+    git("fetch", "--no-tags", "--depth=1", target, f"+refs/heads/main:{tracking}", env=env)
     if git("rev-parse", tracking) != data["commit"]:
         raise CIError("当前 main 已发生变化：旧构建禁止更新 latest.json，请使用最新流水线")
     print("发布前检查通过：冻结提交仍是 main 最新提交")
