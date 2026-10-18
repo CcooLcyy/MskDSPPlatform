@@ -15,6 +15,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = ROOT / "target" / "debug" / ("mskdsp-platform.exe" if os.name == "nt" else "mskdsp-platform")
+STARTUP_TIMEOUT = 30.0
 
 
 def port():
@@ -53,35 +54,78 @@ class TemplateApiTests(unittest.TestCase):
         self.start()
 
     def start(self):
-        env = dict(os.environ, MSKDSP_PLATFORM_CONFIG=str(self.config), MSKDSP_PLATFORM_DATA_DIR=str(self.folder / "data"))
+        env = dict(os.environ, MSKDSP_PLATFORM_CONFIG=str(self.config), MSKDSP_PLATFORM_DATA_DIR=str(self.folder / "data"),
+                   RUST_LOG="mskdsp_platform=info,tower_http=warn")
         env.pop("MSKDSP_PLATFORM_HTTP_ADDR", None)
-        self.child = subprocess.Popen([str(BINARY)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(100):
-            if self.child.poll() is not None:
-                self.fail("平台进程提前退出")
+        self.cookie = ""
+        self.child = None
+        logs = ROOT / "package" / "logs" / "platform-startup"
+        logs.mkdir(parents=True, exist_ok=True)
+        started = time.monotonic()
+        with tempfile.NamedTemporaryFile(prefix=self._testMethodName + "-", suffix=".log", dir=logs,
+                                         delete=False) as output:
+            self.startup_log = Path(output.name)
             try:
-                if self.request("GET", "/healthz")[0] == 200:
-                    status, raw, headers = self.request("POST", "/api/v1/auth/login", {"username": "root", "password": "test-password-123"}, {"X-MskDSP-Action": "auth"})
-                    self.assertEqual(status, 200, raw)
-                    self.cookie = headers["set-cookie"].split(";", 1)[0]
-                    return
-            except OSError:
-                pass
-            time.sleep(0.05)
-        self.fail("平台 HTTP 未就绪")
+                self.child = subprocess.Popen([str(BINARY)], env=env, stdout=output, stderr=subprocess.STDOUT)
+            except OSError as error:
+                self.startup_failure("平台进程创建失败", started, type(error).__name__)
+        deadline = started + STARTUP_TIMEOUT
+        last_probe = "尚未探测"
+        while True:
+            if self.child.poll() is not None:
+                self.startup_failure("平台进程提前退出", started, last_probe)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.startup_failure("平台 HTTP 未就绪", started, last_probe)
+            try:
+                status, _, _ = self.request("GET", "/healthz", timeout=min(0.5, remaining))
+                last_probe = f"HTTP {status}"
+                if time.monotonic() >= deadline:
+                    self.startup_failure("平台 HTTP 未就绪", started, last_probe)
+                if status == 200:
+                    break
+            except (OSError, http.client.HTTPException) as error:
+                last_probe = type(error).__name__
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        # 健康探测就绪后只登录一次，保留业务请求原有超时，不掩盖认证错误。
+        try:
+            status, _, headers = self.request("POST", "/api/v1/auth/login", {"username": "root", "password": "test-password-123"}, {"X-MskDSP-Action": "auth"})
+        except (OSError, http.client.HTTPException) as error:
+            self.startup_failure("平台测试登录请求失败", started, type(error).__name__)
+        if status != 200 or "set-cookie" not in headers:
+            self.startup_failure("平台测试登录失败", started, f"HTTP {status}")
+        self.cookie = headers["set-cookie"].split(";", 1)[0]
+
+    def startup_failure(self, reason, started, last_probe):
+        # 日志留在 CI 产物目录，错误中仅附末尾片段，不输出配置或登录响应。
+        try:
+            with self.startup_log.open("rb") as output:
+                output.seek(0, os.SEEK_END)
+                output.seek(max(0, output.tell() - 8192))
+                tail = output.read().decode("utf-8", errors="replace")
+        except OSError as error:
+            tail = f"日志读取失败：{type(error).__name__}"
+        code = self.child.poll() if self.child is not None else "未创建"
+        self.fail(f"{reason}；已等待 {time.monotonic() - started:.2f} 秒；退出码={code}；"
+                  f"HTTP=127.0.0.1:{self.http_port}；gRPC=127.0.0.1:{self.grpc_port}；"
+                  f"最后探测={last_probe}；启动日志={self.startup_log}\n日志末尾：\n{tail}")
 
     def stop(self):
         if self.child and self.child.poll() is None:
             self.child.terminate()
-            self.child.wait(timeout=5)
+            try:
+                self.child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.child.kill()
+                self.child.wait(timeout=5)
 
-    def request(self, method, path, body=None, headers=None):
+    def request(self, method, path, body=None, headers=None, *, timeout=5):
         marked = {"Content-Type": "application/json", "X-MskDSP-Action": "modbus-template"}
         if self.cookie:
             marked["Cookie"] = self.cookie
         marked.update(headers or {})
         raw = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
-        connection = http.client.HTTPConnection("127.0.0.1", self.http_port, timeout=5)
+        connection = http.client.HTTPConnection("127.0.0.1", self.http_port, timeout=timeout)
         try:
             connection.request(method, path, raw, marked)
             response = connection.getresponse()
