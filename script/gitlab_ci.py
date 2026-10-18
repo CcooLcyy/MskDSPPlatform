@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""为 GitLab CI 生成冻结构建身份，并在发布前拒绝落后的 main 构建。"""
+"""为 GitLab CI 生成冻结构建身份，并在入库前拒绝落后的 main 构建。"""
 from __future__ import annotations
 
 import argparse
@@ -13,10 +13,9 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 try:
-    from script import publish_r2, release
+    from script import release
 except ModuleNotFoundError:
     import release
-    import publish_r2
 
 DEFAULT_IMAGE_REPOSITORY = "ghcr.io/ccoolcyy/mskdsp-platform"
 DOTENV_FIELDS = {
@@ -49,8 +48,7 @@ def public_url(value: str) -> str:
     return value.rstrip("/")
 
 
-def build_ci_metadata(*, image_repository: str | None = None,
-                      update_manifest_url: str | None = None) -> dict:
+def build_ci_metadata(*, image_repository: str | None = None) -> dict:
     env = os.environ
     if (env.get("CI_COMMIT_BRANCH") != "main" or env.get("CI_DEFAULT_BRANCH") != "main"
             or env.get("CI_COMMIT_TAG") or env.get("CI_MERGE_REQUEST_IID")
@@ -74,11 +72,6 @@ def build_ci_metadata(*, image_repository: str | None = None,
                                   ".".join(build_parts), "ccoolcyy/MskDSPPlatform")
     data.update(source=source, image_repository=repository,
                 image=f"{repository}:{data['image_tag']}", ref="main")
-    if update_manifest_url:
-        parsed = urlsplit(public_url(update_manifest_url))
-        if parsed.scheme != "https" or parsed.path.split("/")[-2:] != ["ci", "latest.json"]:
-            raise CIError("网页更新源必须是 CI 通道的 HTTPS latest.json")
-        data["update_manifest_url"] = update_manifest_url
     return data
 
 
@@ -125,7 +118,7 @@ def publish_head_check(data: dict, remote: str | None = None) -> None:
     git("fetch", "--no-tags", "--depth=1", target, f"+refs/heads/main:{tracking}", env=env)
     if git("rev-parse", tracking) != data["commit"]:
         raise CIError("当前 main 已发生变化：旧构建禁止上传或更新通道，请使用最新流水线")
-    print("发布前检查通过：冻结提交仍是 main 最新提交")
+    print("上传前检查通过：冻结提交仍是 main 最新提交")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -135,29 +128,14 @@ def main(argv: list[str] | None = None) -> None:
     metadata.add_argument("--output", type=Path, default=Path("package/metadata.json"))
     metadata.add_argument("--dotenv", type=Path, default=Path("package/build.env"))
     metadata.add_argument("--image-repository")
-    metadata.add_argument("--update-manifest-url")
-    publish = commands.add_parser("publish-head-check", help="拒绝旧构建覆盖通道清单")
+    publish = commands.add_parser("publish-head-check", help="拒绝旧构建上传程序包")
     publish.add_argument("--metadata", type=Path, default=Path("package/metadata.json"))
     publish.add_argument("--remote", choices=("gitlab", "origin"))
-    r2 = commands.add_parser("publish-r2", help="校验 main，上传资产，并在提交入口前再次检查 main")
-    r2.add_argument("--metadata", type=Path, default=Path("package/metadata.json"))
-    r2.add_argument("--output-dir", type=Path, required=True)
-    r2.add_argument("--bucket", required=True)
-    r2.add_argument("--public-base-url", required=True)
-    r2.add_argument("--prefix", default="mskdsp-platform")
     args = parser.parse_args(argv)
-    if args.command == "publish-r2":
-        data = json.loads(args.metadata.read_text(encoding="utf-8"))
-        publish_head_check(data)
-        publish_r2.publish(output_dir=args.output_dir, bucket=args.bucket,
-                           public_base_url=args.public_base_url, prefix=args.prefix,
-                           before_latest=lambda: publish_head_check(data))
-        return
     if args.command == "publish-head-check":
         publish_head_check(json.loads(args.metadata.read_text(encoding="utf-8")), args.remote)
         return
-    data = build_ci_metadata(image_repository=args.image_repository,
-                             update_manifest_url=args.update_manifest_url)
+    data = build_ci_metadata(image_repository=args.image_repository)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     args.dotenv.parent.mkdir(parents=True, exist_ok=True)

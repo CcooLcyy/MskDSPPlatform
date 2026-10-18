@@ -95,14 +95,11 @@ def grpc_contract():
     import grpc
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
-        proto = root / "proto/platform/v1/software.proto"
-        proto.parent.mkdir(parents=True)
-        source = (client.ROOT / "platform-proto/platform/v1/software.proto").read_text(encoding="utf-8")
-        if "build_time = 14" not in source:
-            source = source.replace("string source_sha = 13;", "string source_sha = 13;\n  string build_time = 14;\n  string channel = 15;")
-        proto.write_text(source, encoding="utf-8")
-        client.generate_bindings(root / "proto", root / "generated")
+        client.generate_bindings(client.ROOT / "platform-proto", root / "generated")
         with client.load_bindings(root / "generated") as (messages, services):
+            fields = messages.PackageMetadata.DESCRIPTOR.fields_by_name
+            assert fields["build_time"].number == 14
+            assert fields["channel"].number == 15
             class Publisher(services.SoftwarePublishServiceServicer):
                 def __init__(self):
                     self.metadata = None

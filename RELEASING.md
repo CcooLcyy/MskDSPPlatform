@@ -2,7 +2,7 @@
 
 ## 平台自身 CI 更新
 
-CI 由 GitLab 完成构建、测试、无域名依赖的程序包打包及平台上传；不再执行 `publish-r2`。
+CI 由 GitLab 完成构建、测试、无域名依赖的程序包打包及平台上传。
 上传任务使用 `PLATFORM_GRPC_ENDPOINT`、受保护且掩码的 `PLATFORM_UPLOAD_TOKEN`，
 通过 `CreateUpload`、分块续传及 `CompleteUpload` 确认入库，不调用发布或安装接口。
 默认 TLS；同宿主机受控 Docker 内网可显式配置 `PLATFORM_GRPC_PLAINTEXT=1`。
@@ -13,30 +13,31 @@ CI 由 GitLab 完成构建、测试、无域名依赖的程序包打包及平台
 此后由管理员在 `/update` 检查本地软件仓库中的候选包并决定升级；GitLab 不触发安装。
 运行管理器和基础镜像变更仍单独维护；详见 [平台自身 CI 更新](docs/平台自身CI更新.md)。
 
-以下 R2、GitHub 和通道发布说明保留用于已有 Beta/Stable 及历史交付，不作为当前 CI 更新链路。
+2026-10-18 已完成验收：GitLab 流水线 #22 成功入库提交 `7e3742c`，管理员已在正式平台
+手动升级并确认可用。上传与安装分开执行；后续 CI 包继续由管理员选择升级。
 
-基础版本 `0.0.1`，目标平台 `linux/amd64`。首次只发布 CI，Beta/Stable 流程保留。
+基础版本 `0.0.1`，目标平台 `linux/amd64`。Beta/Stable 流程保留，尚未首发。
 
-`main` 的自动 CI 由 GitLab 执行，构建、测试、离线包和 R2 更新入口的配置见
-[GitLab CI](docs/GitLabCI.md)。GitHub CI 保留 PR 检查和手动发布入口；下表的
-GHCR 推送与 GitHub Release 属于 GitHub 工作流，GitLab CI 直接提供离线镜像包和 R2 产物。
+`main` 的自动 CI 由 GitLab 执行，构建、测试、离线包和平台上传的配置见
+[GitLab CI](docs/GitLabCI.md)。GitHub 的 CI 工作流仅做检查；GHCR、GitHub Release
+及 R2 发布保留用于 Beta/Stable。旧 CI R2 产物仅为历史交付，不再更新。
 
 ## 三个发布通道
 
-| 通道 | 触发 | GHCR 标签 | GitHub Release | R2 清单 |
+| 通道 | 触发 | GHCR 标签 | 交付入口 | R2 清单 |
 | --- | --- | --- | --- | --- |
-| CI | 推送 main，或手动运行 CI | ci | ci-latest 预发布 | mskdsp-platform/ci/latest.json |
+| CI | GitLab 推送 main，或在 main 手动运行流水线 | 不推送 | 平台私有候选包、GitLab 作业产物 | 不更新 |
 | Beta | 推送 beta/0.0.1，或手动指定 Beta 分支 | beta | beta-latest 预发布 | mskdsp-platform/beta/latest.json |
 | Stable | 推送 v0.0.1，或手动指定已存在标签 | stable、latest | v0.0.1 正式发布 | mskdsp-platform/stable/latest.json |
 
-镜像仓库 `ghcr.io/ccoolcyy/mskdsp-platform`。CI/Beta 另有唯一镜像标签，例如
+镜像仓库 `ghcr.io/ccoolcyy/mskdsp-platform`。CI 离线归档和 Beta 镜像使用唯一标签，例如
 `0.0.1-ci.20261013t080000.42.1-sha.0123456`；程序版本保留 SemVer 中的 `+sha.`。
 PR 只检查，不发布。版本来源、配置、打包范围见 [发布方案](docs/发布方案.md)。
 
 ## GitHub 与 R2 配置
 
-平台构建现在需要固定版本的 `platform-proto` 私有协议子模块。构建机须能访问内网 GitLab，并为 CI 配置只读 Secret `PLATFORM_PROTO_READ_TOKEN`；检出步骤见 `script/init_platform_proto.py`。
-GitHub 托管 runner 默认不具备该内网连通能力，发布前须先准备可达的构建环境。上下位机软件仓库与平台自身 R2 更新相互独立，详情见 [软件仓库](docs/软件仓库.md)。
+平台构建需要固定版本的 `platform-proto` 私有协议子模块。构建机须能访问内网 GitLab；GitLab 作业使用 `CI_JOB_TOKEN` 和协议项目 allowlist，GitHub 工作流使用只读 Secret `PLATFORM_PROTO_READ_TOKEN`。检出步骤见 `script/init_platform_proto.py`。
+GitHub 托管 runner 默认不具备该内网连通能力，发布前须先准备可达的构建环境。平台自身 CI 包使用平台软件仓库，Beta/Stable 仍支持 R2 远程更新；产品和权限边界见 [软件仓库](docs/软件仓库.md)。
 
 仓库 Actions Secrets：`R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`。
 仅发布作业使用这些凭据，运行设备只访问公开 HTTPS 地址。
@@ -48,14 +49,15 @@ GitHub 托管 runner 默认不具备该内网连通能力，发布前须先准�
 - `R2_PUBLIC_BASE_URL`：默认 `https://update.clsclear.top`。
 
 先校验所有版本资产，再推进 `latest.json`，验证入口后才精确清理当前通道旧对象。
-正式版本拒绝不同提交或内容覆盖，CI/Beta 拒绝过期分支构建覆盖滚动入口。
+正式版本拒绝不同提交或内容覆盖，Beta 拒绝过期分支构建覆盖滚动入口。
 同一通道串行发布，不影响另一通道或其他项目。
 GHCR 与 GitHub Release 使用 `GITHUB_TOKEN`；工作流明确授予发布所需权限。
 若 GHCR 包为私有，可登录后拉取，也可直接下载公开的 R2 或 GitHub 离线镜像包。
 
 ## 默认部署：docker run
 
-从 GitHub Release 下载本通道 ZIP、`latest.json` 和 `SHA256SUMS`，校验后解压：
+CI 离线包在 GitLab 手动运行 `offline-bundle` 后下载；Beta/Stable 从 GitHub Release
+下载 ZIP、`latest.json` 和 `SHA256SUMS`。校验后解压：
 
 ```bash
 sha256sum -c SHA256SUMS
@@ -79,14 +81,18 @@ sh deploy/run.sh
 仓库 `compose.yaml` 只是可选模板，不属于默认离线交付方式；使用相同的宿主机工作目录。
 首次使用 Compose 前须准备 `deploy` 配置和 `runtime/data`、`runtime/logs`、`runtime/tmp`
 目录，并给予 UID 10001 写入运行目录的权限。
-不同通道部署须使用匹配的镜像和 `deploy/updater.json` 更新源；交付包会自动生成对应 URL。
+不同通道部署须使用匹配的镜像和 `deploy/updater.json` 更新源。CI 默认生成平台本地软件库来源，
+Beta/Stable 交付包生成对应远程 URL。Compose 的构建参数 `UPDATE_MANIFEST_URL` 默认空，
+仅在需要远程来源时显式设置 `MSKDSP_PLATFORM_UPDATE_URL`；已有持久化更新配置需单独核对。
 
 ## 简单更新页面
 
-当前调试阶段，在对应 workflow 成功后可重建平台容器以同步管理器与部署配置，保留已有工作目录、管理员配置和端口。相对稳定后的常规部署使用本节的平台自带更新功能，不再通过容器重建部署普通程序变更。
+普通程序变更通过本节的平台自带更新功能安装。管理器、基础镜像或部署配置变更仍单独维护，
+保留已有工作目录、管理员配置和端口。
 
 登录后默认进入点表工作台。通过“程序更新”导航或 `http://127.0.0.1:8080/update`，查看当前版本、最新版本、更新通道和任务结果；页面不显示更新来源。
-点击“检查更新”查询 R2；发现新版后点击“更新到最新版”。页面加载和状态轮询
+CI 点击“检查更新”查询平台本地软件库；Beta/Stable 的远程来源查询所配置的 R2 清单。
+发现新版后由管理员点击“更新到最新版”。页面加载和状态轮询
 只读取本地状态，不自动检查或安装。没有宿主机定时器、额外业务容器或 Docker Socket。
 
 一个容器内常驻 Python 管理进程，运行可更新的 Rust 平台子进程。公开 HTTP 由管理
@@ -121,7 +127,7 @@ cargo test --locked --all-targets
 docker build --platform linux/amd64 -t mskdsp-platform:dev .
 ```
 
-CI 自动运行工具测试、Rust 检查、镜像构建、交付包身份与摘要校验及发布。
+CI 自动运行工具测试、Rust 检查、镜像构建、程序包身份与摘要校验及平台入库。
 容器运行和程序更新恢复烟测不在自动发布流程中；保留 `script/smoke_container.py`
 和 `script/smoke_runtime.py` 供手动验证。
 当前平台已提供管理员登录及 SQLite 点表库；原生 TLS、诊断上传及多用户权限仍待实现。点表旧 JSON 在事务迁移成功后清理；数据库备份、容量及旧程序回滚限制见 [Modbus 点表管理](docs/Modbus点表管理.md)。

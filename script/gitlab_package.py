@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""无需 Docker daemon，校验 BuildKit Docker 归档并准备既有 R2/离线交付产物。"""
+"""无需 Docker daemon，校验 BuildKit Docker 归档并准备平台入库及离线交付产物。"""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +17,7 @@ import zipfile
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from script import publish_r2
-from script.release import _write_verified_bundle, inspect_archive, sha256_file
+from script.release import inspect_archive, sha256_file
 
 TARGET = "usr/local/bin/mskdsp-platform"
 ANCESTORS = ("usr", "usr/local", "usr/local/bin")
@@ -52,20 +52,6 @@ class DigestReader:
         content = self.source.read(size)
         self.digest.update(content)
         return content
-
-
-class DigestWriter:
-    def __init__(self, destination):
-        self.destination = destination
-        self.digest = hashlib.sha256()
-
-    def write(self, content):
-        result = self.destination.write(content)
-        self.digest.update(content[:result])
-        return result
-
-    def flush(self):
-        self.destination.flush()
 
 
 def extract_binary(image_tar: Path, metadata: dict, destination: Path) -> str:
@@ -146,80 +132,6 @@ def extract_binary(image_tar: Path, metadata: dict, destination: Path) -> str:
     return image_id
 
 
-def prepare(*, metadata: Path, image_tar: Path, public_base_url: str, prefix: str = "mskdsp-platform",
-            package_dir: Path = Path("package"), r2_output: Path = Path("r2"),
-            bundle_output: Path = Path("bundle"), release_output: Path = Path("release"),
-            bundle_source: Path = Path("."), skip_offline: bool = False) -> dict:
-    data = json.loads(metadata.read_text(encoding="utf-8"))
-    publish_r2.validate_metadata(data)
-    publish_r2.public_url(public_base_url)
-    publish_r2.valid_prefix(prefix)
-    if not image_tar.is_file() or image_tar.is_symlink():
-        raise ValueError("缺少 BuildKit 导出的普通 Docker 镜像归档")
-    outputs = (r2_output,) if skip_offline else (r2_output, bundle_output, release_output)
-    if any(path.exists() for path in outputs):
-        raise ValueError("交付输出目录已存在，请使用新目录避免混入旧产物")
-    package_dir.mkdir(parents=True, exist_ok=True)
-    compressed, binary = package_dir / "image.tar.gz", package_dir / "mskdsp-platform"
-    if any(path.exists() for path in (compressed, binary)) or image_tar.resolve() == compressed.resolve():
-        raise ValueError("程序或压缩镜像输出已存在，拒绝覆盖")
-    # 原始 tar 只校验一次，执行程序前完成身份、层摘要和路径语义验证。
-    image_id = extract_binary(image_tar, data, binary)
-    with image_tar.open("rb") as source, compressed.open("wb") as raw:
-        writer = DigestWriter(raw)
-        with gzip.GzipFile(filename="", fileobj=writer, mode="wb", mtime=0) as zipped:
-            shutil.copyfileobj(source, zipped)
-    manifest = publish_r2._prepare_verified(data=data, image_archive=compressed, binary=binary,
-                                           output=r2_output, public_base_url=public_base_url, prefix=prefix,
-                                           image_id=image_id, image_sha256=writer.digest.hexdigest(),
-                                           bundle_output=None if skip_offline else bundle_output, bundle_source=bundle_source)
-    if not skip_offline:
-        write_release(data, r2_output, bundle_output, release_output)
-    print(f"GitLab 交付准备完成：版本={data['version']} 目录={r2_output if skip_offline else release_output}")
-    return manifest
-
-
-def write_release(data: dict, r2_output: Path, bundle_output: Path, release_output: Path) -> None:
-    release_output.mkdir(parents=True)
-    with zipfile.ZipFile(release_output / (data["artifact_name"] + ".zip"), "w") as archive:
-        for path in sorted(bundle_output.rglob("*")):
-            if path.is_file():
-                archive.write(path, path.relative_to(bundle_output).as_posix(),
-                              compress_type=zipfile.ZIP_STORED if path.name.endswith(".tar.gz") else zipfile.ZIP_DEFLATED)
-    shutil.copyfile(bundle_output / "latest.json", release_output / "latest.json")
-    shutil.copyfile(r2_output / "latest.json", release_output / "updater-manifest.json")
-    tag = data["version"].replace("+", "-")
-    asset = r2_output / "assets" / tag / publish_r2.PLATFORM / f"{publish_r2.PROJECT}-{tag}-{publish_r2.PLATFORM}-binary.tar.gz"
-    shutil.copyfile(asset, release_output / asset.name)
-    sums = [f"{sha256_file(path)}  {path.name}" for path in sorted(release_output.iterdir()) if path.is_file()]
-    (release_output / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8")
-
-
-def offline_bundle(*, metadata: Path, output_dir: Path, public_base_url: str, prefix: str = "mskdsp-platform",
-                   bundle_output: Path = Path("bundle"), release_output: Path = Path("release"),
-                   bundle_source: Path = Path(".")) -> dict:
-    """从跨任务下载的 R2 产物重新校验，再按需组装离线交付，无需原始镜像 tar。"""
-    if any(path.exists() for path in (bundle_output, release_output)):
-        raise ValueError("交付输出目录已存在，请使用新目录避免混入旧产物")
-    data = json.loads(metadata.read_text(encoding="utf-8"))
-    publish_r2.validate_metadata(data)
-    manifest, _, assets = publish_r2.validate_local_assets(output_dir=output_dir, public_base_url=public_base_url, prefix=prefix)
-    if json.loads((output_dir / "latest.json").read_text(encoding="utf-8")) != manifest:
-        raise ValueError("R2 更新入口与发布清单不一致")
-    if any(manifest[key] != data[key] for key in ("version", "channel", "commit", "base_version", "build_time")):
-        raise ValueError("离线交付元数据与 R2 产物不一致")
-    image_archive = assets[0][0]
-    image_id = inspect_archive(image_archive, data)
-    entry = manifest["platforms"][publish_r2.PLATFORM]
-    if image_id != entry["image_id"] or data["image"] != entry["image"]:
-        raise ValueError("离线镜像身份与 R2 清单不一致")
-    _write_verified_bundle(data, image_archive, bundle_output, bundle_source, image_id, entry["sha256"])
-    write_release(data, output_dir, bundle_output, release_output)
-    print(f"离线交付准备完成：版本={data['version']} 目录={release_output}")
-    return manifest
-
-
-
 def prepare_platform(*, metadata: Path, image_tar: Path, package_dir: Path = Path("package")) -> dict:
     """生成无下载域名依赖的程序包、镜像归档和上传身份，原始镜像保留用于 bootstrap。"""
     from script.upload_platform import package_metadata
@@ -287,22 +199,6 @@ def offline_platform(*, metadata: Path, package_dir: Path = Path("package"),
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    command = commands.add_parser("prepare", help="从 Docker 归档准备程序、R2 与离线交付包")
-    command.add_argument("--metadata", type=Path, required=True)
-    command.add_argument("--image-tar", type=Path, required=True)
-    command.add_argument("--public-base-url", required=True)
-    command.add_argument("--prefix", default="mskdsp-platform")
-    command.add_argument("--skip-offline", action="store_true", help="只准备 R2 产物，不创建离线 bundle/ZIP")
-    for option, default in (("package-dir", "package"), ("r2-output", "r2"), ("bundle-output", "bundle"),
-                            ("release-output", "release"), ("bundle-source", ".")):
-        command.add_argument("--" + option, type=Path, default=Path(default))
-    offline = commands.add_parser("offline-bundle", help="从已准备的 R2 产物重新校验并创建离线交付")
-    offline.add_argument("--metadata", type=Path, required=True)
-    offline.add_argument("--output-dir", type=Path, default=Path("r2"))
-    offline.add_argument("--public-base-url", required=True)
-    offline.add_argument("--prefix", default="mskdsp-platform")
-    for option, default in (("bundle-output", "bundle"), ("release-output", "release"), ("bundle-source", ".")):
-        offline.add_argument("--" + option, type=Path, default=Path(default))
     platform = commands.add_parser("prepare-platform", help="准备无下载域名依赖的平台程序包")
     platform.add_argument("--metadata", type=Path, required=True)
     platform.add_argument("--image-tar", type=Path, required=True)
@@ -313,7 +209,7 @@ def main() -> None:
         local.add_argument("--" + option, type=Path, default=Path(default))
     args = vars(parser.parse_args())
     selected = args.pop("command")
-    {"prepare": prepare, "offline-bundle": offline_bundle, "prepare-platform": prepare_platform, "offline-platform": offline_platform}[selected](**args)
+    {"prepare-platform": prepare_platform, "offline-platform": offline_platform}[selected](**args)
 
 
 if __name__ == "__main__":

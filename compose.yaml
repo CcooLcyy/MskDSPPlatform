@@ -11,7 +11,7 @@ services:
         COMMIT: ${MSKDSP_PLATFORM_COMMIT:-unknown}
         BUILD_TIME: ${MSKDSP_PLATFORM_BUILD_TIME:-}
         SOURCE: ${MSKDSP_PLATFORM_SOURCE:-}
-        UPDATE_MANIFEST_URL: ${MSKDSP_PLATFORM_UPDATE_URL:-https://update.clsclear.top/mskdsp-platform/ci/latest.json}
+        UPDATE_MANIFEST_URL: ${MSKDSP_PLATFORM_UPDATE_URL:-}
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       MSKDSP_PLATFORM_CONFIG: /app/config.toml

@@ -61,16 +61,11 @@ class GitlabMetadataTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.metadata(changes)
 
-    def test_image_override_and_https_channel_update_url(self):
-        data = self.metadata(image_repository="registry.test:5000/team/platform",
-                             update_manifest_url="https://update.test/platform/ci/latest.json")
+    def test_image_repository_overrides_preserve_frozen_identity(self):
+        data = self.metadata(image_repository="registry.test:5000/team/platform")
         self.assertTrue(data["image"].startswith("registry.test:5000/team/platform:"))
-        self.assertEqual(data["update_manifest_url"], "https://update.test/platform/ci/latest.json")
         self.assertEqual(self.metadata({"IMAGE_REPOSITORY": "registry.test/team/image"})["image_repository"],
                          "registry.test/team/image")
-        for url in ("http://update.test/ci/latest.json", "https://update.test/beta/latest.json"):
-            with self.subTest(url=url), self.assertRaises(ValueError):
-                self.metadata(update_manifest_url=url)
         with self.assertRaises(ValueError):
             self.metadata(image_repository="registry.test/team/image:mutable")
 
@@ -173,42 +168,27 @@ class PublishHeadTests(unittest.TestCase):
             self.assertEqual(run("rev-list", "--count", "refs/remotes/origin/main", cwd=checkout), "1")
 
 
-class PublishCommandTests(unittest.TestCase):
+class HeadCommandTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.meta = Path(self.temporary.name) / "metadata.json"
         self.meta.write_text(json.dumps(PublishHeadTests.metadata), encoding="utf-8")
-        self.argv = ["publish-r2", "--metadata", str(self.meta), "--output-dir", "r2",
-                     "--bucket", "mskdsp-update", "--public-base-url", "https://updates.test"]
+        self.argv = ["publish-head-check", "--metadata", str(self.meta)]
 
-    def test_checks_head_before_publish_and_again_before_latest(self):
-        events = []
-        def publish(**kwargs):
-            events.append("assets")
-            kwargs["before_latest"]()
-            events.append("latest")
-        with patch.object(gitlab_ci, "publish_head_check", side_effect=lambda data: events.append("head")), \
-                patch.object(gitlab_ci.publish_r2, "publish", side_effect=publish):
-            gitlab_ci.main(self.argv)
-        self.assertEqual(events, ["head", "assets", "head", "latest"])
-
-    def test_old_head_stops_before_publisher(self):
-        with patch.object(gitlab_ci, "publish_head_check", side_effect=gitlab_ci.CIError("旧构建")), \
-                patch.object(gitlab_ci.publish_r2, "publish") as publish:
-            with self.assertRaisesRegex(ValueError, "旧构建"):
-                gitlab_ci.main(self.argv)
-            publish.assert_not_called()
+    def test_cli_checks_frozen_metadata_against_requested_remote(self):
+        with patch.object(gitlab_ci, "publish_head_check") as check:
+            gitlab_ci.main(self.argv + ["--remote", "gitlab"])
+        check.assert_called_once_with(PublishHeadTests.metadata, "gitlab")
 
     def test_cli_hides_subprocess_credentials_and_stderr(self):
-        failure = subprocess.CalledProcessError(1, ["aws", "secret-argument"], stderr="secret-stderr")
+        failure = subprocess.CalledProcessError(1, ["git", "secret-argument"], stderr="secret-stderr")
         output = io.StringIO()
-        with patch.object(gitlab_ci, "publish_head_check"), \
-                patch.object(gitlab_ci.publish_r2, "publish", side_effect=failure), \
+        with patch.object(gitlab_ci, "publish_head_check", side_effect=failure), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             with self.assertRaises(SystemExit) as error:
                 gitlab_ci.cli(self.argv)
-        self.assertEqual(error.exception.code.startswith("GitLab CI 校验失败"), True)
+        self.assertTrue(error.exception.code.startswith("GitLab CI 校验失败"))
         self.assertNotIn("secret", str(error.exception) + output.getvalue())
 
 

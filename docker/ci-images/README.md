@@ -40,9 +40,11 @@ python3 -B script/platform_grpc_client.py generate --output-dir .ci-tmp/platform
 生成器默认使用 `platform-proto`，也可用 `--proto-root` 显式选择协议根目录。
 所需 `.proto` 必须已提交到固定子模块版本；本地未跟踪文件不会出现在干净检出中。
 绑定仅作为作业临时文件，更新协议后重新生成，不复制进工具镜像。
-镜像依赖准备与绑定生成不执行平台软件上传，也不迁移现有发布任务。
+镜像依赖准备与绑定生成本身不执行平台软件上传。当前 GitLab 的 `upload-platform`
+作业另行使用这些依赖完成平台 CI 包入库；Beta/Stable 的远程发布能力保留。
 
 2026-10-18：两个 v2 镜像已在现有 Linux x64 Runner 主机构建并预加载，
 依赖导入检查通过，各自在只读作业容器运行 7 项客户端专项测试全部通过。
-本地 `.gitlab-ci.yml` 默认镜像标签已同步为 v2；尚未据此触发真实发布流水线。
-入口探测与协议提交前置条件详见 [CI gRPC 客户端准备](../../docs/CI-gRPC客户端.md)。
+`.gitlab-ci.yml` 默认镜像标签为 v2，GitLab 流水线 #22 已完成真实平台 CI 包上传。
+提交 `7e3742c` 已由管理员在正式平台手动升级并确认可用。
+协议及接入验收详见 [CI gRPC 客户端](../../docs/CI-gRPC客户端.md)。
