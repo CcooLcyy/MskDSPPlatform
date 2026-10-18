@@ -26,6 +26,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM ${RUNTIME_IMAGE} AS runtime
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl libgcc-s1 python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin platform \
+    && mkdir -p /var/lib/mskdsp-platform/releases /var/lib/mskdsp-platform/data \
+        /var/lib/mskdsp-platform/logs /var/lib/mskdsp-platform/tmp \
+    && touch /var/lib/mskdsp-platform/.keep \
+    && chown -R 10001:10001 /var/lib/mskdsp-platform
+
 ARG VERSION=0.0.1
 ARG CHANNEL=dev
 ARG COMMIT=unknown
@@ -39,15 +48,6 @@ LABEL org.opencontainers.image.title="MskDSPPlatform" \
     org.opencontainers.image.created="${BUILD_TIME}" \
     org.opencontainers.image.source="${SOURCE}" \
     io.mskdsp.channel="${CHANNEL}"
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl libgcc-s1 python3 \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin platform \
-    && mkdir -p /var/lib/mskdsp-platform/releases /var/lib/mskdsp-platform/data \
-        /var/lib/mskdsp-platform/logs /var/lib/mskdsp-platform/tmp \
-    && touch /var/lib/mskdsp-platform/.keep \
-    && chown -R 10001:10001 /var/lib/mskdsp-platform
 
 WORKDIR /var/lib/mskdsp-platform
 COPY --from=builder /build/mskdsp-platform /usr/local/bin/mskdsp-platform

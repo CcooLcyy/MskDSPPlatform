@@ -19,7 +19,7 @@ services:
       - --tlskey
       - /certs/server-key.pem
       - --oci-worker-no-process-sandbox
-      - --oci-worker-snapshotter=native
+      - --oci-worker-snapshotter=overlayfs
     ports:
       - "192.168.10.198:1234:1234"
     volumes:

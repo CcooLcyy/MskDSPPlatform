@@ -54,7 +54,8 @@ CA、客户端证书和私钥的 Base64 文本；私钥必须开启掩码。构�
 Runner 全局并发 6，由所有使用它的仓库共享；单个作业上限 8 CPU、16 GiB。
 Rust 检查作业按 Cargo.lock 使用 GitLab cache，缓存 `.cargo/registry`、
 `.cargo/git` 和 `target`；受保护与非保护分支缓存由 GitLab 隔离。
-Runner 宿主缓存目录为 `/home/daniel/gitlab-runner-cache`。
+Runner 宿主缓存目录为 `/home/daniel/gitlab-runner-cache`。检查失败也会保存编译缓存，
+测试临时目录位于构建卷中的 `.ci-tmp`，避免容器 overlay 的额外写入。
 
 镜像构建服务部署模板为 `docker/gitlab-buildkit/compose.yml`，服务器目录为
 `/home/daniel/mskdsp-platform-ci-buildkit`。客户端只通过 mTLS 连接构建服务，
@@ -65,6 +66,8 @@ Runner 宿主缓存目录为 `/home/daniel/gitlab-runner-cache`。
 允许构建容器的用户命名空间；模板仅对这个容器使用该 profile 和
 `seccomp=unconfined`，BuildKit 仍以 UID 1000 运行。宿主机用户命名空间限制
 保持开启，通用 Runner 无需特权模式。迁移服务器时需先确认同名 profile 存在。
+构建快照使用已实测可用的 rootless `overlayfs`，避免 `native` 在每个步骤复制
+整个工具链文件系统。运行时依赖安装位于版本标签之前，版本变化不会使该层缓存失效。
 
 ## 验收
 

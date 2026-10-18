@@ -22,6 +22,7 @@ dist/
 *.key
 /.buildkit-tls/
 /.cargo/
+/.ci-tmp/
 /docker/gitlab-buildkit/tls/
 
 # Runtime data

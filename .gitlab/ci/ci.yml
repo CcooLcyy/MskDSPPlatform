@@ -18,9 +18,11 @@ verify:
       files: [Cargo.lock]
     paths: [.cargo/registry/, .cargo/git/, target/]
     policy: pull-push
+    when: always
   script:
     - set -o pipefail
-    - mkdir -p package/logs
+    - mkdir -p package/logs .ci-tmp
+    - export TMPDIR="$CI_PROJECT_DIR/.ci-tmp"
     - rustup component add rustfmt --toolchain 1.94.1
     - cargo fmt --all -- --check
     - cargo build --locked 2>&1 | tee package/logs/cargo-build.log
