@@ -74,6 +74,45 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
+      - name: 备份失败时只读记录对象元数据
+        if: failure() && inputs.operation == 'snapshot'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          python3 -B - <<'PY'
+          import json,os
+          from pathlib import Path
+          from script.retire_r2_ci import AwsStore,KEYS,write_json
+          result={'objects':[],'heads':[]}
+          try:
+              store=AwsStore(os.environ['R2_BUCKET'])
+              token=None
+              for _ in range(10):
+                  page=store.list_page(token)
+                  result['objects'].extend({k:item.get(k) for k in ('Key','Size','ETag','LastModified')} for item in page.get('Contents',[]))
+                  if not page.get('IsTruncated'):
+                      break
+                  token=page.get('NextContinuationToken')
+              for key in KEYS:
+                  try:
+                      head=store.head(key)
+                      result['heads'].append({'Key':key,**{k:head.get(k) for k in ('ContentLength','ETag','LastModified')}})
+                  except Exception:
+                      result['heads'].append({'Key':key,'error':'查询失败，底层信息已隐藏'})
+          except Exception:
+              result['error']='只读诊断失败，底层信息已隐藏'
+          write_json(Path('diagnostics/metadata.json'),result)
+          PY
+      - name: 保存只读诊断
+        if: failure() && inputs.operation == 'snapshot'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-ci-retirement-diagnostic
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
       - name: 读取已核验的备份
         if: inputs.operation == 'apply'
         uses: actions/download-artifact@v4
