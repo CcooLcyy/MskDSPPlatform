@@ -3,8 +3,8 @@ ARG RUNTIME_IMAGE=debian:bookworm-slim
 FROM ${RUST_IMAGE} AS builder
 
 WORKDIR /build
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends protobuf-compiler \
+RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::http::Pipeline-Depth=0 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock build.rs ./
@@ -26,8 +26,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM ${RUNTIME_IMAGE} AS runtime
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl libgcc-s1 python3 \
+RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::http::Pipeline-Depth=0 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends ca-certificates curl libgcc-s1 python3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin platform \
     && mkdir -p /var/lib/mskdsp-platform/releases /var/lib/mskdsp-platform/data \
