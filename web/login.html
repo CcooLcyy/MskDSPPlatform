@@ -59,6 +59,9 @@
     .login-field { margin-bottom: 20px; }
     .login-card label { margin-bottom: 8px; color: var(--text); font-size: 13px; }
     .login-card input { padding: 11px 12px; }
+    .login-card .login-remember { display: flex; align-items: center; gap: 8px; margin: 0 0 7px; cursor: pointer; }
+    .login-card .login-remember input { width: 16px; height: 16px; flex: 0 0 auto; padding: 0; margin: 0; }
+    .remember-hint { margin: 0 0 16px; color: var(--muted); font-size: 11px; }
     .login-card button { width: 100%; margin-top: 4px; padding: 11px 14px; }
     .login-feedback { min-height: 23px; margin: 15px 0 0; color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
     .login-card .login-footnote { margin: 16px 0 0; padding-top: 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
@@ -87,6 +90,8 @@
         <form id="login-form" method="post" action="/api/v1/auth/login">
           <div class="login-field"><label for="username">用户名</label><input id="username" name="username" type="text" autocomplete="username" aria-describedby="message" placeholder="请输入用户名" required autofocus></div>
           <div class="login-field"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" aria-describedby="message" placeholder="请输入密码" required></div>
+          <label class="login-remember" for="remember-password"><input id="remember-password" name="remember-password" type="checkbox" aria-describedby="remember-notice">记住密码</label>
+          <p id="remember-notice" class="remember-hint" role="status" aria-live="polite">仅在个人设备上使用，下次自动填入账号和密码。</p>
           <button id="submit" class="primary" type="submit">登录</button>
           <p id="message" class="login-feedback" role="status" aria-live="polite"></p>
         </form>
@@ -97,14 +102,66 @@
     <footer class="login-footer">MskDSP 远程服务平台</footer>
   </div>
   <script type="module">
-function createLoginClient({fetchImpl, onChange, onSuccess}) {
+function validRememberedLogin(value) {
+  const encoder = new TextEncoder();
+  return value && typeof value.username === 'string' && Boolean(value.username.trim())
+    && encoder.encode(value.username).length <= 128
+    && typeof value.password === 'string' && Boolean(value.password)
+    && encoder.encode(value.password).length <= 1024;
+}
+
+function createLoginMemory(storage) {
+  const key = 'mskdsp-platform-remembered-login';
+  let notice = '';
+  const unavailable = () => { notice = '当前浏览器无法记住密码，仍可正常手动登录。'; return false; };
+  const clear = () => {
+    try { storage.removeItem(key); notice = ''; return true; }
+    catch { notice = '无法清除已记住的密码，请在浏览器设置中清除本站数据。'; return false; }
+  };
+  return {
+    notice:() => notice,
+    clear,
+    load() {
+      let raw;
+      try { raw = storage.getItem(key); notice = ''; }
+      catch { unavailable(); return null; }
+      if (raw === null) return null;
+      let value;
+      try { value = JSON.parse(raw); }
+      catch { clear(); return null; }
+      if (value?.version !== 1 || !validRememberedLogin(value)) { clear(); return null; }
+      return {username:value.username, password:value.password};
+    },
+    save(username, password) {
+      const value = {version:1, username:username.trim(), password};
+      if (!validRememberedLogin(value)) {
+        notice = '账号或密码长度不符合记住条件，请手动输入。';
+        return false;
+      }
+      try { storage.setItem(key, JSON.stringify(value)); notice = ''; return true; }
+      catch { return unavailable(); }
+    },
+  };
+}
+
+function restoreRememberedLogin(fields, saved) {
+  fields.remember.checked = Boolean(saved);
+  // 避免覆盖浏览器已填入的凭据，尤其不要混用不同账号的密码。
+  if (saved && !fields.username.value && !fields.password.value) {
+    fields.username.value = saved.username;
+    fields.password.value = saved.password;
+  }
+}
+
+function createLoginClient({fetchImpl, onChange, onSuccess, memory = null}) {
   let pending = false, finished = false, error = '';
-  const snapshot = () => ({pending, finished, error});
+  const snapshot = () => ({pending, finished, error, notice:memory?.notice() || ''});
   const notify = () => onChange(snapshot());
   return {
     snapshot,
-    async login(username, password) {
+    async login(username, password, remember = false) {
       if (pending || finished) return;
+      if (!remember) memory?.clear();
       if (!username.trim() || !password) {
         error = '请输入用户名和密码';
         notify();
@@ -129,6 +186,8 @@ function createLoginClient({fetchImpl, onChange, onSuccess}) {
           error = '登录接口返回了无法识别的用户信息';
           return;
         }
+        // 只保存通过管理员身份验证的本次输入，失败时保留原先记录。
+        if (remember) memory?.save(username.trim(), password);
         finished = true;
         onSuccess();
       } catch { error = '暂时无法连接平台，请稍后重试'; }
@@ -139,7 +198,17 @@ function createLoginClient({fetchImpl, onChange, onSuccess}) {
 
 // 页面启动
 const element = id => document.getElementById(id);
+let storage = null;
+try { storage = window.localStorage; }
+catch { /* 禁止本地存储时仍可手动登录。 */ }
+const memory = createLoginMemory(storage);
+restoreRememberedLogin({username:element('username'), password:element('password'), remember:element('remember-password')}, memory.load());
+const showRememberNotice = () => {
+  element('remember-notice').textContent = memory.notice() || '仅在个人设备上使用，下次自动填入账号和密码。';
+};
+showRememberNotice();
 const client = createLoginClient({
+  memory,
   fetchImpl:window.fetch.bind(window),
   onSuccess:() => window.location.replace('/modbus-templates'),
   onChange:({pending, finished, error}) => {
@@ -147,13 +216,19 @@ const client = createLoginClient({
     element('submit').textContent = pending ? '正在登录…' : finished ? '登录成功' : '登录';
     element('username').disabled = pending || finished;
     element('password').disabled = pending || finished;
+    element('remember-password').disabled = pending || finished;
+    showRememberNotice();
     element('message').textContent = error;
     element('login-form').setAttribute('aria-busy', String(pending));
   },
 });
+element('remember-password').addEventListener('change', () => {
+  if (!element('remember-password').checked) memory.clear();
+  showRememberNotice();
+});
 element('login-form').addEventListener('submit', async event => {
   event.preventDefault();
-  await client.login(element('username').value, element('password').value);
+  await client.login(element('username').value, element('password').value, element('remember-password').checked);
 });
   </script>
 </body>
