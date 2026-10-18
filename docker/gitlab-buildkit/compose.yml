@@ -1,0 +1,42 @@
+name: mskdsp-platform-ci-buildkit
+services:
+  buildkit:
+    image: docker.m.daocloud.io/moby/buildkit@sha256:65eca3c01cd1180c8f64565c4e3c5983af5145818b0e6fa863385d099eb73855
+    container_name: mskdsp-platform-ci-buildkit
+    restart: unless-stopped
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=rootlesskit
+    command:
+      - --addr
+      - unix:///run/user/1000/buildkit/buildkitd.sock
+      - --addr
+      - tcp://0.0.0.0:1234
+      - --tlscacert
+      - /certs/ca.pem
+      - --tlscert
+      - /certs/server.pem
+      - --tlskey
+      - /certs/server-key.pem
+      - --oci-worker-no-process-sandbox
+      - --oci-worker-snapshotter=native
+    ports:
+      - "192.168.10.198:1234:1234"
+    volumes:
+      - ./tls/server:/certs:ro
+      - buildkit-state:/home/user/.local/share/buildkit
+    cpus: "8"
+    mem_limit: 16g
+    memswap_limit: 16g
+    healthcheck:
+      test: [CMD, buildctl, --addr, "unix:///run/user/1000/buildkit/buildkitd.sock", debug, workers]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  buildkit-state:

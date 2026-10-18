@@ -2,6 +2,10 @@
 
 基础版本 `0.0.1`，目标平台 `linux/amd64`。首次只发布 CI，Beta/Stable 流程保留。
 
+`main` 的自动 CI 由 GitLab 执行，构建、测试、离线包和 R2 更新入口的配置见
+[GitLab CI](docs/GitLabCI.md)。GitHub CI 保留 PR 检查和手动发布入口；下表的
+GHCR 推送与 GitHub Release 属于 GitHub 工作流，GitLab CI 直接提供离线镜像包和 R2 产物。
+
 ## 三个发布通道
 
 | 通道 | 触发 | GHCR 标签 | GitHub Release | R2 清单 |

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from datetime import datetime, timezone
 import gzip
 import hashlib
@@ -285,7 +286,8 @@ def cleanup_old_versions(*, bucket: str, endpoint: str, channel_root: str, keep_
     return len(obsolete)
 
 
-def publish(*, output_dir: Path, bucket: str, public_base_url: str, prefix: str = PROJECT, account_id: str | None = None) -> dict:
+def publish(*, output_dir: Path, bucket: str, public_base_url: str, prefix: str = PROJECT,
+            account_id: str | None = None, before_latest: Callable[[], None] | None = None) -> dict:
     environment = aws_environment()
     missing = [name for name in ("R2_ACCOUNT_ID", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY") if not environment.get(name)]
     if missing:
@@ -353,6 +355,8 @@ def publish(*, output_dir: Path, bucket: str, public_base_url: str, prefix: str 
     with tempfile.TemporaryDirectory(prefix="platform-latest-") as temporary:
         latest = Path(temporary) / "latest.json"
         latest.write_bytes(json_bytes(manifest))
+        if before_latest is not None:
+            before_latest()
         upload(latest, latest_key, bucket, endpoint, "application/json; charset=utf-8", "no-store")
         if get_json(latest_url) != manifest:
             raise ValueError("公开 latest.json 与发布清单不一致")

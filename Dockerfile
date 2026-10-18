@@ -1,4 +1,5 @@
-ARG RUST_IMAGE=rust:1.94-bookworm
+ARG RUST_IMAGE=rust:1.94.1-bookworm
+ARG RUNTIME_IMAGE=debian:bookworm-slim
 FROM ${RUST_IMAGE} AS builder
 
 WORKDIR /build
@@ -18,9 +19,12 @@ ENV MSKDSP_BUILD_VERSION=${VERSION} \
     MSKDSP_BUILD_CHANNEL=${CHANNEL} \
     MSKDSP_BUILD_COMMIT=${COMMIT} \
     MSKDSP_BUILD_TIME=${BUILD_TIME}
-RUN cargo build --locked --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --locked --release \
+    && cp target/release/mskdsp-platform /build/mskdsp-platform
 
-FROM debian:bookworm-slim AS runtime
+FROM ${RUNTIME_IMAGE} AS runtime
 
 ARG VERSION=0.0.1
 ARG CHANNEL=dev
@@ -46,7 +50,7 @@ RUN apt-get update \
     && chown -R 10001:10001 /var/lib/mskdsp-platform
 
 WORKDIR /var/lib/mskdsp-platform
-COPY --from=builder /build/target/release/mskdsp-platform /usr/local/bin/mskdsp-platform
+COPY --from=builder /build/mskdsp-platform /usr/local/bin/mskdsp-platform
 COPY deploy/config.toml /app/config.toml
 COPY script/runtime.py script/update_common.py /opt/mskdsp-manager/
 RUN UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL}" python3 -c 'import json,os; open("/app/updater.json","w").write(json.dumps({"manifest_url":os.environ["UPDATE_MANIFEST_URL"]})+"\n")'

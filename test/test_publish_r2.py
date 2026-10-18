@@ -206,6 +206,36 @@ class PublishingTests(unittest.TestCase):
                 self.assertFalse(any(call.args[1].endswith("latest.json") for call in upload.call_args_list))
                 cleanup.assert_not_called()
 
+    def test_latest_guard_runs_after_verified_assets_before_latest(self):
+        manifest = self.prepare()
+        events = []
+        with patch.dict(os.environ, SECRETS, clear=True), \
+                patch.object(release, "get_json", side_effect=[None, None, manifest]), \
+                patch.object(release, "upload", side_effect=lambda path, key, *args: events.append(("upload", key))), \
+                patch.object(release, "verify_asset", side_effect=lambda url, *args: events.append(("verify", url))), \
+                patch.object(release, "cleanup_old_versions"):
+            release.publish(output_dir=self.output, bucket="mskdsp-update", public_base_url=BASE,
+                            before_latest=lambda: events.append(("guard", "main")))
+        guard_index = events.index(("guard", "main"))
+        self.assertTrue(all(index < guard_index for index, (kind, _) in enumerate(events) if kind == "verify"))
+        self.assertGreater(guard_index, 0)
+        self.assertEqual(events[guard_index + 1], ("upload", "mskdsp-platform/stable/latest.json"))
+
+    def test_failed_latest_guard_preserves_latest_and_existing_assets(self):
+        self.prepare()
+        def reject():
+            raise ValueError("旧构建禁止更新入口")
+        with patch.dict(os.environ, SECRETS, clear=True), \
+                patch.object(release, "get_json", side_effect=[None, None]), \
+                patch.object(release, "upload") as upload, patch.object(release, "verify_asset"), \
+                patch.object(release, "cleanup_old_versions") as cleanup:
+            with self.assertRaisesRegex(ValueError, "旧构建"):
+                release.publish(output_dir=self.output, bucket="mskdsp-update", public_base_url=BASE,
+                                before_latest=reject)
+            self.assertTrue(upload.called)
+            self.assertFalse(any(call.args[1].endswith("latest.json") for call in upload.call_args_list))
+            cleanup.assert_not_called()
+
     # 已发布版本身份冲突、版本倒退均在上传前拒绝。
     def test_remote_conflict_and_downgrade_rejected(self):
         manifest = self.prepare()

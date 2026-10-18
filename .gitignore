@@ -20,6 +20,9 @@ dist/
 !.env.example
 *.pem
 *.key
+/.buildkit-tls/
+/.cargo/
+/docker/gitlab-buildkit/tls/
 
 # Runtime data
 /data/

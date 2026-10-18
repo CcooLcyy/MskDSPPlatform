@@ -1,0 +1,28 @@
+include:
+  - local: .gitlab/ci/ci.yml
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE =~ /^(push|web)$/'
+    - when: never
+
+stages: [verify, build, package, publish]
+
+default:
+  tags: [linux, amd64, docker]
+  interruptible: true
+
+variables:
+  GIT_SUBMODULE_STRATEGY: normal
+  GIT_DEPTH: "0"
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  CARGO_BUILD_JOBS: "8"
+  CARGO_TERM_COLOR: always
+  PYTHONDONTWRITEBYTECODE: "1"
+  PLATFORM_RUST_IMAGE: "docker.m.daocloud.io/library/rust:1.94.1-bookworm"
+  PLATFORM_RUNTIME_IMAGE: "docker.m.daocloud.io/library/debian:bookworm-slim"
+  PLATFORM_BUILDKIT_IMAGE: "docker.m.daocloud.io/moby/buildkit@sha256:65eca3c01cd1180c8f64565c4e3c5983af5145818b0e6fa863385d099eb73855"
+  R2_BUCKET: mskdsp-update
+  R2_PREFIX: mskdsp-platform
+  R2_PUBLIC_BASE_URL: https://update.clsclear.top

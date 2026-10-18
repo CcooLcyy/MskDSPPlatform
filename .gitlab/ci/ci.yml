@@ -1,0 +1,115 @@
+.ci-main:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE =~ /^(push|web)$/'
+
+.python-tools:
+  image: "$PLATFORM_RUST_IMAGE"
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends python3 nodejs protobuf-compiler ca-certificates
+
+verify:
+  extends: .python-tools
+  stage: verify
+  timeout: 30m
+  cache:
+    key:
+      prefix: rust-1.94.1-linux-amd64
+      files: [Cargo.lock]
+    paths: [.cargo/registry/, .cargo/git/, target/]
+    policy: pull-push
+  script:
+    - set -o pipefail
+    - mkdir -p package/logs
+    - rustup component add rustfmt --toolchain 1.94.1
+    - cargo fmt --all -- --check
+    - cargo build --locked 2>&1 | tee package/logs/cargo-build.log
+    - test -x target/debug/mskdsp-platform
+    - node --version
+    - cargo test --locked --all-targets 2>&1 | tee package/logs/cargo-test.log
+    - python3 -B -m unittest discover -s test -p 'test_*.py' -v 2>&1 | tee package/logs/python-test.log
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths: [package/logs/]
+
+metadata:
+  extends: [.python-tools, .ci-main]
+  stage: verify
+  timeout: 10m
+  script:
+    - python3 -B script/gitlab_ci.py metadata --update-manifest-url "$R2_PUBLIC_BASE_URL/$R2_PREFIX/ci/latest.json"
+  artifacts:
+    expire_in: 14 days
+    paths: [package/metadata.json, package/build.env]
+    reports:
+      dotenv: package/build.env
+
+build-image:
+  extends: .ci-main
+  stage: build
+  image:
+    name: "$PLATFORM_BUILDKIT_IMAGE"
+    entrypoint: [""]
+  timeout: 45m
+  needs: [verify, metadata]
+  resource_group: platform-ci-image-build
+  environment:
+    name: ci-build
+    action: prepare
+  script:
+    - |
+      set -eu
+      umask 077
+      mkdir -p .buildkit-tls
+      printf '%s' "$BUILDKIT_CA_B64" | base64 -d > .buildkit-tls/ca.pem
+      printf '%s' "$BUILDKIT_CERT_B64" | base64 -d > .buildkit-tls/client.pem
+      printf '%s' "$BUILDKIT_KEY_B64" | base64 -d > .buildkit-tls/client-key.pem
+      buildctl --addr "$BUILDKIT_HOST" \
+        --tlscacert .buildkit-tls/ca.pem --tlscert .buildkit-tls/client.pem --tlskey .buildkit-tls/client-key.pem \
+        build --frontend dockerfile.v0 --local context=. --local dockerfile=. \
+        --opt platform=linux/amd64 \
+        --opt "build-arg:RUST_IMAGE=$PLATFORM_RUST_IMAGE" \
+        --opt "build-arg:RUNTIME_IMAGE=$PLATFORM_RUNTIME_IMAGE" \
+        --opt "build-arg:VERSION=$PLATFORM_VERSION" --opt build-arg:CHANNEL=ci \
+        --opt "build-arg:COMMIT=$PLATFORM_COMMIT" --opt "build-arg:BUILD_TIME=$PLATFORM_BUILD_TIME" \
+        --opt "build-arg:SOURCE=$CI_PROJECT_URL" \
+        --opt "build-arg:UPDATE_MANIFEST_URL=$R2_PUBLIC_BASE_URL/$R2_PREFIX/ci/latest.json" \
+        --output "type=docker,name=$PLATFORM_IMAGE,dest=package/image.tar"
+  after_script:
+    - rm -f .buildkit-tls/ca.pem .buildkit-tls/client.pem .buildkit-tls/client-key.pem
+    - rmdir .buildkit-tls 2>/dev/null || true
+  artifacts:
+    expire_in: 1 day
+    paths: [package/image.tar]
+
+package:
+  extends: [.python-tools, .ci-main]
+  stage: package
+  timeout: 20m
+  needs: [metadata, build-image]
+  script:
+    - python3 -B script/gitlab_package.py prepare --metadata package/metadata.json --image-tar package/image.tar --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"
+  artifacts:
+    expire_in: 14 days
+    paths: [release/, r2/, package/metadata.json]
+
+publish-r2:
+  extends: [.python-tools, .ci-main]
+  stage: publish
+  timeout: 20m
+  interruptible: false
+  needs: [package]
+  resource_group: platform-ci-r2-publish
+  environment:
+    name: ci
+  variables:
+    AWS_ACCESS_KEY_ID: "$R2_ACCESS_KEY_ID"
+    AWS_SECRET_ACCESS_KEY: "$R2_SECRET_ACCESS_KEY"
+    AWS_DEFAULT_REGION: auto
+    AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+    AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+  script:
+    - test -n "$R2_ACCOUNT_ID" && test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY"
+    - apt-get install -y --no-install-recommends awscli
+    - python3 -B script/gitlab_ci.py publish-r2 --metadata package/metadata.json --output-dir r2 --bucket "$R2_BUCKET" --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"
