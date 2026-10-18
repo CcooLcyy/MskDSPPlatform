@@ -1,5 +1,20 @@
 # Docker 发布与网页更新
 
+## 平台自身 CI 更新
+
+CI 由 GitLab 完成构建、测试、无域名依赖的程序包打包及平台上传；不再执行 `publish-r2`。
+上传任务使用 `PLATFORM_GRPC_ENDPOINT`、受保护且掩码的 `PLATFORM_UPLOAD_TOKEN`，
+通过 `CreateUpload`、分块续传及 `CompleteUpload` 确认入库，不调用发布或安装接口。
+默认 TLS；同宿主机受控 Docker 内网可显式配置 `PLATFORM_GRPC_PLAINTEXT=1`。
+固定协议子模块必须包含软件上传接口，所有需要协议的作业均需初始化它。
+
+首次部署使用已验证镜像引导平台接包能力，并将持久化 `deploy/updater.json` 切换为
+`{"source":"platform","channel":"ci"}`。必须备份并保留平台运行目录、点表数据库和管理员配置。
+此后由管理员在 `/update` 检查本地软件仓库中的候选包并决定升级；GitLab 不触发安装。
+运行管理器和基础镜像变更仍单独维护；详见 [平台自身 CI 更新](docs/平台自身CI更新.md)。
+
+以下 R2、GitHub 和通道发布说明保留用于已有 Beta/Stable 及历史交付，不作为当前 CI 更新链路。
+
 基础版本 `0.0.1`，目标平台 `linux/amd64`。首次只发布 CI，Beta/Stable 流程保留。
 
 `main` 的自动 CI 由 GitLab 执行，构建、测试、离线包和 R2 更新入口的配置见
@@ -19,6 +34,9 @@ GHCR 推送与 GitHub Release 属于 GitHub 工作流，GitLab CI 直接提供�
 PR 只检查，不发布。版本来源、配置、打包范围见 [发布方案](docs/发布方案.md)。
 
 ## GitHub 与 R2 配置
+
+平台构建现在需要固定版本的 `platform-proto` 私有协议子模块。构建机须能访问内网 GitLab，并为 CI 配置只读 Secret `PLATFORM_PROTO_READ_TOKEN`；检出步骤见 `script/init_platform_proto.py`。
+GitHub 托管 runner 默认不具备该内网连通能力，发布前须先准备可达的构建环境。上下位机软件仓库与平台自身 R2 更新相互独立，详情见 [软件仓库](docs/软件仓库.md)。
 
 仓库 Actions Secrets：`R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`。
 仅发布作业使用这些凭据，运行设备只访问公开 HTTPS 地址。

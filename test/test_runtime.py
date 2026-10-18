@@ -1,10 +1,11 @@
 import copy
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import io
 import json
+import sqlite3
 from pathlib import Path
 import sys
 import tempfile
@@ -107,6 +108,122 @@ class ManagerTests(unittest.TestCase):
              mock.patch.object(self.manager, "healthy", side_effect=healthy):
             self.manager.run_job("apply")
             return launch.call_count, stop.call_count
+
+    def local_manager(self):
+        self.config.write_text(json.dumps({"source": "platform", "channel": "ci"}))
+        manager = runtime.Manager(self.folder / "local-runtime", self.config,
+                                  config=self.platform_config, seed=self.folder / "seed")
+        self.addCleanup(manager.close)
+        return manager
+
+    def test_local_source_uses_shared_data_root_and_empty_check_succeeds(self):
+        with mock.patch.dict(runtime.os.environ, {"MSKDSP_PLATFORM_DATA_DIR": str(self.folder / "business")}):
+            manager = self.local_manager()
+        self.assertEqual(manager.local_source.root, self.folder / "business" / "software")
+        self.assertTrue(manager.status()["enabled"])
+        self.assertEqual(manager.status()["channel"], "ci")
+        for operation in ("check", "apply"):
+            with mock.patch.object(manager, "stop_child") as stop, \
+                 mock.patch.object(manager.transport, "fetch_manifest") as fetch, \
+                 mock.patch.object(manager, "prepare") as prepare:
+                manager.run_job(operation)
+                self.assertEqual(manager.status()["state"], "empty")
+                self.assertIn("暂无", manager.status()["message"])
+                self.assertFalse(manager.status()["update_available"])
+                stop.assert_not_called()
+                fetch.assert_not_called()
+                prepare.assert_not_called()
+        self.assertFalse((self.folder / "business").exists())
+
+    def test_local_check_only_compares_and_never_prepares_or_installs(self):
+        with mock.patch.dict(runtime.os.environ, {}, clear=True):
+            manager = self.local_manager()
+        self.assertEqual(manager.local_source.root, manager.runtime_dir / "data" / "software")
+        data = manifest()
+        with mock.patch.object(manager.local_source, "latest", return_value=(data, data["platforms"]["linux-amd64"])), \
+             mock.patch.object(manager, "prepare") as prepare, mock.patch.object(manager, "stop_child") as stop:
+            manager.run_job("check")
+            self.assertEqual(manager.status()["state"], "available")
+            prepare.assert_not_called()
+            stop.assert_not_called()
+
+    def test_local_apply_copies_and_validates_before_stop_and_rolls_back(self):
+        manager = self.local_manager()
+        data = manifest()
+        candidate = manager.runtime_dir / "releases" / runtime.release_name(data["version"])
+        candidate.mkdir()
+        (candidate / "mskdsp-platform").write_bytes(b"candidate")
+        with mock.patch.object(manager.local_source, "latest", return_value=(data, data["platforms"]["linux-amd64"])), \
+             mock.patch.object(manager, "prepare", side_effect=runtime.common.UpdateError("本地包摘要不一致")), \
+             mock.patch.object(manager, "stop_child") as stop:
+            manager.run_job("apply")
+            stop.assert_not_called()
+        with mock.patch.object(manager.local_source, "latest", return_value=(data, data["platforms"]["linux-amd64"])), \
+             mock.patch.object(manager, "prepare", return_value=candidate), \
+             mock.patch.object(manager, "launch") as launch, mock.patch.object(manager, "stop_child") as stop, \
+             mock.patch.object(manager, "healthy", side_effect=(False, True)):
+            manager.run_job("apply")
+            self.assertEqual((launch.call_count, stop.call_count), (2, 2))
+            self.assertIn("已回滚", manager.status()["message"])
+            self.assertEqual(manager.current["release"], "seed")
+
+    def test_local_archive_is_copied_extracted_and_verified_before_switch(self):
+        from test_local_software_source import metadata
+        manager = self.local_manager()
+        binary = bytearray(64)
+        binary[:6] = b"\x7fELF\x02\x01"
+        binary[18:20] = (62).to_bytes(2, "little")
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as archive:
+            member = tarfile.TarInfo("mskdsp-platform")
+            member.size = len(binary)
+            archive.addfile(member, io.BytesIO(binary))
+        raw = payload.getvalue()
+        package = metadata(raw=raw)
+        root = manager.local_source.root
+        root.mkdir(parents=True)
+        with closing(sqlite3.connect(root / "software.sqlite3")) as db, db:
+            db.execute("CREATE TABLE packages(metadata TEXT,product TEXT,version TEXT,platform TEXT)")
+            db.execute("INSERT INTO packages VALUES(?,?,?,?)", (json.dumps(package), package["product"], package["version"], package["platform"]))
+        origin = root / "packages" / package["product"] / package["version"] / package["platform"] / package["file_name"]
+        origin.parent.mkdir(parents=True)
+        origin.write_bytes(raw)
+        expected = {"service": "mskdsp-platform", "version": package["version"], "channel": "ci",
+                    "commit": package["source_sha"], "build_time": package["build_time"]}
+        # 校验失败时不得停止当前服务，也不能留下临时文件。
+        with mock.patch.object(manager, "stop_child") as stop, \
+             mock.patch.object(manager.transport, "open") as network:
+            manager.run_job("apply")
+            self.assertEqual(manager.status()["state"], "error")
+            stop.assert_not_called()
+            network.assert_not_called()
+            self.assertEqual(list(manager.runtime_dir.glob(".download-*")), [])
+        destination = manager.runtime_dir / "releases" / runtime.release_name(package["version"])
+        def before_stop():
+            self.assertEqual((destination / "mskdsp-platform").read_bytes(), binary)
+            self.assertEqual(list(manager.runtime_dir.glob(".download-*")), [])
+        with mock.patch.object(runtime, "binary_identity", return_value=expected), \
+             mock.patch.object(manager, "stop_child", side_effect=before_stop), \
+             mock.patch.object(manager, "launch"), mock.patch.object(manager, "healthy", return_value=True), \
+             mock.patch.object(manager.transport, "open") as network:
+            manager.run_job("apply")
+            self.assertEqual(manager.status()["state"], "succeeded")
+            self.assertEqual(manager.current["version"], package["version"])
+            network.assert_not_called()
+        self.assertEqual(origin.read_bytes(), raw)
+
+    def test_late_older_local_package_never_downgrades_current(self):
+        manager = self.local_manager()
+        data = manifest()
+        manager.current.update({field: data[field] for field in runtime.IDENTITY_FIELDS})
+        manager.current["version"] = "0.0.1-ci.20261018t080000.1.1+sha.abcdef1"
+        with mock.patch.object(manager.local_source, "latest", return_value=(data, data["platforms"]["linux-amd64"])), \
+             mock.patch.object(manager, "prepare") as prepare, mock.patch.object(manager, "stop_child") as stop:
+            manager.run_job("apply")
+            self.assertEqual(manager.status()["state"], "current")
+            self.assertFalse(manager.status()["update_available"])
+            prepare.assert_not_called()
+            stop.assert_not_called()
 
     def test_success_commits_and_preserves_previous(self):
         launches, stops = self.run_update()

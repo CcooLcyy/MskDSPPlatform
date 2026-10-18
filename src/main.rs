@@ -6,6 +6,7 @@ mod grpc;
 mod http;
 mod modbus_templates;
 mod runtime;
+mod software;
 mod state;
 mod template_http;
 

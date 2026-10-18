@@ -8,6 +8,16 @@ shutdown_timeout_seconds = 10
 protocol_version = "platform.v1"
 environment = "container"
 
+[software]
+# 根据实际外部访问入口配置；留空时不允许发布版本。
+public_base_url = ""
+# 高熵发布令牌的 SHA256，留空关闭 PubMgr 写接口。
+publisher_token_sha256 = ""
+# CI 专用高熵上传令牌的 SHA256；仅平台 main CI 包上传，不能发布或撤回。
+ci_upload_token_sha256 = ""
+max_package_bytes = 8589934592
+upload_retention_seconds = 86400
+
 [auth]
 username = "root"
 # 在 HTTPS 网关后对外部署时改为 true；纯 HTTP 本地调试保持 false。

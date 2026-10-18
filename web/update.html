@@ -76,6 +76,7 @@
       <nav class="app-nav" aria-label="平台功能">
         <a class="nav-item" href="/modbus-templates"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 9v11"/></svg></span>点表库</a>
         <a class="nav-item" href="/modbus-templates#trash"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7"/></svg></span>回收站</a>
+        <a class="nav-item" href="/software"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h16v12H4zM7 4h10v4M9 13h6M9 16h4"/></svg></span>软件版本</a>
         <a class="nav-item" href="/update" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 15V4m-4 4 4-4 4 4M5 14v6h14v-6"/></svg></span>程序更新</a>
       </nav>
       <div class="sidebar-footer">MskDSPPlatform<br>点表与更新管理</div>
@@ -97,7 +98,7 @@
           <section class="version-panel panel" aria-labelledby="available-heading">
             <div class="version-heading"><h2 id="available-heading">可用版本</h2><span class="badge">手动更新</span></div>
             <span class="version-label">最新检查结果</span><div id="latest" class="version-code">待检查</div>
-            <p class="hint">先检查可用更新，再选择是否安装。</p>
+            <p class="hint">CI 程序包入库后可检查更新，再选择是否安装。</p>
             <div class="actions"><button id="check" type="button" disabled>检查更新</button><button id="apply" class="primary" type="button" disabled>安装更新</button></div>
           </section>
         </div>
@@ -111,7 +112,7 @@
     </div>
   </div>
   <script type="module">
-const labels = {idle:'待检查', checking:'检查中', available:'有新版本', current:'已是最新版', updating:'更新中', succeeded:'更新成功', error:'更新失败'};
+const labels = {idle:'待检查', checking:'检查中', empty:'暂无更新', available:'有新版本', current:'已是最新版', updating:'更新中', succeeded:'更新成功', error:'更新失败'};
 const channels = {ci:'测试通道', beta:'预发布通道', stable:'稳定通道', dev:'开发版本'};
 const text = value => typeof value === 'string' ? value : '';
 const busy = status => status?.state === 'checking' || status?.state === 'updating';
@@ -248,7 +249,7 @@ const client = createUpdateClient({
     element('logout').disabled = !username || loggingOut || stopped;
     element('logout').textContent = loggingOut ? '正在退出…' : '退出登录';
     element('current').textContent = text(status?.current_version) || '—';
-    element('latest').textContent = text(status?.latest_version) || '待检查';
+    element('latest').textContent = text(status?.latest_version) || (status?.state === 'empty' ? '暂无可升级版本' : '待检查');
     element('channel').textContent = channels[status?.channel] || text(status?.channel) || '—';
     element('state').textContent = disconnected ? '连接中断' : pending ? '正在提交' : labels[status?.state] || '正在读取';
     element('message').textContent = actionError || text(status?.message) || (status?.enabled === false ? '网页更新未启用，请由管理员配置更新源。' : '点击“检查更新”获取最新版本。');

@@ -9,6 +9,7 @@ pub struct AppConfig {
     pub runtime: RuntimeConfig,
     pub tls: TlsConfig,
     pub auth: crate::auth::AuthConfig,
+    pub software: SoftwareConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -36,6 +37,80 @@ pub struct TlsConfig {
     pub require_client_certificate: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SoftwareConfig {
+    pub public_base_url: String,
+    pub publisher_token_sha256: String,
+    pub ci_upload_token_sha256: String,
+    pub max_package_bytes: u64,
+    pub upload_retention_seconds: u64,
+}
+
+impl Default for SoftwareConfig {
+    fn default() -> Self {
+        Self {
+            public_base_url: String::new(),
+            publisher_token_sha256: String::new(),
+            ci_upload_token_sha256: String::new(),
+            max_package_bytes: 8 * 1024 * 1024 * 1024,
+            upload_retention_seconds: 86400,
+        }
+    }
+}
+
+impl SoftwareConfig {
+    pub fn validate(&self) -> Result<()> {
+        if !self.public_base_url.is_empty() {
+            let url =
+                url::Url::parse(&self.public_base_url).context("软件仓库公开下载地址格式不正确")?;
+            anyhow::ensure!(
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none(),
+                "软件仓库公开下载地址必须为无凭据、查询参数或片段的 HTTP/HTTPS 地址"
+            );
+        }
+        anyhow::ensure!(
+            self.publisher_token_sha256.is_empty()
+                || (self.publisher_token_sha256.len() == 64
+                    && self
+                        .publisher_token_sha256
+                        .bytes()
+                        .all(|c| c.is_ascii_hexdigit())),
+            "软件仓库发布令牌摘要必须为空或 64 位十六进制 SHA256"
+        );
+        anyhow::ensure!(
+            self.ci_upload_token_sha256.is_empty()
+                || (self.ci_upload_token_sha256.len() == 64
+                    && self
+                        .ci_upload_token_sha256
+                        .bytes()
+                        .all(|c| c.is_ascii_hexdigit())),
+            "平台 CI 上传令牌摘要必须为空或 64 位十六进制 SHA256"
+        );
+        anyhow::ensure!(
+            self.ci_upload_token_sha256.is_empty()
+                || !self
+                    .ci_upload_token_sha256
+                    .eq_ignore_ascii_case(&self.publisher_token_sha256),
+            "平台 CI 上传令牌必须与软件发布令牌分别配置"
+        );
+        anyhow::ensure!(
+            (1..=8 * 1024 * 1024 * 1024).contains(&self.max_package_bytes),
+            "软件安装包大小上限必须为 1 字节到 8 GiB"
+        );
+        anyhow::ensure!(
+            (60..=7 * 86400).contains(&self.upload_retention_seconds),
+            "软件上传任务保留时间必须为 60 秒到 7 天"
+        );
+        Ok(())
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -43,6 +118,7 @@ impl Default for AppConfig {
             runtime: RuntimeConfig::default(),
             tls: TlsConfig::default(),
             auth: crate::auth::AuthConfig::default(),
+            software: SoftwareConfig::default(),
         }
     }
 }
@@ -96,6 +172,80 @@ impl AppConfig {
         if let Ok(address) = env::var("MSKDSP_PLATFORM_HTTP_ADDR") {
             config.server.http_addr = address.parse().context("子进程 HTTP 地址格式不正确")?;
         }
+        config.software.validate()?;
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod software_tests {
+    use super::*;
+
+    // 旧配置未提供软件仓库配置时仍可启动，发布令牌保持禁用。
+    #[test]
+    fn old_configuration_keeps_software_publication_disabled() {
+        let config: AppConfig = toml::from_str("[server]\nhttp_addr='127.0.0.1:8080'\n").unwrap();
+        assert!(config.software.public_base_url.is_empty());
+        assert!(config.software.publisher_token_sha256.is_empty());
+        assert!(config.software.ci_upload_token_sha256.is_empty());
+        config.software.validate().unwrap();
+    }
+
+    // 下载地址拒绝凭据、查询、片段和非 HTTP 协议，避免生成歧义或泄密清单。
+    #[test]
+    fn invalid_public_download_origins_are_rejected() {
+        for value in [
+            "file:///tmp/pkg",
+            "https://user:password@example.com",
+            "https://example.com?x=1",
+            "https://example.com/#x",
+        ] {
+            let config = SoftwareConfig {
+                public_base_url: value.into(),
+                ..SoftwareConfig::default()
+            };
+            assert!(config.validate().is_err(), "{value}");
+        }
+        for value in ["http://127.0.0.1:8080", "https://example.com/platform"] {
+            let config = SoftwareConfig {
+                public_base_url: value.into(),
+                ..SoftwareConfig::default()
+            };
+            config.validate().unwrap();
+        }
+    }
+
+    // 限额和令牌摘要配置错误必须在监听之前失败。
+    #[test]
+    fn invalid_limits_and_publisher_digest_are_rejected() {
+        let mut config = SoftwareConfig {
+            max_package_bytes: 0,
+            ..SoftwareConfig::default()
+        };
+        assert!(config.validate().is_err());
+        config.max_package_bytes = 1024;
+        config.publisher_token_sha256 = "not-a-sha256".into();
+        assert!(config.validate().is_err());
+        config.publisher_token_sha256 = "ab".repeat(32);
+        config.upload_retention_seconds = 0;
+        assert!(config.validate().is_err());
+        config.upload_retention_seconds = 86400;
+        config.validate().unwrap();
+    }
+
+    // CI 令牌可独立启用，但不得使用明文或与发布令牌复用。
+    #[test]
+    fn ci_upload_digest_is_independent_and_must_not_reuse_publisher() {
+        let mut config = SoftwareConfig {
+            ci_upload_token_sha256: "明文令牌".into(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        config.ci_upload_token_sha256 = "ab".repeat(32);
+        config.validate().unwrap();
+        config.publisher_token_sha256 = "AB".repeat(32);
+        assert!(config.validate().is_err());
+        config.publisher_token_sha256 = "cd".repeat(32);
+        config.validate().unwrap();
     }
 }

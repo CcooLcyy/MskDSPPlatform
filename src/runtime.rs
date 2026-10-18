@@ -24,6 +24,7 @@ pub struct PlatformRuntime {
 
 impl PlatformRuntime {
     pub async fn new(config: AppConfig) -> Result<Self> {
+        config.software.validate()?;
         if config.tls.enabled {
             anyhow::bail!("当前基础版本尚未启用 TLS 监听，请先关闭 tls.enabled");
         }
@@ -58,13 +59,37 @@ impl PlatformRuntime {
             .initialize()
             .await
             .with_context(|| format!("初始化点表数据库失败：{}", templates_directory.display()))?;
+        let software_directory = data_root.join("software");
+        let maximum_package_bytes = self.config.software.max_package_bytes;
+        let software = tokio::task::spawn_blocking(move || {
+            crate::software::store::SoftwareStore::new(software_directory, maximum_package_bytes)
+        })
+        .await
+        .context("初始化软件仓库任务失败")?
+        .context("初始化软件仓库失败")?;
+        let public_base_url = self.config.software.public_base_url.clone();
         let http_router = http::router(http_state.clone())
-            .merge(crate::template_http::router(http_state, templates.clone()));
+            .merge(crate::template_http::router(
+                http_state.clone(),
+                templates.clone(),
+            ))
+            .merge(crate::software::http::router(
+                http_state,
+                software.clone(),
+                public_base_url.clone(),
+            ));
         let http_listener = TcpListener::bind(self.config.server.http_addr)
             .await
             .with_context(|| format!("绑定 HTTP 地址失败: {}", self.config.server.http_addr))?;
         let grpc_addr = self.config.server.grpc_addr;
         let grpc_service = AgentGrpcService::new(self.sessions.clone(), protocol_version);
+        let software_publisher = crate::software::grpc::PublishGrpcService::new(
+            software.clone(),
+            self.config.software.publisher_token_sha256.clone(),
+            public_base_url,
+        )
+        .with_ci_upload_token(self.config.software.ci_upload_token_sha256.clone());
+        let software_catalog = crate::software::grpc::CatalogGrpcService::new(software.clone());
 
         info!(address = %http_listener.local_addr()?, "HTTP 服务监听完成");
         info!(address = %grpc_addr, "gRPC 服务准备监听");
@@ -80,6 +105,13 @@ impl PlatformRuntime {
         let grpc_service = async move {
             Server::builder()
                 .add_service(AgentServiceServer::new(grpc_service))
+                .add_service(
+                    crate::software::grpc::SoftwarePublishServiceServer::new(software_publisher)
+                        .max_decoding_message_size(1024 * 1024 + 64 * 1024),
+                )
+                .add_service(crate::software::grpc::SoftwareCatalogServiceServer::new(
+                    software_catalog,
+                ))
                 .serve_with_shutdown(grpc_addr, wait_for_shutdown(shutdown_rx))
                 .await
                 .context("gRPC 服务异常退出")
@@ -93,6 +125,11 @@ impl PlatformRuntime {
             },
             Duration::from_secs(3600),
             cleanup_shutdown,
+        ));
+        maintenance.spawn(run_software_maintenance(
+            software,
+            self.config.software.upload_retention_seconds,
+            shutdown_tx.subscribe(),
         ));
         let result = run_services(
             http_service,
@@ -108,6 +145,30 @@ impl PlatformRuntime {
         result?;
         info!("MskDSPPlatform 基础服务已停止");
         Ok(())
+    }
+}
+
+async fn run_software_maintenance(
+    store: crate::software::store::SoftwareStore,
+    retention_seconds: u64,
+    shutdown: watch::Receiver<bool>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(3600));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let stopping = wait_for_shutdown(shutdown);
+    tokio::pin!(stopping);
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut stopping => break,
+            _ = interval.tick() => {
+                match store.purge_expired(retention_seconds).await {
+                    Ok(count) if count > 0 => info!(count, "软件仓库过期上传已清理"),
+                    Ok(_) => {},
+                    Err(error) => warn!(error = %error, "清理软件仓库过期上传失败，将在下次维护重试"),
+                }
+            }
+        }
     }
 }
 

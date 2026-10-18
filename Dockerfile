@@ -10,6 +10,7 @@ RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ src/
 COPY proto/ proto/
+COPY platform-proto/ platform-proto/
 COPY web/ web/
 ARG VERSION=0.0.1
 ARG CHANNEL=dev
@@ -40,7 +41,7 @@ ARG CHANNEL=dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
 ARG SOURCE
-ARG UPDATE_MANIFEST_URL=https://update.clsclear.top/mskdsp-platform/ci/latest.json
+ARG UPDATE_MANIFEST_URL=
 LABEL org.opencontainers.image.title="MskDSPPlatform" \
     org.opencontainers.image.description="MskDSP 远程服务平台基础服务" \
     org.opencontainers.image.version="${VERSION}" \
@@ -52,8 +53,9 @@ LABEL org.opencontainers.image.title="MskDSPPlatform" \
 WORKDIR /var/lib/mskdsp-platform
 COPY --from=builder /build/mskdsp-platform /usr/local/bin/mskdsp-platform
 COPY deploy/config.toml /app/config.toml
-COPY script/runtime.py script/update_common.py /opt/mskdsp-manager/
-RUN UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL}" python3 -c 'import json,os; open("/app/updater.json","w").write(json.dumps({"manifest_url":os.environ["UPDATE_MANIFEST_URL"]})+"\n")'
+COPY script/runtime.py script/update_common.py script/local_software_source.py /opt/mskdsp-manager/
+COPY deploy/updater.json /app/updater.json
+RUN UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL}" python3 -c 'import json,os; url=os.environ["UPDATE_MANIFEST_URL"]; url and open("/app/updater.json","w").write(json.dumps({"manifest_url":url})+"\n")'
 ENV MSKDSP_PLATFORM_CONFIG=/app/config.toml \
     MSKDSP_UPDATER_CONFIG=/app/updater.json \
     MSKDSP_RUNTIME_DIR=/var/lib/mskdsp-platform \

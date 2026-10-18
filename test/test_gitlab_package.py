@@ -232,6 +232,57 @@ class GitlabPackageTests(unittest.TestCase):
         self.assertEqual(prepare.call_args.kwargs["image_tar"], self.image)
         self.assertEqual(prepare.call_args.kwargs["package_dir"], Path("package"))
 
+class PlatformPackageTests(unittest.TestCase):
+    setUp = GitlabPackageTests.setUp
+    image_with = GitlabPackageTests.image_with
+    def test_platform_preparation_has_no_download_domain_dependency(self):
+        self.metadata.update(ref="main", source="https://gitlab.test/platform")
+        self.meta.write_text(json.dumps(self.metadata), encoding="utf-8")
+        self.image_with([layer_bytes([(TARGET, b"binary")])])
+        output = self.root / "platform-package"
+        with patch.object(package.publish_r2, "read_binary_identity", return_value=self.identity):
+            result = package.prepare_platform(metadata=self.meta, image_tar=self.image, package_dir=output)
+        self.assertEqual(result["product"], "mskdsp-platform")
+        self.assertEqual(result["channel"], "ci")
+        self.assertEqual(result["source_ref"], "main")
+        self.assertEqual(result["size"], (output / "binary.tar.gz").stat().st_size)
+        self.assertEqual(result["sha256"], sha256_file(output / "binary.tar.gz"))
+        self.assertEqual(gzip.decompress((output / "image.tar.gz").read_bytes()), self.image.read_bytes())
+        self.assertEqual(json.loads((output / "upload-metadata.json").read_text(encoding="utf-8")), result)
+        self.assertNotIn("url", json.dumps(result))
+        with tarfile.open(output / "binary.tar.gz") as archive:
+            self.assertEqual(archive.getnames(), ["mskdsp-platform"])
+
+    def test_ci_yaml_replaces_r2_with_platform_upload_and_keeps_bootstrap_image(self):
+        root = Path(__file__).resolve().parents[1]
+        configuration = (root / ".gitlab-ci.yml").read_text(encoding="utf-8") + (root / ".gitlab/ci/ci.yml").read_text(encoding="utf-8")
+        self.assertNotIn("R2_", configuration)
+        self.assertNotIn("publish-r2", configuration)
+        self.assertIn("upload-platform:", configuration)
+        self.assertIn("prepare-platform", configuration)
+        self.assertIn("package/image.tar", configuration)
+
+    def test_platform_offline_bootstrap_is_independent_and_rechecks_digest(self):
+        self.metadata.update(ref="main", source="https://gitlab.test/platform")
+        self.meta.write_text(json.dumps(self.metadata), encoding="utf-8")
+        self.image_with([layer_bytes([(TARGET, b"binary")])])
+        output = self.root / "platform-package"
+        with patch.object(package.publish_r2, "read_binary_identity", return_value=self.identity):
+            package.prepare_platform(metadata=self.meta, image_tar=self.image, package_dir=output)
+        bundle, delivery = self.root / "offline", self.root / "delivery"
+        package.offline_platform(metadata=self.meta, package_dir=output, bundle_source=self.source,
+                                 bundle_output=bundle, release_output=delivery)
+        self.assertEqual(json.loads((bundle / "deploy/updater.json").read_text()),
+                         {"source": "platform", "channel": "ci"})
+        with zipfile.ZipFile(next(delivery.glob("*.zip"))) as archive:
+            self.assertEqual(archive.read("image.tar.gz"), (output / "image.tar.gz").read_bytes())
+        with (output / "binary.tar.gz").open("ab") as corrupted:
+            corrupted.write(b"corrupt")
+        with self.assertRaisesRegex(ValueError, "元数据"):
+            package.offline_platform(metadata=self.meta, package_dir=output, bundle_source=self.source,
+                                     bundle_output=self.root / "other-offline", release_output=self.root / "other-delivery")
+        self.assertFalse((self.root / "other-offline").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

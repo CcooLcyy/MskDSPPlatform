@@ -38,6 +38,7 @@ class GitlabMetadataTests(unittest.TestCase):
         self.assertEqual(data["source"], ENV["CI_PROJECT_URL"])
         self.assertEqual(data["image_repository"], "ghcr.io/ccoolcyy/mskdsp-platform")
         self.assertEqual(data["ref"], "main")
+        self.assertNotIn("update_manifest_url", data)
 
     def test_job_retry_produces_unique_version_even_at_same_time(self):
         first = self.metadata()

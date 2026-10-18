@@ -2,7 +2,8 @@
 
 ## 本次范围
 
-为 GitLab Runner 准备 Python gRPC 运行库、协议编译器和可重复生成的客户端绑定，并提供只读连通检查。暂不上传安装包，不调用发布、撤回或安装接口，不替换现有 R2 发布任务。
+为 GitLab Runner 准备 Python gRPC 运行库、协议编译器和可重复生成的客户端绑定，并提供只读连通检查。
+后续 [平台自身 CI 更新](平台自身CI更新.md) 使用专用上传客户端完成入库；只读 `probe` 本身仍不携带令牌、不上传包。
 
 协议来源为父仓库固定的 `platform-proto/platform/v1/software.proto`。先运行现有 `script/init_platform_proto.py` 初始化协议；固定提交必须已包含该文件，本地未提交协议不能视为 CI 已可用。
 
@@ -28,7 +29,7 @@ python3 -B script/platform_grpc_client.py probe --target platform.example:443
 - 工具镜像构建时检查依赖导入；新镜像须预加载到 Runner 后再切换 CI 镜像标签。
 - 当前工作机探测成功不等于 Runner 容器网络已验证；协议入库、服务部署与真实包上传仍分别验收。
 
-## 2026-10-18 验证记录
+## 2026-10-18 接入前准备记录
 
 - Windows 隔离 Python 3.13 环境使用 grpcio/grpcio-tools 1.84.0，专项 7 项全部通过；完整 Python 回归最终运行 146 项，141 项通过、5 项因 POSIX shell/Linux 文件锁要求跳过。首次完整回归的一项既有 HTTP 测试曾出现 BadStatusLine，单独重跑及第二次完整回归通过。
 - Runner 主机的 verify/tools v2 镜像已构建并预加载，两个镜像的真实 Debian 依赖环境各运行专项 7 项全部通过；本地 CI 配置已切换到 v2 标签，尚未触发真实发布流水线。

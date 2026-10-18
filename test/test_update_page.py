@@ -94,6 +94,11 @@ const client = createUpdateClient({
   assert.equal(getView(status({state:'checking'})).checkDisabled,true);
   assert.equal(getView(status({state:'updating'})).applyDisabled,true);
   assert.equal(getView(status({update_available:false})).applyDisabled,true);
+  current=status({state:'empty',latest_version:'',update_available:false,message:'暂无可升级版本'});
+  await client.refresh();
+  assert.equal(client.snapshot().status.state,'empty');
+  assert.equal(client.snapshot().view.checkDisabled,false);
+  assert.equal(client.snapshot().view.applyDisabled,true);
   current=status({state:'succeeded',current_version:'2',job_id:'history'});
   await client.refresh(); assert.equal(reloads,0);
   current=status(); await client.refresh();

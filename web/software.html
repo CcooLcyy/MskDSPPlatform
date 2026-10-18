@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark">
+<script id="theme-script">
+// 在首屏绘制前恢复主题，所有页面使用同一份偏好。
+(() => {
+  const key = 'mskdsp-platform-theme';
+  const valid = value => ['system', 'light', 'dark'].includes(value);
+  const system = window.matchMedia('(prefers-color-scheme: dark)');
+  let preference = 'system';
+  try {
+    const saved = window.localStorage.getItem(key);
+    if (valid(saved)) preference = saved;
+  } catch { /* 存储受限时仍可在当前页面切换主题。 */ }
+  function apply() {
+    document.documentElement.dataset.theme = preference === 'system' ? (system.matches ? 'dark' : 'light') : preference;
+    const select = document.getElementById('theme-select');
+    if (select) select.value = preference;
+  }
+  apply();
+  system.addEventListener('change', apply);
+  window.addEventListener('storage', event => {
+    if (event.key !== key && event.key !== null) return;
+    preference = valid(event.newValue) ? event.newValue : 'system';
+    apply();
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    const select = document.getElementById('theme-select');
+    apply();
+    select.addEventListener('change', () => {
+      preference = valid(select.value) ? select.value : 'system';
+      try { window.localStorage.setItem(key, preference); }
+      catch { /* 保存失败不影响当前页面的显示。 */ }
+      apply();
+    });
+  });
+})();
+  </script>
+  <title>MskDSPPlatform · 软件版本</title>
+  <link rel="stylesheet" href="/assets/platform.css">
+  <style>
+    .catalog-tools { display:flex; gap:16px; align-items:end; flex-wrap:wrap; margin-bottom:20px; }
+    .catalog-tools label { width:190px; }
+    #message { margin-bottom:20px; }
+    .package-grid { display:grid; gap:18px; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); }
+    .package-card { padding:22px; overflow-wrap:anywhere; }
+    .package-card h2 { font-size:20px; margin:10px 0 4px; }
+    .package-card .identity { color:var(--muted); margin:0 0 14px; font-size:12px; }
+    .package-card dl { display:grid; grid-template-columns:64px 1fr; gap:8px 12px; font-size:12px; }
+    .package-card dt { color:var(--muted); }
+    .package-card dd { margin:0; }
+    .package-card .channels { display:flex; flex-wrap:wrap; gap:6px; min-height:27px; }
+    .package-card .notes { white-space:pre-wrap; font-size:12px; color:var(--muted); }
+    .package-card select { width:auto; flex:1; min-width:85px; }
+    .package-card .actions { border-top:1px solid var(--border); margin-top:18px; padding-top:16px; }
+    .package-card button { font-size:12px; }
+    .package-card a { font-size:12px; }
+    .package-card details { margin-top:12px; font-size:12px; }
+    .package-card summary { cursor:pointer; color:var(--muted); }
+    .package-card .digest { word-break:break-all; }
+    .software-footer { margin-top:24px; }
+    @media(max-width:430px) { .package-grid { grid-template-columns:minmax(0,1fr); } .package-card { padding:17px; } .catalog-tools label { width:100%; } }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="app-sidebar" aria-label="平台导航">
+      <div class="app-brand"><span class="brand-mark" aria-hidden="true">M</span><span><span class="brand-name">MskDSP</span><span class="brand-caption">远程服务平台</span></span></div>
+      <p class="nav-label">工作台</p>
+      <nav class="app-nav" aria-label="平台功能">
+        <a class="nav-item" href="/modbus-templates"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 9v11"/></svg></span>点表库</a>
+        <a class="nav-item" href="/modbus-templates#trash"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7"/></svg></span>回收站</a>
+        <a class="nav-item" href="/software" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h16v12H4zM7 4h10v4M9 13h6M9 16h4"/></svg></span>软件版本</a>
+        <a class="nav-item" href="/update"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 15V4m-4 4 4-4 4 4M5 14v6h14v-6"/></svg></span>程序更新</a>
+      </nav>
+      <div class="sidebar-footer">MskDSPPlatform<br>点表与更新管理</div>
+    </aside>
+    <div class="app-content">
+      <header class="app-topbar">
+        <span class="topbar-label">平台管理 / 软件版本</span>
+        <div class="account-actions"><label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><span id="username">正在确认</span><button id="logout" class="quiet" type="button" disabled>退出登录</button></div>
+      </header>
+      <main class="page-content">
+        <div class="page-heading"><div><span class="eyebrow">软件仓库</span><h1>软件版本</h1><p class="page-summary">管理软件历史版本；平台 CI 包入库后，由管理员在程序更新页手动升级。</p></div><button id="refresh" type="button" disabled>刷新列表</button></div>
+        <div id="message" class="status-banner" role="status" aria-live="polite">正在读取版本…</div>
+        <div class="catalog-tools">
+          <label>产品<select id="product"><option value="">全部产品</option><option value="mskdsp-upper">上位机</option><option value="mskdsp-lower">下位机</option><option value="mskdsp-platform">平台自身</option></select></label>
+          <label>发布通道<select id="channel"><option value="">全部版本</option><option value="candidate">平台候选包</option><option value="unpublished">待发布 / 已撤回</option><option value="ci">CI</option><option value="beta">Beta</option><option value="stable">Stable</option></select></label>
+          <span id="count" class="hint"></span>
+        </div>
+        <div id="packages" class="package-grid"></div>
+        <div id="empty" class="panel empty-state" hidden><strong>暂无软件版本</strong><span>安装包上传并校验通过后会显示在这里。</span></div>
+        <footer class="software-footer">平台候选包只保存历史，不公开下载，也不会自动更新。上下位机发布会切换所选通道的推荐版本；撤回仅移除当前通道引用。</footer>
+        <noscript>请启用 JavaScript 以查看和管理软件版本。</noscript>
+      </main>
+    </div>
+  </div>
+  <script type="module">
+const $ = id => document.getElementById(id);
+const productNames = {'mskdsp-upper':'上位机', 'mskdsp-lower':'下位机', 'mskdsp-platform':'平台自身'};
+let packages = [], busy = true, authenticated = false;
+const text = value => typeof value === 'string' ? value : '';
+function message(value, failed = false) {
+  $('message').textContent = value;
+  $('message').classList.toggle('error', failed);
+}
+function element(tag, value, className) {
+  const node = document.createElement(tag);
+  if (value !== undefined) node.textContent = String(value);
+  if (className) node.className = className;
+  return node;
+}
+function setBusy(value) {
+  busy = value;
+  $('refresh').disabled = value || !authenticated;
+  $('logout').disabled = value || !authenticated;
+  document.querySelectorAll('.package-card button,.package-card select').forEach(node => { node.disabled = value || !authenticated; });
+}
+async function request(path, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(path, {credentials:'same-origin', cache:'no-store', ...options, signal:controller.signal});
+    if (response.status === 401) { authenticated = false; location.assign('/login'); throw new Error('登录已失效，请重新登录'); }
+    const body = response.status === 204 ? null : await response.json().catch(() => null);
+    if (!response.ok) throw new Error(text(body?.error) || `请求失败（HTTP ${response.status}）`);
+    return body;
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('请求超时，请刷新后重试');
+    throw error;
+  } finally { clearTimeout(timeout); }
+}
+function size(value) {
+  if (!Number.isFinite(value) || value < 0) return '—';
+  if (value < 1024) return `${value} B`;
+  const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), 3);
+  return `${(value / 1024 ** exponent).toFixed(1)} ${['B','KiB','MiB','GiB'][exponent]}`;
+}
+function field(list, label, value, className) {
+  list.append(element('dt', label), element('dd', value || '—', className));
+}
+async function mutate(pkg, channel, operation) {
+  if (busy || !authenticated) return;
+  if (pkg.metadata.product === 'mskdsp-platform') { message('平台候选包请到程序更新页手动升级。', true); return; }
+  const label = `${productNames[pkg.metadata.product] || pkg.metadata.product} ${pkg.metadata.version} · ${pkg.metadata.platform}`;
+  const warning = operation === 'publish' ? `将 ${label} 发布到 ${channel.toUpperCase()} 通道？现有推荐版本将被替换。` : `从 ${channel.toUpperCase()} 通道撤回 ${label}？`;
+  if (!window.confirm(warning)) return;
+  setBusy(true);
+  try {
+    await request(`/api/v1/software/packages/${encodeURIComponent(pkg.id)}/${operation}`, {
+      method:'POST', headers:{'Content-Type':'application/json', 'X-MskDSP-Action':'software'}, body:JSON.stringify({channel})
+    });
+    await load();
+    message(operation === 'publish' ? '版本已发布，通道更新清单已切换。' : '版本已从所选通道撤回。');
+  } catch (error) { message(error.message || '软件版本操作失败', true); }
+  finally { setBusy(false); }
+}
+function render() {
+  const product = $('product').value, channel = $('channel').value;
+  const selected = packages.filter(pkg => {
+    const platform = pkg.metadata.product === 'mskdsp-platform';
+    return (!product || pkg.metadata.product === product) && (!channel || (channel === 'candidate' ? platform : channel === 'unpublished' ? !platform && pkg.channels.length === 0 : pkg.channels.includes(channel) || platform && pkg.metadata.channel === channel));
+  });
+  $('packages').replaceChildren();
+  $('count').textContent = `${selected.length} 个安装包`;
+  $('empty').hidden = selected.length !== 0;
+  for (const pkg of selected) {
+    const meta = pkg.metadata, card = element('section', undefined, 'panel package-card');
+    card.append(element('span', productNames[meta.product] || meta.product, 'badge'), element('h2', meta.version), element('p', meta.platform, 'identity'));
+    const channels = element('div', undefined, 'channels');
+    const platform = meta.product === 'mskdsp-platform';
+    if (platform) channels.append(element('span', 'CI 候选包 · 待手动升级', 'badge'));
+    else if (pkg.channels.length === 0) channels.append(element('span', pkg.ever_published ? '已撤回' : '待发布', 'badge'));
+    for (const name of pkg.channels) channels.append(element('span', name.toUpperCase(), 'badge'));
+    card.append(channels);
+    const fields = element('dl');
+    field(fields, '安装包', meta.file_name); field(fields, '大小', size(meta.size));
+    field(fields, '入库时间', pkg.created_at);
+    if (meta.build_time) field(fields, '构建时间', meta.build_time);
+    if (meta.package_version) field(fields, '包版本', meta.package_version);
+    card.append(fields);
+    const details = element('details');
+    details.append(element('summary', '校验与来源信息'));
+    const info = element('dl');
+    field(info, 'SHA256', meta.sha256, 'digest');
+    if (meta.image_id) field(info, '镜像', meta.image_id, 'digest');
+    if (meta.source_repository) field(info, '代码库', meta.source_repository);
+    if (meta.source_ref) field(info, '引用', meta.source_ref);
+    if (meta.source_sha) field(info, '提交', meta.source_sha, 'digest');
+    details.append(info);
+    if (meta.notes) details.append(element('p', meta.notes, 'notes'));
+    card.append(details);
+    if (platform) {
+      const actions = element('div', undefined, 'actions');
+      const update = element('a', '到程序更新页检查和升级'); update.href = '/update';
+      actions.append(update); card.append(actions); $('packages').append(card); continue;
+    }
+    const actions = element('div', undefined, 'actions'), select = element('select');
+    select.setAttribute('aria-label', `${meta.version} 发布通道`);
+    for (const name of meta.platform === 'linux-x64' && meta.product === 'mskdsp-lower' ? ['ci'] : ['ci','beta','stable']) {
+      const option = element('option', name.toUpperCase()); option.value = name; select.append(option);
+    }
+    const publish = element('button', '发布', 'primary'), withdraw = element('button', '撤回');
+    publish.type = withdraw.type = 'button';
+    publish.addEventListener('click', () => mutate(pkg, select.value, 'publish'));
+    withdraw.addEventListener('click', () => {
+      if (!pkg.channels.includes(select.value)) { message('该安装包未发布到所选通道。', true); return; }
+      mutate(pkg, select.value, 'withdraw');
+    });
+    actions.append(select, publish, withdraw);
+    if (pkg.ever_published) {
+      const download = element('a', '下载安装包');
+      download.href = `/software/packages/${encodeURIComponent(pkg.id)}/${encodeURIComponent(meta.file_name)}`;
+      actions.append(download);
+    }
+    card.append(actions); $('packages').append(card);
+  }
+  setBusy(busy);
+}
+async function load() {
+  const records = await request('/api/v1/software/packages');
+  if (!Array.isArray(records) || !records.every(pkg => pkg && typeof pkg.id === 'string' && pkg.metadata && typeof pkg.metadata.product === 'string' && typeof pkg.metadata.version === 'string' && typeof pkg.metadata.file_name === 'string' && Array.isArray(pkg.channels))) {
+    throw new Error('软件仓库返回了无法识别的版本列表');
+  }
+  packages = records; render();
+}
+async function refresh() {
+  if (busy) return;
+  setBusy(true);
+  try { await load(); message('版本列表已更新。'); }
+  catch (error) { message(error.message || '读取版本失败', true); }
+  finally { setBusy(false); }
+}
+$('refresh').addEventListener('click', refresh);
+$('product').addEventListener('change', render); $('channel').addEventListener('change', render);
+$('logout').addEventListener('click', async () => {
+  if (busy) return;
+  setBusy(true);
+  try { await request('/api/v1/auth/logout', {method:'POST', headers:{'Content-Type':'application/json','X-MskDSP-Action':'auth'}, body:'{}'}); location.assign('/login'); }
+  catch (error) { message(error.message || '退出失败，请重试', true); setBusy(false); }
+});
+try {
+  const user = await request('/api/v1/auth/me');
+  if (user?.role !== 'admin' || !text(user.username).trim()) throw new Error('无法确认管理员身份，请重新登录');
+  authenticated = true; $('username').textContent = user.username;
+  await load(); message('平台候选包需手动升级；上下位机安装包可在此发布到更新通道。');
+} catch (error) { message(error.message || '无法读取软件版本', true); }
+finally { setBusy(false); }
+  </script>
+</body></html>

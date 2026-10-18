@@ -13,7 +13,6 @@ concurrency:
 
 jobs:
   verify-pr:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -23,6 +22,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: 初始化平台协议子模块
+        env:
+          PLATFORM_PROTO_READ_TOKEN: ${{ secrets.PLATFORM_PROTO_READ_TOKEN }}
+        run: python script/init_platform_proto.py
       - uses: dtolnay/rust-toolchain@1.94.1
         with:
           components: rustfmt
@@ -34,15 +37,3 @@ jobs:
           python -m unittest discover -s test -p 'test_*.py' -v
           cargo fmt --all -- --check
           cargo test --locked --all-targets
-
-  publish-ci:
-    if: github.event_name != 'pull_request'
-    permissions:
-      contents: write
-      packages: write
-    uses: ./.github/workflows/docker-release.yml
-    secrets: inherit
-    with:
-      channel: ci
-      source_ref: main
-      checkout_ref: ${{ github.sha }}

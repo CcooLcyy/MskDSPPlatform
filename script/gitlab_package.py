@@ -219,6 +219,71 @@ def offline_bundle(*, metadata: Path, output_dir: Path, public_base_url: str, pr
     return manifest
 
 
+
+def prepare_platform(*, metadata: Path, image_tar: Path, package_dir: Path = Path("package")) -> dict:
+    """生成无下载域名依赖的程序包、镜像归档和上传身份，原始镜像保留用于 bootstrap。"""
+    from script.upload_platform import package_metadata
+    data = json.loads(metadata.read_text(encoding="utf-8"))
+    if not image_tar.is_file() or image_tar.is_symlink():
+        raise ValueError("缺少 BuildKit 普通 Docker 镜像归档")
+    package_dir.mkdir(parents=True, exist_ok=True)
+    compressed, binary, archive = (package_dir / name for name in ("image.tar.gz", "mskdsp-platform", "binary.tar.gz"))
+    upload_file = package_dir / "upload-metadata.json"
+    if any(path.exists() or path.is_symlink() for path in (compressed, binary, archive, upload_file)):
+        raise ValueError("平台交付产物已存在，拒绝覆盖")
+    image_id = extract_binary(image_tar, data, binary)
+    identity = publish_r2.read_binary_identity(binary)
+    if not isinstance(identity, dict) or identity.get("service") != "mskdsp-platform" or any(
+            identity.get(key) != data[key] for key in ("version", "channel", "commit", "build_time")):
+        raise ValueError("程序身份与冻结元数据不一致")
+    publish_r2.binary_package(archive, binary)
+    result = package_metadata(data, archive)
+    with image_tar.open("rb") as source, compressed.open("wb") as raw:
+        with gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as zipped:
+            shutil.copyfileobj(source, zipped)
+    upload_file.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (package_dir / "image-identity.json").write_text(json.dumps({"image_id": image_id,
+        "sha256": sha256_file(compressed), "size": compressed.stat().st_size}) + "\n", encoding="utf-8")
+    print(f"平台 CI 交付准备完成：版本={data['version']}")
+    return result
+
+
+def offline_platform(*, metadata: Path, package_dir: Path = Path("package"),
+                     bundle_output: Path = Path("bundle"), release_output: Path = Path("release"),
+                     bundle_source: Path = Path(".")) -> None:
+    """独立组装 bootstrap 离线包，不依赖公开更新清单或托管域名。"""
+    from script.upload_platform import package_metadata
+    if any(path.exists() for path in (bundle_output, release_output)):
+        raise ValueError("离线输出目录已存在")
+    data = json.loads(metadata.read_text(encoding="utf-8"))
+    expected = package_metadata(data, package_dir / "binary.tar.gz")
+    if expected != json.loads((package_dir / "upload-metadata.json").read_text(encoding="utf-8")):
+        raise ValueError("程序包与上传元数据不一致")
+    image = package_dir / "image.tar.gz"
+    image_id = inspect_archive(image, data)
+    expected_image = json.loads((package_dir / "image-identity.json").read_text(encoding="utf-8"))
+    if expected_image != {"image_id": image_id, "sha256": sha256_file(image), "size": image.stat().st_size}:
+        raise ValueError("离线镜像摘要与冻结身份不一致")
+    (bundle_output / "deploy").mkdir(parents=True)
+    shutil.copyfile(image, bundle_output / "image.tar.gz")
+    for name in ("config.toml", "run.sh"):
+        shutil.copyfile(bundle_source / "deploy" / name, bundle_output / "deploy" / name)
+    (bundle_output / "deploy/updater.json").write_text('{"source":"platform","channel":"ci"}\n', encoding="utf-8")
+    (bundle_output / ".env").write_text(f"MSKDSP_PLATFORM_IMAGE={data['image']}\n", encoding="utf-8")
+    (bundle_output / "metadata.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    sums = [f"{sha256_file(path)}  {path.relative_to(bundle_output).as_posix()}" for path in sorted(bundle_output.rglob("*")) if path.is_file()]
+    (bundle_output / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8")
+    release_output.mkdir(parents=True)
+    with zipfile.ZipFile(release_output / (data["artifact_name"] + ".zip"), "w") as archive:
+        for path in sorted(bundle_output.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(bundle_output).as_posix(),
+                              compress_type=zipfile.ZIP_STORED if path.name.endswith(".tar.gz") else zipfile.ZIP_DEFLATED)
+    shutil.copyfile(package_dir / "binary.tar.gz", release_output / "binary.tar.gz")
+    sums = [f"{sha256_file(path)}  {path.name}" for path in sorted(release_output.iterdir()) if path.is_file()]
+    (release_output / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -238,9 +303,17 @@ def main() -> None:
     offline.add_argument("--prefix", default="mskdsp-platform")
     for option, default in (("bundle-output", "bundle"), ("release-output", "release"), ("bundle-source", ".")):
         offline.add_argument("--" + option, type=Path, default=Path(default))
+    platform = commands.add_parser("prepare-platform", help="准备无下载域名依赖的平台程序包")
+    platform.add_argument("--metadata", type=Path, required=True)
+    platform.add_argument("--image-tar", type=Path, required=True)
+    platform.add_argument("--package-dir", type=Path, default=Path("package"))
+    local = commands.add_parser("offline-platform", help="从平台交付产物组装 bootstrap 离线包")
+    local.add_argument("--metadata", type=Path, required=True)
+    for option, default in (("package-dir", "package"), ("bundle-output", "bundle"), ("release-output", "release"), ("bundle-source", ".")):
+        local.add_argument("--" + option, type=Path, default=Path(default))
     args = vars(parser.parse_args())
     selected = args.pop("command")
-    (prepare if selected == "prepare" else offline_bundle)(**args)
+    {"prepare": prepare, "offline-bundle": offline_bundle, "prepare-platform": prepare_platform, "offline-platform": offline_platform}[selected](**args)
 
 
 if __name__ == "__main__":

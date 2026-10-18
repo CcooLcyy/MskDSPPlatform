@@ -7,6 +7,16 @@ shutdown_timeout_seconds = 10
 protocol_version = "platform.v1"
 environment = "development"
 
+[software]
+# 安装包公开下载地址；发布前必须配置，生产环境使用 HTTPS。
+public_base_url = ""
+# 高熵发布令牌的 SHA256，留空关闭 PubMgr 写接口，不能填写明文令牌。
+publisher_token_sha256 = ""
+# CI 专用高熵上传令牌的 SHA256；仅平台 main CI 包上传，不能发布或撤回。
+ci_upload_token_sha256 = ""
+max_package_bytes = 8589934592
+upload_retention_seconds = 86400
+
 [auth]
 username = "root"
 # 默认使用内置初始密码哈希；自定义密码用 --hash-admin-password 从标准输入生成。

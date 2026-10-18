@@ -8,6 +8,10 @@
 !src/**
 !proto/
 !proto/**
+!platform-proto/
+!platform-proto/**
+# 子模块协议进入构建上下文，Git 元数据继续排除。
+platform-proto/.git
 !web/
 !web/**
 !script/

@@ -1,3 +1,4 @@
 {
-  "manifest_url": "https://update.clsclear.top/mskdsp-platform/ci/latest.json"
+  "source": "platform",
+  "channel": "ci"
 }

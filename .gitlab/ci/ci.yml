@@ -27,6 +27,7 @@ verify:
     - set -o pipefail
     - mkdir -p package/logs .ci-tmp
     - export TMPDIR="$CI_PROJECT_DIR/.ci-tmp"
+    - python3 -B script/init_platform_proto.py
     - cargo fmt --all -- --check
     - cargo build --locked 2>&1 | tee package/logs/cargo-build.log
     - test -x target/debug/mskdsp-platform
@@ -43,7 +44,7 @@ metadata:
   stage: verify
   timeout: 10m
   script:
-    - python3 -B script/gitlab_ci.py metadata --update-manifest-url "$R2_PUBLIC_BASE_URL/$R2_PREFIX/ci/latest.json"
+    - python3 -B script/gitlab_ci.py metadata
   artifacts:
     expire_in: 14 days
     paths: [package/metadata.json, package/build.env]
@@ -85,13 +86,12 @@ build-image:
         --opt "build-arg:VERSION=$PLATFORM_VERSION" --opt build-arg:CHANNEL=ci \
         --opt "build-arg:COMMIT=$PLATFORM_COMMIT" --opt "build-arg:BUILD_TIME=$PLATFORM_BUILD_TIME" \
         --opt "build-arg:SOURCE=$CI_PROJECT_URL" \
-        --opt "build-arg:UPDATE_MANIFEST_URL=$R2_PUBLIC_BASE_URL/$R2_PREFIX/ci/latest.json" \
         --output "type=docker,name=$PLATFORM_IMAGE,dest=package/image.tar"
   after_script:
     - rm -f .buildkit-tls/ca.pem .buildkit-tls/client.pem .buildkit-tls/client-key.pem
     - rmdir .buildkit-tls 2>/dev/null || true
   artifacts:
-    expire_in: 1 day
+    expire_in: 14 days
     paths: [package/image.tar]
 
 package:
@@ -100,10 +100,10 @@ package:
   timeout: 20m
   needs: [metadata, build-image]
   script:
-    - python3 -B script/gitlab_package.py prepare --metadata package/metadata.json --image-tar package/image.tar --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX" --skip-offline
+    - python3 -B script/gitlab_package.py prepare-platform --metadata package/metadata.json --image-tar package/image.tar
   artifacts:
     expire_in: 14 days
-    paths: [r2/, package/metadata.json]
+    paths: [package/metadata.json, package/binary.tar.gz, package/image.tar.gz, package/upload-metadata.json, package/image-identity.json]
 
 offline-bundle:
   extends: [.python-tools, .ci-main]
@@ -113,26 +113,23 @@ offline-bundle:
   when: manual
   allow_failure: true
   script:
-    - python3 -B script/gitlab_package.py offline-bundle --metadata package/metadata.json --output-dir r2 --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"
+    - python3 -B script/gitlab_package.py offline-platform --metadata package/metadata.json
   artifacts:
     expire_in: 14 days
     paths: [release/]
 
-publish-r2:
+upload-platform:
   extends: [.python-tools, .ci-main]
   stage: publish
   timeout: 20m
   interruptible: false
   needs: [package]
-  resource_group: platform-ci-r2-publish
+  resource_group: platform-ci-upload
   environment:
     name: ci
   variables:
-    AWS_ACCESS_KEY_ID: "$R2_ACCESS_KEY_ID"
-    AWS_SECRET_ACCESS_KEY: "$R2_SECRET_ACCESS_KEY"
-    AWS_DEFAULT_REGION: auto
-    AWS_REQUEST_CHECKSUM_CALCULATION: when_required
-    AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+    GIT_SUBMODULE_STRATEGY: normal
   script:
-    - test -n "$R2_ACCOUNT_ID" && test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY"
-    - python3 -B script/gitlab_ci.py publish-r2 --metadata package/metadata.json --output-dir r2 --bucket "$R2_BUCKET" --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"
+    - python3 -B script/init_platform_proto.py
+    - python3 -B script/gitlab_ci.py publish-head-check --metadata package/metadata.json
+    - python3 -B script/upload_platform.py --metadata package/metadata.json --archive package/binary.tar.gz

@@ -23,6 +23,8 @@ env:
 
 jobs:
   publish:
+    # CI 自身程序包统一由 GitLab 上传平台；这里只保留已有 Beta/Stable 发布。
+    if: inputs.channel != 'ci'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -38,6 +40,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: 初始化平台协议子模块
+        env:
+          PLATFORM_PROTO_READ_TOKEN: ${{ secrets.PLATFORM_PROTO_READ_TOKEN }}
+        run: python script/init_platform_proto.py
       - name: 校验通道来源并生成版本
         id: metadata
         env:

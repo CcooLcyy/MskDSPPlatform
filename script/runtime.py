@@ -22,6 +22,7 @@ from urllib.request import urlopen
 import uuid
 
 import update_common as common
+from local_software_source import LocalSoftwareSource
 
 IDENTITY_FIELDS = ("version", "channel", "commit", "build_time")
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
@@ -176,16 +177,24 @@ class Manager:
         self.guard, self.lifecycle = threading.RLock(), threading.RLock()
         self.stopping = threading.Event()
         self.child = self.child_reader = self.worker = self.monitor = None
-        self.busy, self.source_url = False, ""
+        self.busy, self.source_url, self.local_source = False, "", None
         config_error = ""
         if Path(updater_config).exists():
             try:
                 settings = read_json(updater_config)
-                source = settings.get("manifest_url", "") if isinstance(settings, dict) else ""
-                parsed = self.transport.validate_url(source)
-                if parsed.path.split("/")[-2:] not in (["ci", "latest.json"], ["beta", "latest.json"], ["stable", "latest.json"]):
-                    raise common.UpdateError("更新源必须是通道 latest.json")
-                self.source_url = source
+                if not isinstance(settings, dict):
+                    raise common.UpdateError("更新配置必须是 JSON 对象")
+                if settings.get("source") == "platform":
+                    data_root = Path(os.environ.get("MSKDSP_PLATFORM_DATA_DIR") or self.runtime_dir / "data")
+                    self.local_source = LocalSoftwareSource(data_root / "software", settings.get("channel"))
+                else:
+                    if settings.get("source") not in (None, "remote"):
+                        raise common.UpdateError("更新来源不受支持")
+                    source = settings.get("manifest_url", "")
+                    parsed = self.transport.validate_url(source)
+                    if parsed.path.split("/")[-2:] not in (["ci", "latest.json"], ["beta", "latest.json"], ["stable", "latest.json"]):
+                        raise common.UpdateError("更新源必须是通道 latest.json")
+                    self.source_url = source
             except common.UpdateError as exc:
                 config_error = "更新配置无效：" + str(exc)
         state = self.runtime_dir / "state.json"
@@ -234,9 +243,12 @@ class Manager:
     def status(self):
         with self.guard:
             channel = self.current["channel"]
-            if channel == "dev" and self.source_url:
-                channel = urlsplit(self.source_url).path.split("/")[-2]
-            return dict(enabled=bool(self.source_url), current_version=self.current["version"],
+            if channel == "dev":
+                if self.local_source:
+                    channel = self.local_source.channel
+                elif self.source_url:
+                    channel = urlsplit(self.source_url).path.split("/")[-2]
+            return dict(enabled=bool(self.local_source or self.source_url), current_version=self.current["version"],
                         source_url=self.source_url, channel=channel, **self.result)
 
     def set_result(self, **fields):
@@ -252,11 +264,11 @@ class Manager:
         with self.guard:
             if self.busy or self.stopping.is_set():
                 raise BusyError("已有任务运行或管理进程正在退出")
-            if operation not in ("check", "apply") or not self.source_url:
+            if operation not in ("check", "apply") or not (self.local_source or self.source_url):
                 raise common.UpdateError("更新操作无效或没有有效更新源")
             self.busy = True
             try:
-                self.set_result(state="checking" if operation == "check" else "updating", message="正在检查更新清单", job_id=uuid.uuid4().hex)
+                self.set_result(state="checking" if operation == "check" else "updating", message="正在检查可用更新", job_id=uuid.uuid4().hex)
                 self.worker = threading.Thread(target=self.run_job, args=(operation,), daemon=True)
                 self.worker.start()
             except Exception:
@@ -267,7 +279,8 @@ class Manager:
         release = release_name(manifest["version"])
         destination = self.runtime_dir / "releases" / release
         with tempfile.TemporaryDirectory(prefix=".download-", dir=self.runtime_dir) as temporary:
-            archive = common.download_artifact(artifact, temporary, self.source_url, self.transport)
+            archive = (self.local_source.copy_artifact(artifact, temporary) if self.local_source
+                       else common.download_artifact(artifact, temporary, self.source_url, self.transport))
             self.ensure_running()
             candidate = Path(temporary) / "candidate"
             binary = common.extract_binary(archive, candidate)
@@ -293,10 +306,21 @@ class Manager:
         try:
             with common.file_lock(self.runtime_dir):
                 self.ensure_running()
-                manifest = self.transport.fetch_manifest(self.source_url)
                 key = common.platform_key()
-                artifact = common.validate_manifest(manifest, self.source_url, key, self.transport)
-                available = common.needs_update(manifest, self.current)
+                if self.local_source:
+                    selected = self.local_source.latest()
+                    if selected is None:
+                        self.set_result(state="empty", latest_version="", update_available=False, message="暂无可升级版本，等待 CI 程序包入库")
+                        return
+                    manifest, artifact = selected
+                else:
+                    manifest = self.transport.fetch_manifest(self.source_url)
+                    artifact = common.validate_manifest(manifest, self.source_url, key, self.transport)
+                if (self.local_source and self.current["channel"] == manifest["channel"]
+                        and common.version_order(manifest["channel"], manifest["version"]) < common.version_order(self.current["channel"], self.current["version"])):
+                    available = False
+                else:
+                    available = common.needs_update(manifest, self.current)
                 self.set_result(latest_version=manifest["version"], update_available=available)
                 if not available:
                     self.set_result(state="current", message="当前已是最新版本")
@@ -304,7 +328,7 @@ class Manager:
                 if operation == "check":
                     self.set_result(state="available", message="发现新版本，可手动更新")
                     return
-                self.set_result(state="updating", message="正在下载校验，当前平台继续服务")
+                self.set_result(state="updating", message="正在复制校验本地程序包，当前平台继续服务" if self.local_source else "正在下载校验，当前平台继续服务")
                 candidate = self.prepare(manifest, artifact)
                 self.ensure_running()
                 old = copy.deepcopy(self.current)
