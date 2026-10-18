@@ -80,10 +80,17 @@ def update_via_admin(root, config, updater, username, password, identity, *, fai
     with ExitStack() as stack:
         stack.callback(manager.close)
         manager.start()
-        control = smoke.serve(runtime.ControlServer(("127.0.0.1", 0), manager), stack)
+        control = smoke.serve(runtime.RuntimeServer(("127.0.0.1", 0), manager), stack)
         # 新实例没有管理员会话，确认匿名安装请求被拒绝。
         smoke.COOKIES.clear()
         smoke.require_login(control)
+        try:
+            smoke.request_json(control + "/api/update/apply", "POST")
+        except HTTPError as failure:
+            smoke.require(failure.code == 401, "匿名升级请求必须返回 401")
+            failure.close()
+        else:
+            raise RuntimeError("匿名请求不应允许安装更新")
         login(control, username, password)
         before = manager.current.copy()
         smoke.request_json(control + "/api/update/check", "POST")

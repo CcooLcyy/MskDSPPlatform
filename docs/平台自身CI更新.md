@@ -37,3 +37,11 @@ Python 常驻管理进程新增平台本地软件仓库来源，updater.json 为
 ## 本机检查
 
 2026-10-18：cargo test --locked --all-targets 共 85 项通过；Python 共 167 项，162 项通过、5 项因 Windows 缺少 POSIX shell/Linux 文件锁条件跳过。Rust 格式及差异检查通过。该记录不代替后续 Linux 真程序烟测及线上流水线入库验证。
+
+## Linux 与首次上线记录
+
+2026-10-18：Linux 容器内完整 Python 套件 167 项全部通过。使用实际 Linux release 程序执行隔离烟测，覆盖 gRPC 上传入库、CI 发布权限拒绝、管理员登录检查及手动安装、匿名安装请求拒绝、HTTP/gRPC 健康检查、重启保持版本，以及健康检查失败恢复旧版本；测试更新路径禁止任何远端 HTTP 请求。管理员升级与故障回滚测试使用独立临时目录，不修改线上管理员凭据。
+
+线上首次引导已切换为提交 fd9dd817eef9838565ed8d2dd35b37e366acb871，版本 0.0.1-ci.20261018t131604.0.0+sha.fd9dd81。HTTP、gRPC、运行身份和本地更新来源检查通过；认证配置、服务配置、环境变量、四个持久化挂载及既有端口保持一致。更新来源为平台软件库，CI 上传凭据仅配置摘要。
+
+引导前的完整配置与运行数据备份为 /home/daniel/mskplt-backups/20261018T133036Z-platform-ci-bootstrap.tar.gz，已核对归档文件内容、大小和摘要。旧容器以 mskdsp-platform-before-platform-ci 停止保留，旧程序及上一版本身份仍可恢复。后续 CI 上传仅产生待管理员选择的候选，不改变当前运行版本；真实流水线入库结果另行补充。

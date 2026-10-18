@@ -1,7 +1,7 @@
 # GitLab CI
 
 入口为 `.gitlab-ci.yml`，作业定义放在 `.gitlab/ci/ci.yml`。推送 `main` 或在
-`main` 手动运行流水线，执行检查、构建、打包及 R2 CI 发布；合并请求仅执行检查。
+`main` 手动运行流水线，执行检查、构建、打包及平台 CI 包入库；合并请求仅执行检查。
 发布版本、镜像标签、离线 ZIP 和程序热更新包沿用现有发布工具的格式。
 
 ## 作业与产物
@@ -12,19 +12,17 @@
    共同区分不同构建和重试，通过 dotenv 将构建身份交给后续作业。
 3. `build-image`：使用独立 BuildKit 构建 Linux x64 镜像并导出 Docker 离线归档。
    Rust 编译缓存保存在构建服务的数据卷内。
-4. `package`：从镜像归档提取实际平台程序，执行版本身份检查，生成 R2 所需的
-   镜像压缩包、程序更新包、清单和 SHA256SUMS。自动流程只归档 `r2/` 和元数据，
-   保留 14 天；中间镜像归档保留 1 天，不额外生成并传递含相同镜像的离线 ZIP。
-5. `publish-r2`：读取 R2 凭据，先检查当前 GitLab `main`，上传并校验版本资产，
-   在提交 `latest.json` 前再次检查 `main`。入口读回验证通过后，按原规则清理
-   本项目 CI 通道的旧对象。发布作业通过 resource group 串行执行。
-6. `offline-bundle`：需要离线部署包时手动运行，从 `package` 的 R2 资产生成
-   原格式部署 ZIP、程序包和 SHA256SUMS，归档 `release/`，保留 14 天。
-   作业重新校验资产摘要和镜像身份，不上传 R2；必须在上游归档过期前运行。
-   这是允许失败的可选作业，未运行或失败均不阻断 `publish-r2`。
+4. `package`：从镜像归档提取实际平台程序，核对完整构建身份，生成域名无关的
+   `package/binary.tar.gz`、镜像压缩包、上传元数据和镜像身份记录，归档保留 14 天。
+   `build-image` 的原始 `package/image.tar` 也保留 14 天，供首次引导部署使用。
+5. `upload-platform`：检查任务来源仍为当前 main，通过 gRPC 创建上传任务、按偏移
+   分块续传并确认完整入库，不调用发布或安装接口，失败保留 GitLab 产物。作业串行执行。
+6. `offline-bundle`：需要离线部署包时手动运行，从程序包及镜像归档生成
+   部署 ZIP、程序包和 SHA256SUMS，归档 `release/`，保留 14 天。
+   作业重新校验摘要及身份；未运行或失败均不阻断 `upload-platform`。
 
 GitLab CI 不依赖 GHCR 登录；离线归档保留原镜像仓库和唯一标签，部署时使用
-`docker load`。发布到 R2 不会自动安装到运行中的平台容器。
+`docker load`。上传到平台只形成私有候选包，由管理员决定是否安装。
 
 ## GitLab 变量
 
@@ -32,27 +30,27 @@ GitLab CI 不依赖 GHCR 登录；离线归档保留原镜像仓库和唯一标�
 
 | 变量 | 含义 |
 | --- | --- |
-| `R2_ACCOUNT_ID` | Cloudflare 账户 ID |
-| `R2_ACCESS_KEY_ID` | R2 S3 Access Key ID |
-| `R2_SECRET_ACCESS_KEY` | R2 S3 Secret Access Key |
+| `PLATFORM_UPLOAD_TOKEN` | 仅允许平台自身 CI 包上传的令牌，开启掩码 |
+| `PLATFORM_GRPC_ENDPOINT` | 可达的 gRPC host:port，默认 TLS |
+| `PLATFORM_GRPC_CA_FILE` | 可选私有 CA 文件路径 |
+| `PLATFORM_GRPC_PLAINTEXT` | 可选值 1，仅显式内网/回环 IP 允许明文 |
 
 凭据使用 Variable 类型，开启保护与日志掩码，关闭变量引用展开。发布分支
 `main` 必须受保护。不要在日志中打印凭据，也不要将凭据写入版本库。
 
-非敏感配置在 `.gitlab-ci.yml` 中给出默认值：`R2_BUCKET=mskdsp-update`、
-`R2_PREFIX=mskdsp-platform`、`R2_PUBLIC_BASE_URL=https://update.clsclear.top`。
-不同项目必须使用各自的前缀。平台 CI 更新地址为
-`https://update.clsclear.top/mskdsp-platform/ci/latest.json`。
+以上上传配置使用 `ci` 环境范围。平台只保存令牌 SHA256，不将原文写入仓库、
+日志或命令参数。当前同宿主机 Runner 使用 Docker 网关内网入口，公网发布端应走 TLS。
+CI 不再读取 R2 凭据或更新公开 R2 清单；平台管理器使用本地软件仓库来源。
 
 项目还需要 `ci-build` 环境范围内的受保护变量：`BUILDKIT_HOST`、
 `BUILDKIT_CA_B64`、`BUILDKIT_CERT_B64`、`BUILDKIT_KEY_B64`。后三项是 mTLS
 CA、客户端证书和私钥的 Base64 文本；私钥必须开启掩码。构建作业将其解码到
 临时目录，结束后清理。合并请求不会运行镜像构建或发布作业。
 
-Git 默认只获取最近 20 层历史，并跳过子模块；仅 `verify` 和 `build-image`
+Git 默认只获取最近 20 层历史，并跳过子模块；`verify`、`build-image` 和 `upload-platform`
 启用协议子模块拉取，为协议依赖保留准备。子模块通过 `CI_JOB_TOKEN` 获取，协议项目的
-Job token allowlist 必须允许平台项目。`metadata`、`package`、`publish-r2` 和
-`offline-bundle` 不拉子模块。发布前的两次分支检查各以 `--depth=1` 获取最新 main，
+Job token allowlist 必须允许平台项目。`metadata`、`package` 和
+`offline-bundle` 不拉子模块。上传前的分支检查以 `--depth=1` 获取最新 main，
 无需完整历史。项目作业归档大小限制应能容纳镜像归档及交付包，当前设为 1024 MiB。
 
 ## Runner 与缓存
@@ -68,8 +66,8 @@ Runner 宿主缓存目录为 `/home/daniel/gitlab-runner-cache`。检查失败�
 
 | 变量 | 默认镜像 | 用途 |
 | --- | --- | --- |
-| `PLATFORM_VERIFY_IMAGE` | `mskdsp-platform-ci-verify:rust1.94.1-v1` | Rust 1.94.1、rustfmt、Python、Node、protoc、git 和 CA，供检查测试使用 |
-| `PLATFORM_TOOLS_IMAGE` | `mskdsp-platform-ci-tools:bookworm-v1` | Bookworm 的 Python、git、awscli 和 CA，供元数据、打包、发布及离线包使用 |
+| `PLATFORM_VERIFY_IMAGE` | `mskdsp-platform-ci-verify:rust1.94.1-v2` | Rust、rustfmt、Python gRPC、Node、protoc、Git 和 CA，供检查测试使用 |
+| `PLATFORM_TOOLS_IMAGE` | `mskdsp-platform-ci-tools:bookworm-v2` | Python gRPC、Git、AWS CLI 和 CA，供元数据、打包、上传及离线包使用 |
 
 镜像构建定义见 `docker/ci-images/Dockerfile`。当前单 Runner 主机预先构建并加载这两个
 本地镜像，作业显式使用 `if-not-present`；新增 Runner 主机前必须加载相同版本镜像。
@@ -93,7 +91,7 @@ APT 保留 Debian 默认软件源，关闭 HTTP 请求流水线，并设置 30 �
 
 ## 验收
 
-推送后确认五个自动作业均成功，检查测试日志的实际执行数量及 `package` 的 R2 归档。
-最后读取公开 R2 `ci/latest.json`，核对版本和提交与流水线一致，确认程序更新包的
-SHA256、大小和下载地址通过发布工具校验。需要离线交付时，再手动运行
+推送后确认五个自动作业均成功，检查测试日志和 `package` 的域名无关归档。
+在平台软件库核对完成入库包的版本、提交、大小及 SHA256 与流水线一致，
+确认上传前后运行身份不变，由管理员在 `/update` 检查并决定升级。需要离线交付时，再手动运行
 `offline-bundle` 并下载其 `release/` 归档验证部署包。
