@@ -59,7 +59,11 @@ build-image:
   timeout: 45m
   variables:
     GIT_SUBMODULE_STRATEGY: normal
-  needs: [verify, metadata]
+  needs:
+    - job: verify
+      artifacts: false
+    - job: metadata
+      artifacts: true
   resource_group: platform-ci-image-build
   environment:
     name: ci-build
