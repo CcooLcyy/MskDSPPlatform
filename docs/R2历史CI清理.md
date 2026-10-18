@@ -4,7 +4,7 @@
 
 本次范围固定为 `mskdsp-platform/ci/` 中提交 `61024ff8efb79b73b74a68c654f84eccdfe2d43b` 的五个对象：`latest.json`、对应版本的 `release.json`、`SHA256SUMS`、镜像包和程序包。公开检查合计 53,014,486 字节。Beta/Stable、上下位机和其他产品的前缀不在操作范围。
 
-凭据仅保存在既有 GitHub Actions Secrets 内，不取出到本地。手动工作流 `retire-r2-ci.yml` 分两阶段执行：
+凭据仅保存在既有 GitHub Actions Secrets 内，不取出到本地。本次使用一次性手动工作流 `retire-r2-ci.yml`，分两阶段执行；完成后已停用工作流并移除当前树中的工具与专项测试，完整实现保留在[维护提交快照](https://github.com/CcooLcyy/MskDSPPlatform/tree/8b9dcce72a2ab0b3c2d4a212f6e434a310a5ec54)中。
 
 1. `snapshot` 完整分页列举固定 CI 前缀，发现额外或缺失对象即停止；下载五个对象，校验身份、大小和摘要，生成完整备份与冻结清单，并作为作业产物保存。
 2. 下载并核验备份，将完整副本保存到平台服务器的独立备份目录后，再用备份运行 ID 和清单 SHA256 运行 `apply`。清理前重新比对远端对象及本地备份，每个删除操作只允许固定对象键，最后确认 CI 前缀为空。
@@ -13,4 +13,17 @@
 
 若清理中途失败，先读取结果中的已删除对象，不把部分成功视为全部完成。恢复时依据备份清单逐一上传原对象，不能用整个产品前缀覆盖恢复。
 
-实际执行结果、备份位置和核验摘要将在完成后补充。
+## 已完成的执行结果
+
+2026-10-18，完整 R2 列举确认 CI 前缀恰好为上述五个对象，无额外或缺失对象。备份任务 [39138969887](https://github.com/CcooLcyy/MskDSPPlatform/actions/runs/39138969887) 成功，全部对象实际内容的大小与 SHA256 通过验证；本地和服务器另行核验了完整备份。
+
+- 服务器备份：`/home/daniel/mskplt-backups/r2-ci-retirement-39138969887.tar.gz`，权限 0600。
+- 备份归档 SHA256：`ef0dc267193b767ecc6125746753a20510d8cf9e66ca3639336a662072dee9f6`。
+- 冻结清单 SHA256：`5570bf38ebf587d16f7f634b8bba8b0d716dd30e29f51583f61394727c2e84e0`。
+- 清理任务 [39139395366](https://github.com/CcooLcyy/MskDSPPlatform/actions/runs/39139395366) 成功：确认删除 5 个对象，待确认对象为 0，最终 R2 列表为空。
+- 独立核对原五个公开地址，全部返回 HTTP 404。
+- 永久结果记录：`/home/daniel/mskplt-backups/r2-ci-retirement-39139395366-result.json`。
+
+专项测试共 17 项全部通过，涵盖完整备份、对象范围、篡改拒绝、分页、删除前全量与逐对象复核，以及失败记录。R2 完整列表的修改时间保留毫秒；HEAD 时间仅按接口支持的秒精度比较，仍严格比较大小和 ETag。执行前 GitLab 流水线 #26 的 Rust 85 项、Python 183 项均通过。
+
+此次操作没有重启或升级线上程序，没有清理编译及依赖缓存。当前 CI 继续向平台软件库上传候选包，由管理员决定是否安装。Beta/Stable 及其他产品的 R2 目录、共享发布代码和既有凭据均保留。

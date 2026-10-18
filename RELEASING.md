@@ -20,7 +20,8 @@ CI 由 GitLab 完成构建、测试、无域名依赖的程序包打包及平台
 
 `main` 的自动 CI 由 GitLab 执行，构建、测试、离线包和平台上传的配置见
 [GitLab CI](docs/GitLabCI.md)。GitHub 的 CI 工作流仅做检查；GHCR、GitHub Release
-及 R2 发布保留用于 Beta/Stable。旧 CI R2 产物仅为历史交付，不再更新。
+及 R2 发布保留用于 Beta/Stable。历史 CI R2 目录已于 2026-10-18 清空，备份及执行记录见
+[R2 历史 CI 清理](docs/R2历史CI清理.md)。
 
 ## 三个发布通道
 

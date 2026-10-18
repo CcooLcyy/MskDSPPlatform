@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       object_key:
-        description: '本平台已上传对象键，例如 mskdsp-platform/ci/版本/SHA256SUMS'
+        description: '本平台已上传对象键，例如 mskdsp-platform/beta/版本/SHA256SUMS；历史 CI 已退役'
         required: true
         type: string
 
