@@ -92,8 +92,8 @@
           <section class="version-panel panel" aria-labelledby="current-heading">
             <div class="version-heading"><h2 id="current-heading">当前版本</h2><span class="badge running-badge">正在运行</span></div>
             <span class="version-label">平台版本</span><div id="current" class="version-code">—</div>
-            <p class="hint">当前平台运行的程序版本。</p>
-            <div class="actions"><span class="channel-caption">更新通道 · <strong id="channel">—</strong></span></div>
+            <p class="hint">上一版本 · <strong id="previous">暂无可回退版本</strong></p>
+            <div class="actions"><span class="channel-caption">更新通道 · <strong id="channel">—</strong></span><button id="rollback" type="button" disabled>回退上一版本</button></div>
           </section>
           <section class="version-panel panel" aria-labelledby="available-heading">
             <div class="version-heading"><h2 id="available-heading">可用版本</h2><span class="badge">手动更新</span></div>
@@ -106,30 +106,32 @@
           <div class="panel-heading"><h2 id="task-heading">任务状态</h2><span id="state" class="task-indicator">正在读取</span></div>
           <div class="panel-body" role="status" aria-live="polite"><p id="message">正在读取更新状态…</p><p id="connection" hidden></p></div>
         </section>
-        <footer class="update-footer">更新由你手动发起。安装期间服务会短暂重连，更新失败时将尝试恢复上一版本。更新成功后若会话失效，请重新登录。</footer>
+        <footer class="update-footer">更新和回退由管理员手动发起，期间服务会短暂重连。新版本启动失败时自动恢复旧版本；业务问题可手动回退上一版本。操作完成后若会话失效，请重新登录。</footer>
         <noscript>请启用 JavaScript 以查看更新状态并操作更新。</noscript>
       </main>
     </div>
   </div>
   <script type="module">
-const labels = {idle:'待检查', checking:'检查中', empty:'暂无更新', available:'有新版本', current:'已是最新版', updating:'更新中', succeeded:'更新成功', error:'更新失败'};
+const labels = {idle:'待检查', checking:'检查中', empty:'暂无更新', available:'有新版本', current:'已是最新版', updating:'更新中', succeeded:'更新成功', rolling_back:'回退中', rolled_back:'回退成功', error:'操作失败'};
 const channels = {ci:'测试通道', beta:'预发布通道', stable:'稳定通道', dev:'开发版本'};
 const text = value => typeof value === 'string' ? value : '';
-const busy = status => status?.state === 'checking' || status?.state === 'updating';
+const busy = status => ['checking','updating','rolling_back'].includes(status?.state);
 const validStatus = value => value && typeof value === 'object' && typeof value.enabled === 'boolean' && Object.hasOwn(labels, value.state);
 const validUser = value => typeof value?.username === 'string' && Boolean(value.username.trim()) && value?.role === 'admin';
 
 function getView(status, flags = {}) {
   const processing = flags.pending || flags.refreshing || flags.loggingOut || busy(status);
-  const disabled = !status?.enabled || processing || flags.disconnected || flags.unauthorized;
+  const unavailable = processing || flags.disconnected || flags.unauthorized;
+  const disabled = !status?.enabled || unavailable;
   return {
     checkDisabled: Boolean(disabled),
     applyDisabled: Boolean(disabled || status?.update_available !== true),
+    rollbackDisabled: Boolean(unavailable || status?.rollback_available !== true || !text(status?.previous_version)),
     processing: Boolean(processing),
   };
 }
 
-function createUpdateClient({fetchImpl, onChange, reload, onUnauthorized = () => {}}) {
+function createUpdateClient({fetchImpl, onChange, reload, onUnauthorized = () => {}, confirmRollback = () => false}) {
   let status = null, pending = false, disconnected = false, refreshing = false, actionError = '';
   let username = '', loggingOut = false, stopped = false;
   let watching = null, reloaded = false;
@@ -141,14 +143,14 @@ function createUpdateClient({fetchImpl, onChange, reload, onUnauthorized = () =>
     notify();
     onUnauthorized();
   }
-  async function request(url, method = 'GET', kind = 'update') {
+  async function request(url, method = 'GET', kind = 'update', payload = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     try {
       const options = {method, cache:'no-store', credentials:'same-origin', signal:controller.signal};
       if (method === 'POST') {
         options.headers = {'Content-Type':'application/json', 'X-MskDSP-Action':kind === 'update' ? 'update' : 'auth'};
-        options.body = '{}';
+        options.body = JSON.stringify(payload);
       }
       const response = await fetchImpl(url, options);
       if (response.status === 401) requireLogin();
@@ -173,7 +175,7 @@ function createUpdateClient({fetchImpl, onChange, reload, onUnauthorized = () =>
     actionError = disconnected ? '' : error.message;
   }
   async function refreshAssets() {
-    if (stopped || loggingOut || reloaded || !watching || status?.state !== 'succeeded' || status.job_id !== watching.job || text(status.current_version) === watching.version) return;
+    if (stopped || loggingOut || reloaded || !watching || status?.state !== watching.success || status.job_id !== watching.job || text(status.current_version) === watching.version) return;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
     try {
@@ -208,17 +210,23 @@ function createUpdateClient({fetchImpl, onChange, reload, onUnauthorized = () =>
     },
     async action(operation) {
       const view = snapshot().view;
-      if (refreshing || !['check','apply'].includes(operation) || (operation === 'check' ? view.checkDisabled : view.applyDisabled)) return;
+      const disabled = {check:view.checkDisabled, apply:view.applyDisabled, rollback:view.rollbackDisabled};
+      if (!Object.hasOwn(disabled, operation) || disabled[operation]) return;
+      const targetVersion = text(status?.previous_version);
+      // 确认和请求使用同一个目标，后台会再次拒绝已变更的上一版本。
+      if (operation === 'rollback' && !confirmRollback(targetVersion)) return;
       pending = true; actionError = '';
       const version = text(status?.current_version);
       watching = null;
       notify();
       try {
-        const result = await request(`/api/update/${operation}`, 'POST');
+        const result = await request(`/api/update/${operation}`, 'POST', 'update', operation === 'rollback' ? {target_version:targetVersion} : {});
         if (stopped) return;
         status = result;
         disconnected = false;
-        if (operation === 'apply' && text(status.job_id) && ['updating','succeeded'].includes(status.state)) watching = {job:status.job_id, version};
+        const progress = operation === 'apply' ? 'updating' : 'rolling_back';
+        const success = operation === 'apply' ? 'succeeded' : 'rolled_back';
+        if (['apply','rollback'].includes(operation) && text(status.job_id) && [progress,success].includes(status.state)) watching = {job:status.job_id, version, success};
         await refreshAssets();
       } catch (error) { failed(error); }
       finally { pending = false; notify(); }
@@ -243,12 +251,14 @@ let timer;
 const client = createUpdateClient({
   fetchImpl:window.fetch.bind(window),
   reload:() => window.location.reload(),
+  confirmRollback:version => window.confirm(`确认回退到上一版本 ${version}？\n平台服务将短暂重连。`),
   onUnauthorized:() => { clearTimeout(timer); window.location.replace('/login'); },
   onChange:({status, username, pending, loggingOut, stopped, disconnected, actionError, view}) => {
     element('username').textContent = username || (stopped ? '未登录' : '正在确认');
     element('logout').disabled = !username || loggingOut || stopped;
     element('logout').textContent = loggingOut ? '正在退出…' : '退出登录';
     element('current').textContent = text(status?.current_version) || '—';
+    element('previous').textContent = text(status?.previous_version) || '暂无可回退版本';
     element('latest').textContent = text(status?.latest_version) || (status?.state === 'empty' ? '暂无可升级版本' : '待检查');
     element('channel').textContent = channels[status?.channel] || text(status?.channel) || '—';
     element('state').textContent = disconnected ? '连接中断' : pending ? '正在提交' : labels[status?.state] || '正在读取';
@@ -257,9 +267,10 @@ const client = createUpdateClient({
     element('connection').textContent = disconnected ? '暂时无法连接，正在自动重试读取状态。' : '';
     element('check').disabled = view.checkDisabled;
     element('apply').disabled = view.applyDisabled;
+    element('rollback').disabled = view.rollbackDisabled;
     element('task-status').setAttribute('aria-busy', String(view.processing));
     element('state').classList.toggle('error', Boolean(actionError || status?.state === 'error' || disconnected));
-    element('state').classList.toggle('success', status?.state === 'succeeded' || status?.state === 'current');
+    element('state').classList.toggle('success', ['succeeded','rolled_back','current'].includes(status?.state));
     element('state').classList.toggle('processing', busy(status) || pending);
     element('message').classList.toggle('error', Boolean(actionError || status?.state === 'error'));
   },
@@ -269,7 +280,7 @@ async function poll() {
   await client.refresh();
   if (!client.snapshot().stopped) timer = setTimeout(poll, busy(client.snapshot().status) ? 2000 : 5000);
 }
-for (const operation of ['check','apply']) {
+for (const operation of ['check','apply','rollback']) {
   element(operation).addEventListener('click', async () => {
     clearTimeout(timer);
     await client.action(operation);

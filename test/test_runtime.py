@@ -63,6 +63,10 @@ class ManagerTests(unittest.TestCase):
         self.identity_mock = mock.patch.object(runtime, "binary_identity", return_value=self.identity)
         self.identity_mock.start()
         self.addCleanup(self.identity_mock.stop)
+        seed = bytearray(64)
+        seed[:6] = b"\x7fELF\x02\x01"
+        seed[18:20] = (62).to_bytes(2, "little")
+        (self.folder / "seed").write_bytes(seed)
         self.manager = runtime.Manager(self.folder / "runtime", self.config, config=self.platform_config, seed=self.folder / "seed")
         self.addCleanup(self.manager.close)
         lock = mock.patch.object(runtime.common, "file_lock", return_value=nullcontext())

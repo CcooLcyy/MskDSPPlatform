@@ -2,6 +2,7 @@
 """单容器平台管理进程：手动更新、HTTP 代理与子进程监督。"""
 import codecs
 import copy
+import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -26,7 +27,7 @@ from local_software_source import LocalSoftwareSource
 
 IDENTITY_FIELDS = ("version", "channel", "commit", "build_time")
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"}
-BUSY_STATES = {"checking", "updating"}
+BUSY_STATES = {"checking", "updating", "rolling_back"}
 AUTH_TIMEOUT = 2
 MAX_AUTH_RESPONSE = 4096
 LOG_MAX_BYTES = 10 * 1024 * 1024
@@ -36,6 +37,17 @@ LOG_CHUNK_SIZE = 4096
 
 class BusyError(common.UpdateError):
     pass
+
+
+class RollbackError(common.UpdateError):
+    pass
+
+
+def executable_sha256(path):
+    if path.stat().st_size > common.MAX_BINARY:
+        raise common.UpdateError("本地程序超过大小限制")
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def log(message):
@@ -248,8 +260,33 @@ class Manager:
                     channel = self.local_source.channel
                 elif self.source_url:
                     channel = urlsplit(self.source_url).path.split("/")[-2]
+            previous = self.current.get("previous")
+            previous_version = previous.get("version", "") if isinstance(previous, dict) else ""
+            try:
+                self.rollback_target()
+                rollback_available = True
+            except (common.UpdateError, OSError):
+                rollback_available = False
             return dict(enabled=bool(self.local_source or self.source_url), current_version=self.current["version"],
-                        source_url=self.source_url, channel=channel, **self.result)
+                        source_url=self.source_url, channel=channel,
+                        previous_version=previous_version if isinstance(previous_version, str) else "",
+                        rollback_available=rollback_available, **self.result)
+
+    def rollback_target(self, target_version=None):
+        previous = self.current.get("previous")
+        if (not isinstance(previous, dict)
+                or any(not isinstance(previous.get(key), str) or not previous[key]
+                       for key in (*IDENTITY_FIELDS, "release"))
+                or previous["release"] == self.current["release"]):
+            raise RollbackError("没有可回退的上一版本")
+        if target_version is not None and target_version != previous["version"]:
+            raise RollbackError("上一版本已变化，请刷新后重新确认")
+        if previous["release"] != "seed" and previous["release"] != release_name(previous["version"]):
+            raise RollbackError("上一版本路径不正确")
+        path = self.binary_path(previous)
+        if path.parent.is_symlink() or path.is_symlink() or not path.is_file():
+            raise RollbackError("上一版本程序缺失或为链接，无法回退")
+        return {key: copy.deepcopy(value) for key, value in previous.items() if key != "previous"}
 
     def set_result(self, **fields):
         with self.guard:
@@ -260,16 +297,25 @@ class Manager:
         if self.stopping.is_set():
             raise common.UpdateError("管理进程正在退出，更新任务已取消")
 
-    def begin(self, operation):
+    def begin(self, operation, *, target_version=None):
         with self.guard:
             if self.busy or self.stopping.is_set():
                 raise BusyError("已有任务运行或管理进程正在退出")
-            if operation not in ("check", "apply") or not (self.local_source or self.source_url):
+            if operation == "rollback":
+                if not isinstance(target_version, str) or not target_version:
+                    raise RollbackError("必须确认上一版本后才能回退")
+                self.rollback_target(target_version)
+            elif operation not in ("check", "apply") or not (self.local_source or self.source_url):
                 raise common.UpdateError("更新操作无效或没有有效更新源")
             self.busy = True
             try:
-                self.set_result(state="checking" if operation == "check" else "updating", message="正在检查可用更新", job_id=uuid.uuid4().hex)
-                self.worker = threading.Thread(target=self.run_job, args=(operation,), daemon=True)
+                self.set_result(state={"check": "checking", "apply": "updating", "rollback": "rolling_back"}[operation],
+                                message="正在准备回退上一版本" if operation == "rollback" else "正在检查可用更新",
+                                job_id=uuid.uuid4().hex)
+                if operation == "rollback":
+                    self.log("管理员提交回滚：" + self.current["version"] + " → " + target_version)
+                args = (operation, target_version) if operation == "rollback" else (operation,)
+                self.worker = threading.Thread(target=self.run_job, args=args, daemon=True)
                 self.worker.start()
             except Exception:
                 self.busy = False
@@ -301,7 +347,66 @@ class Manager:
                     os.close(descriptor)
         return destination
 
-    def run_job(self, operation):
+    def run_rollback(self, target_version):
+        committed = False
+        try:
+            with common.file_lock(self.runtime_dir):
+                self.ensure_running()
+                previous = self.rollback_target(target_version)
+                path = self.binary_path(previous)
+                common.verify_elf(path)
+                # binary_sha256 是历史程序包摘要；独立记录可执行文件摘要以校验本地回滚目标。
+                digest = executable_sha256(path)
+                expected = previous.get("executable_sha256")
+                if expected is not None and expected != digest:
+                    raise common.UpdateError("上一版本程序 SHA256 不一致")
+                self.validate_installed(previous)
+                old = copy.deepcopy(self.current)
+                with self.lifecycle:
+                    self.ensure_running()
+                    self.set_result(state="rolling_back", message="正在回退到上一版本：" + previous["version"],
+                                    latest_version="", update_available=False)
+                    self.log("回滚校验通过：" + old["version"] + " → " + previous["version"])
+                    self.stop_child()
+                    try:
+                        self.launch(previous)
+                        if not self.healthy(previous):
+                            raise common.UpdateError("回滚目标 HTTP/gRPC 健康检查失败")
+                        self.ensure_running()
+                        common.atomic_json(self.runtime_dir / "state.json", previous)
+                        committed = True
+                    except Exception as exc:
+                        self.stop_child()
+                        if self.stopping.is_set():
+                            raise common.UpdateError("回滚任务取消，下次启动恢复最后提交版本") from exc
+                        try:
+                            self.launch(old)
+                            if not self.healthy(old):
+                                raise common.UpdateError("回滚前版本 HTTP/gRPC 健康检查失败")
+                        except Exception as recovery:
+                            raise common.UpdateError("回滚失败且恢复失败，需人工处理：" + str(recovery)) from exc
+                        raise common.UpdateError("回滚失败，已恢复回滚前版本：" + str(exc)) from exc
+                    with self.guard:
+                        self.current = previous
+                    self.log("回滚成功：" + previous["version"])
+                    self.set_result(state="rolled_back", message="已回退到上一版本：" + previous["version"],
+                                    latest_version="", update_available=False)
+                self.prune()
+        except Exception as exc:
+            message = ("回滚版本已提交，但后续任务处理失败：" if committed else "") + str(exc)
+            self.log(message)
+            try:
+                self.set_result(state="error", message=message, latest_version="", update_available=False)
+            except OSError as error:
+                self.log("保存回滚任务结果失败：" + str(error))
+        finally:
+            with self.guard:
+                self.busy = False
+
+    def run_job(self, operation, target_version=None):
+        if operation == "rollback":
+            self.run_rollback(target_version)
+            return
         committed = False
         try:
             with common.file_lock(self.runtime_dir):
@@ -332,8 +437,11 @@ class Manager:
                 candidate = self.prepare(manifest, artifact)
                 self.ensure_running()
                 old = copy.deepcopy(self.current)
+                if "executable_sha256" not in old:
+                    old["executable_sha256"] = executable_sha256(self.binary_path(old))
                 next_state = {field: manifest.get(field, manifest.get("published_at")) for field in IDENTITY_FIELDS}
                 next_state.update(release=candidate.name, platform=key, binary_sha256=artifact["binary_sha256"],
+                                  executable_sha256=executable_sha256(candidate / common.PROJECT),
                                   previous={field: value for field, value in old.items() if field != "previous"})
                 with self.lifecycle:
                     self.ensure_running()
@@ -596,7 +704,7 @@ class RuntimeHandler(BaseHTTPRequestHandler):
                 self.respond(400, {"error": "更新接口不接受查询参数"})
             elif parsed.path == "/api/update/status":
                 self.respond(200, self.server.manager.status()) if self.command == "GET" else self.respond(405, {"error": "状态接口仅接受 GET"})
-            elif parsed.path not in ("/api/update/check", "/api/update/apply"):
+            elif parsed.path not in ("/api/update/check", "/api/update/apply", "/api/update/rollback"):
                 self.respond(404, {"error": "更新接口不存在"})
             elif self.command != "POST":
                 self.respond(405, {"error": "更新操作仅接受 POST"})
@@ -605,14 +713,23 @@ class RuntimeHandler(BaseHTTPRequestHandler):
             else:
                 try:
                     raw = self.body(1024)
-                    if raw and json.loads(raw) != {}:
+                    operation = parsed.path.rsplit("/", 1)[1]
+                    params = json.loads(raw) if raw else {}
+                    if operation == "rollback":
+                        if (not isinstance(params, dict) or set(params) != {"target_version"}
+                                or not isinstance(params["target_version"], str) or not params["target_version"].strip()):
+                            raise ValueError("回滚操作必须且只能指定 target_version")
+                    elif params != {}:
                         raise ValueError("更新操作不接受参数")
                     # 上传请求体期间会话可能被注销，提交更新前必须再次校验。
                     if not self.authenticated():
                         return
-                    self.server.manager.begin(parsed.path.rsplit("/", 1)[1])
+                    if operation == "rollback":
+                        self.server.manager.begin(operation, target_version=params["target_version"])
+                    else:
+                        self.server.manager.begin(operation)
                     self.respond(202, self.server.manager.status())
-                except BusyError as exc:
+                except (BusyError, RollbackError) as exc:
                     self.respond(409, {"error": str(exc)})
                 except OverflowError as exc:
                     self.respond(413, {"error": str(exc)})

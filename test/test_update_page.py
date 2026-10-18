@@ -29,7 +29,7 @@ class UpdatePageTests(unittest.TestCase):
     def test_page_contract(self):
         page = PAGE.read_text(encoding="utf-8")
         self.assertIn('name="viewport"', page)
-        for field in ("current", "latest", "channel", "state", "message", "check", "apply", "username", "logout"):
+        for field in ("current", "latest", "previous", "channel", "state", "message", "check", "apply", "rollback", "username", "logout"):
             self.assertIn(f'id="{field}"', page)
         self.assertNotIn("innerHTML", page)
         self.assertIn("textContent", page)
@@ -38,6 +38,118 @@ class UpdatePageTests(unittest.TestCase):
         self.assertIn("/readyz", page)
         self.assertIn("/api/v1/auth/me", page)
         self.assertIn("/api/v1/auth/logout", page)
+
+    # 回退必须确认具体目标；没有更新源时也可用，失败和重连不能重复提交。
+    def test_rollback_client_behavior(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("未找到 Node，页面静态契约检查仍执行")
+        page = PAGE.read_text(encoding="utf-8")
+        script = re.search(r'<script type="module">([\s\S]*?)</script>', page).group(1)
+        library = script.split("// 页面启动")[0]
+        scenario = r'''
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const context = vm.createContext({AbortController, setTimeout, clearTimeout});
+vm.runInContext(LIBRARY + '\nthis.api = {getView, createUpdateClient};', context);
+const {getView, createUpdateClient} = context.api;
+const status = fields => ({enabled:false,current_version:'2',previous_version:'1',rollback_available:true,update_available:false,state:'idle',job_id:'',...fields});
+const response = (body, code=200) => ({ok:code<400,status:code,json:async()=>body});
+let current=status(), accept=false, fail=false, reject=0, reloads=0, redirects=0, confirms=[], calls=[], finishPost;
+const client=createUpdateClient({
+  fetchImpl:async(url,options)=>{
+    calls.push({url,options});
+    if(url==='/api/v1/auth/me') return response({username:'admin',role:'admin'});
+    if(url==='/readyz') return response({status:'ready'});
+    if(url==='/api/update/rollback') {
+      if(fail) throw new Error('离线');
+      if(reject) return response({error:'上一版本已变更，请刷新'},reject);
+      return await new Promise(resolve=>{finishPost=resolve});
+    }
+    return response(current);
+  },onChange:()=>{},reload:()=>reloads++,onUnauthorized:()=>redirects++,
+  confirmRollback:version=>{confirms.push(version);return accept;}
+});
+(async()=>{
+  assert.equal(client.snapshot().view.rollbackDisabled,true);
+  await client.refresh();
+  assert.equal(client.snapshot().view.checkDisabled,true);
+  assert.equal(client.snapshot().view.rollbackDisabled,false);
+  assert.equal(calls.some(c=>c.options.method==='POST'),false);
+  await client.action('rollback');
+  assert.deepEqual(confirms,['1']);
+  assert.equal(calls.some(c=>c.options.method==='POST'),false);
+  assert.equal(client.snapshot().pending,false);
+  for(const fields of [{rollback_available:false},{previous_version:''},{state:'checking'},{state:'updating'},{state:'rolling_back'}]) {
+    assert.equal(getView(status(fields)).rollbackDisabled,true);
+  }
+  for(const flag of ['pending','refreshing','loggingOut','disconnected','unauthorized']) {
+    assert.equal(getView(status(),{[flag]:true}).rollbackDisabled,true);
+  }
+  accept=true;
+  const submitting=client.action('rollback');
+  assert.equal(client.snapshot().pending,true);
+  assert.equal(client.snapshot().view.rollbackDisabled,true);
+  const count=calls.length;
+  await client.action('rollback'); await client.refresh();
+  assert.equal(calls.length,count);
+  assert.deepEqual(confirms,['1','1']);
+  const post=calls.at(-1);
+  assert.equal(post.url,'/api/update/rollback');
+  assert.equal(post.options.method,'POST');
+  assert.equal(post.options.credentials,'same-origin');
+  assert.equal(post.options.headers['X-MskDSP-Action'],'update');
+  assert.equal(post.options.body,JSON.stringify({target_version:'1'}));
+  finishPost(response(status({state:'rolling_back',job_id:'rollback-job'}),202));
+  await submitting;
+  assert.equal(client.snapshot().view.rollbackDisabled,true);
+  current=status({state:'error',job_id:'rollback-job',message:'回退失败，已恢复当前版本'});
+  await client.refresh();
+  assert.equal(reloads,0);
+  assert.equal(client.snapshot().view.rollbackDisabled,false);
+  reject=409;
+  await client.action('rollback');
+  assert.match(client.snapshot().actionError,/上一版本已变更/);
+  assert.equal(client.snapshot().view.rollbackDisabled,false);
+  reject=0; fail=true;
+  await client.action('rollback');
+  assert.equal(client.snapshot().view.rollbackDisabled,true);
+  const posts=calls.filter(c=>c.options.method==='POST').length;
+  fail=false; await client.refresh();
+  assert.equal(calls.filter(c=>c.options.method==='POST').length,posts);
+  assert.equal(client.snapshot().view.rollbackDisabled,false);
+  // 页面已有历史成功状态不触发刷新，只有本页面发起的成功任务才等待就绪。
+  current=status({state:'rolled_back',current_version:'1',job_id:'history',previous_version:'',rollback_available:false});
+  await client.refresh(); assert.equal(reloads,0);
+  current=status(); await client.refresh();
+  const retry=client.action('rollback');
+  finishPost(response(status({state:'rolling_back',job_id:'retry'}),202)); await retry;
+  current=status({state:'rolled_back',current_version:'1',job_id:'other'});
+  await client.refresh(); assert.equal(reloads,0);
+  current=status({state:'rolled_back',current_version:'1',job_id:'retry',previous_version:'',rollback_available:false});
+  await client.refresh(); assert.equal(reloads,1);
+  await client.refresh(); assert.equal(reloads,1);
+  assert.equal(client.snapshot().view.rollbackDisabled,true);
+  current=status(); await client.refresh(); reject=401;
+  await client.action('rollback');
+  assert.equal(redirects,1);
+  assert.equal(client.snapshot().stopped,true);
+  assert.equal(client.snapshot().view.rollbackDisabled,true);
+  const stoppedCount=calls.length;
+  await client.action('rollback'); await client.refresh();
+  assert.equal(calls.length,stoppedCount);
+  // 未显式提供确认能力时安全禁用提交；默认行为不得代替管理员确认。
+  const unconfirmed=createUpdateClient({fetchImpl:async(url,options)=>{
+    assert.notEqual(options.method,'POST');
+    return response(url==='/api/v1/auth/me'?{username:'admin',role:'admin'}:status());
+  },onChange:()=>{},reload:()=>{}});
+  await unconfirmed.refresh(); await unconfirmed.action('rollback');
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+        import json
+        command = "const LIBRARY = " + json.dumps(library) + ";\n" + scenario
+        result = subprocess.run([node, "-e", command], capture_output=True, text=True, encoding="utf-8", timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     # 用隔离的 JavaScript 环境验证请求、断线恢复、按钮与刷新边界。
     def test_client_behavior(self):
