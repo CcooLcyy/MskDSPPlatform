@@ -1,5 +1,6 @@
 """通过隔离假存储验证旧 CI 快照、删除范围和失败记录，不连接真实 R2。"""
 import contextlib
+from datetime import datetime
 import hashlib
 import io
 import json
@@ -41,10 +42,11 @@ class MemoryStore:
         self.extra = None
         self.fail_delete = None
         self.keep_after_delete = False
+        self.modified = "2026-10-18T12:39:07.045000+00:00"
 
     def metadata(self, key):
         return dict(Key=key, Size=len(self.payloads[key]), ETag='"' + hashlib.md5(self.payloads[key]).hexdigest() + '"',
-                    LastModified="2026-10-18T12:39:07+00:00")
+                    LastModified=self.modified)
 
     def list_page(self, token=None):
         self.list_calls += 1
@@ -66,7 +68,9 @@ class MemoryStore:
     def head(self, key):
         self.heads.append(key)
         item = self.metadata(key)
-        return dict(ContentLength=item["Size"], ETag=item["ETag"], LastModified=item["LastModified"])
+        # R2 列举保留毫秒，HEAD 的 HTTP 日期只返回整秒。
+        modified = datetime.fromisoformat(item["LastModified"]).replace(microsecond=0).isoformat()
+        return dict(ContentLength=item["Size"], ETag=item["ETag"], LastModified=modified)
 
     def delete(self, key):
         if key == self.fail_delete:
@@ -98,11 +102,12 @@ class RetirementTests(unittest.TestCase):
     def apply(self, checksum):
         return retirement.apply(self.store, self.snapshot, checksum, self.report, bucket="mskdsp-update")
 
-    def test_snapshot_and_apply_delete_exact_five_latest_first(self):
+    def test_r2_millisecond_list_and_second_head_snapshot_apply_exact_five(self):
         checksum = self.take_snapshot()
         inventory = json.loads((self.snapshot / "inventory.json").read_text(encoding="utf-8"))
         self.assertEqual(inventory["object_count"], 5)
         self.assertEqual({item["key"] for item in inventory["objects"]}, set(retirement.KEYS))
+        self.assertTrue(all(item["last_modified"] == self.store.modified for item in inventory["objects"]))
         self.assertEqual(self.store.deleted, [])
         report = self.apply(checksum)
         self.assertEqual(report["status"], "completed")
@@ -111,6 +116,54 @@ class RetirementTests(unittest.TestCase):
         self.assertEqual(self.store.payloads, {})
         self.assertGreaterEqual(len(self.store.heads), 10)
         self.assertEqual(json.loads(self.report.read_text(encoding="utf-8"))["deleted_keys"], self.store.deleted)
+
+    def test_snapshot_head_rejects_different_second_and_etag(self):
+        original = self.store.head
+        for index, change in enumerate((dict(LastModified="2026-10-18T12:39:08+00:00"),
+                                        dict(LastModified="2026-10-18T12:39:09+00:00"),
+                                        dict(ETag='"' + '0' * 32 + '"'))):
+            with self.subTest(change=change):
+                with patch.object(self.store, "head", side_effect=lambda key: original(key) | change):
+                    with self.assertRaises(retirement.RetirementError):
+                        retirement.snapshot(self.store, self.root / str(index), bucket="mskdsp-update")
+                self.assertFalse((self.root / str(index) / "inventory.json").exists())
+        self.assertEqual(self.store.deleted, [])
+
+    def test_apply_full_and_individual_heads_reject_second_and_etag_changes(self):
+        checksum = self.take_snapshot()
+        original = self.store.head
+        for phase in (1, 6):
+            for change in (dict(LastModified="2026-10-18T12:39:09+00:00"), dict(ETag='"' + '0' * 32 + '"')):
+                with self.subTest(phase=phase, change=change):
+                    calls = 0
+                    def head(key):
+                        nonlocal calls
+                        calls += 1
+                        value = original(key)
+                        return value | change if calls == phase else value
+                    with patch.object(self.store, "head", side_effect=head), self.assertRaises(retirement.RetirementError):
+                        self.apply(checksum)
+                    self.assertEqual(self.store.deleted, [])
+
+    def test_snapshot_rechecks_complete_list_with_original_milliseconds(self):
+        original = self.store.list_page
+        def list_page(token=None):
+            if self.store.list_calls == 2:
+                self.store.modified = "2026-10-18T12:39:07.145000+00:00"
+            return original(token)
+        with patch.object(self.store, "list_page", side_effect=list_page), self.assertRaises(retirement.RetirementError):
+            self.take_snapshot()
+        self.assertFalse((self.snapshot / "inventory.json").exists())
+        self.assertEqual(self.store.deleted, [])
+
+    def test_apply_full_list_retains_millisecond_change_detection(self):
+        checksum = self.take_snapshot()
+        heads = len(self.store.heads)
+        self.store.modified = "2026-10-18T12:39:07.145000+00:00"
+        with self.assertRaises(retirement.RetirementError):
+            self.apply(checksum)
+        self.assertEqual(len(self.store.heads), heads)
+        self.assertEqual(self.store.deleted, [])
 
     def test_snapshot_rejects_outside_extra_and_missing_objects(self):
         for index, extra in enumerate(("mskdsp-platform/beta/keep", retirement.PREFIX + "extra")):
