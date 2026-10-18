@@ -1,0 +1,100 @@
+name: 清理历史 R2 CI 对象
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: '先生成完整备份，下载并保存备份后再执行清理'
+        required: true
+        default: snapshot
+        type: choice
+        options: [snapshot, apply]
+      snapshot_run_id:
+        description: '清理时填写已核验的备份运行 ID'
+        required: false
+        type: string
+      inventory_sha256:
+        description: '清理时填写已核验的 inventory.json SHA256'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: retire-platform-r2-ci
+  cancel-in-progress: false
+
+jobs:
+  retire:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      R2_BUCKET: ${{ vars.R2_BUCKET || 'mskdsp-update' }}
+      AWS_DEFAULT_REGION: auto
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 检查输入与对象存储客户端
+        env:
+          OPERATION: ${{ inputs.operation }}
+          SNAPSHOT_RUN_ID: ${{ inputs.snapshot_run_id }}
+          INVENTORY_SHA256: ${{ inputs.inventory_sha256 }}
+        run: |
+          python3 - <<'PY'
+          import os,re,shutil
+          if shutil.which('aws') is None:
+              raise SystemExit('缺少对象存储客户端')
+          operation=os.environ['OPERATION']
+          if operation not in ('snapshot','apply'):
+              raise SystemExit('未知清理操作')
+          if operation=='apply' and (
+              not re.fullmatch(r'[1-9][0-9]*',os.environ['SNAPSHOT_RUN_ID']) or
+              not re.fullmatch(r'[0-9a-f]{64}',os.environ['INVENTORY_SHA256'])):
+              raise SystemExit('清理必须指定已核验备份和清单摘要')
+          PY
+      - name: 列举并完整备份固定的历史 CI 对象
+        if: inputs.operation == 'snapshot'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python3 -B script/retire_r2_ci.py snapshot --output retirement
+      - name: 保存完整备份
+        if: inputs.operation == 'snapshot'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-ci-retirement-snapshot
+          path: retirement/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+      - name: 读取已核验的备份
+        if: inputs.operation == 'apply'
+        uses: actions/download-artifact@v4
+        with:
+          name: r2-ci-retirement-snapshot
+          path: retirement
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.snapshot_run_id }}
+      - name: 按冻结清单清理并确认前缀为空
+        if: inputs.operation == 'apply'
+        env:
+          INVENTORY_SHA256: ${{ inputs.inventory_sha256 }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python3 -B script/retire_r2_ci.py apply --snapshot retirement --inventory-sha256 "$INVENTORY_SHA256" --report cleanup/report.json
+      - name: 保存清理结果
+        if: always() && inputs.operation == 'apply'
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-ci-retirement-result
+          path: cleanup/
+          if-no-files-found: warn
+          retention-days: 90
