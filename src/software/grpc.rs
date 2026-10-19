@@ -284,6 +284,16 @@ impl CatalogGrpcService {
 
 #[tonic::async_trait]
 impl SoftwareCatalogService for CatalogGrpcService {
+    type DownloadPackageStream =
+        tokio_stream::wrappers::ReceiverStream<Result<proto::DownloadPackageChunk, Status>>;
+
+    async fn download_package(
+        &self,
+        request: Request<proto::DownloadPackageRequest>,
+    ) -> Result<Response<Self::DownloadPackageStream>, Status> {
+        super::download::download(&self.store, request.into_inner()).await
+    }
+
     async fn list_packages(
         &self,
         request: Request<proto::ListPackagesRequest>,
@@ -325,7 +335,7 @@ impl SoftwareCatalogService for CatalogGrpcService {
     }
 }
 
-fn store_status(error: models::StoreError) -> Status {
+pub(super) fn store_status(error: models::StoreError) -> Status {
     match error {
         models::StoreError::Invalid(message) => Status::invalid_argument(message),
         models::StoreError::NotFound(_) => Status::not_found("安装包或上传任务不存在"),
