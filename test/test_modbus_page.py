@@ -32,7 +32,7 @@ class ModbusPageTests(unittest.TestCase):
             self.assertIn(f'id="{field}"', page)
         self.assertRegex(page, r'<details[^>]*id="point-advanced"')
         self.assertNotIn(":root {", page)
-        identifiers = re.findall(r'id="([^"]+)"', page)
+        identifiers = re.findall(r'\sid="([^"]+)"', page)
         self.assertEqual(len(identifiers), len(set(identifiers)), "页面控件 ID 不能重复，否则表单会读写错误的字段")
         for field in ("scale", "offset", "deadband"):
             self.assertRegex(page, rf'id="point-{field}"[^>]*type="text"')
@@ -277,11 +277,11 @@ const client=createTemplateClient({onChange:()=>{},confirmDiscard:()=>!denyDisca
         self.assertIsNotNone(node, "页面交互测试需要 Node")
         page = PAGE.read_text(encoding="utf-8")
         script = re.search(r'<script type="module">([\s\S]*?)</script>', page).group(1)
-        identifiers = re.findall(r'id="([^"]+)"', page)
+        identifiers = re.findall(r'\sid="([^"]+)"', page)
         scenario = r'''
 const assert=require('node:assert/strict'), vm=require('node:vm');
 class Element {
-  constructor(tag='div') {this.tag=tag;this.children=[];this.events={};this.value='';this.checked=false;this.disabled=false;this.hidden=false;this.attributes={};this.classList={toggle:()=>{}};}
+  constructor(tag='div') {this.tag=tag;this.children=[];this.events={};this.value='';this.checked=false;this.disabled=false;this.hidden=false;this.attributes={};this.dataset={};this.open=false;this.classList={toggle:()=>{}};}
   set textContent(value) {this.content=value;this.children=[];}
   get textContent() {return this.content||'';}
   get childElementCount() {return this.children.length;}
@@ -289,18 +289,21 @@ class Element {
   replaceChildren(...children) {this.children=[...children];}
   addEventListener(event,listener) {(this.events[event]??=[]).push(listener);}
   setAttribute(key,value) {this.attributes[key]=value;}
-  async dispatch(event) {for(const listener of this.events[event]||[]) await listener({target:this});}
+  async dispatch(event,extra={}) {for(const listener of this.events[event]||[]) await listener({target:this,preventDefault:()=>{},...extra});}
   click() {return this.dispatch('click');}
+  removeAttribute(key) {delete this.attributes[key];}
+  focus() {this.focused=true;}
+  scrollIntoView() {this.scrolled=true;}
   remove() {}
 }
 const nodes=Object.fromEntries(IDS.map(id=>[id,new Element()]));
 const document={body:new Element('body'),getElementById:id=>nodes[id],createElement:tag=>new Element(tag),querySelectorAll:()=>[]};
-let status=200, finishSave, slow=false,trash=[],storedTemplate; const calls=[], windowEvents={};
+let status=200, finishSave, finishTrash, slowTrash=false, slow=false,trash=[],storedTemplate,exportedBlob; const calls=[], windowEvents={};
 const response=(body,code=200)=>({ok:code>=200&&code<300,status:code,json:async()=>body});
-const window={confirm:()=>true,location:{assign:()=>{}},addEventListener:(name,listener)=>windowEvents[name]=listener,fetch:async(url,options)=>{
+const window={confirm:()=>true,location:{assign:()=>{},hash:'#trash'},history:{pushState:(_s,_t,hash)=>window.location.hash=hash},addEventListener:(name,listener)=>windowEvents[name]=listener,fetch:async(url,options)=>{
   calls.push({url,options});
   if(url==='/api/v1/auth/me') return response({username:'admin'});
-  if(url==='/api/v1/modbus-templates/trash') return response(trash);
+  if(url==='/api/v1/modbus-templates/trash') return slowTrash ? await new Promise(resolve=>finishTrash=resolve) : response(trash);
   if(url.endsWith('/restore')) {
     if(status!==200)return response({error:'点表库已满'},status);
     trash=[];return response({id:'trash-id',revision:6,created_at:1,updated_at:3,template:storedTemplate});
@@ -315,21 +318,100 @@ const window={confirm:()=>true,location:{assign:()=>{}},addEventListener:(name,l
   storedTemplate=JSON.parse(options.body);
   return response({id:'saved-id',revision:2,created_at:1,updated_at:2,template:storedTemplate});
 }};
-const context=vm.createContext({document,window,crypto:require('node:crypto').webcrypto,TextEncoder,AbortController,setTimeout,clearTimeout});
-vm.runInContext(SCRIPT+'\nthis.api={client,createTemplate};',context);
-const {client,createTemplate}=context.api;
+const context=vm.createContext({document,window,Blob,URL:{createObjectURL:blob=>{exportedBlob=blob;return 'blob:current-draft';},revokeObjectURL:()=>{}},crypto:require('node:crypto').webcrypto,TextEncoder,AbortController,setTimeout,clearTimeout});
+vm.runInContext(SCRIPT+'\nthis.api={client,createTemplate,parseTemplate,MAX_BYTES};',context);
+const {client,createTemplate,parseTemplate,MAX_BYTES}=context.api;
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
   await tick(); assert.equal(nodes['username'].textContent,'admin');
+  assert.equal(client.snapshot().view,'trash','initial trash deep link');
+  await nodes['library-view'].dispatch('click');
+  assert.equal(window.location.hash,'#library');
   assert.equal(nodes['library-total'].textContent,'0');
-  assert.equal(nodes['trash-total'].textContent,'—');
+  assert.equal(nodes['trash-total'].textContent,'0');
+  // 回收站导航自身未完成时后退；旧请求不能覆盖新的地址和历史意图。
+  for (const targetHash of ['', '#library']) {
+    window.location.hash='#library';slowTrash=true;
+    const loadingTrash=nodes['trash-view'].dispatch('click');await tick();
+    assert.equal(client.snapshot().pending,true);
+    window.location.hash='';const wentBack=windowEvents.hashchange();
+    if (targetHash) { window.location.hash=targetHash;await windowEvents.hashchange(); }
+    slowTrash=false;finishTrash(response(trash));await loadingTrash;await wentBack;
+    assert.equal(window.location.hash,targetHash,'old navigation never overwrites browser history');
+    assert.equal(client.snapshot().view,'library','latest browser destination wins');
+  }
+  // 大草稿紧凑 JSON 合法，但缩进可能使导出的文件超过回导上限。
+  const wide=JSON.parse(JSON.stringify(createTemplate()));
+  wide.points=Array.from({length:10000},(_,i)=>({...wide.points[0],id:`export-point-${i}`,tag:`标签${i}`,description:'x'.repeat(670)}));
+  const compact=JSON.stringify(wide), compactBytes=new TextEncoder().encode(compact).length;
+  assert.ok(compactBytes<=MAX_BYTES);
+  assert.ok(new TextEncoder().encode(JSON.stringify(wide,null,2)).length>MAX_BYTES,'fixture exercises pretty-print overflow');
+  await client.importFile({size:compactBytes,text:async()=>compact});
+  await nodes['export-draft'].dispatch('click');
+  assert.equal(exportedBlob.size,compactBytes,'export uses exactly the bytes accepted by validation');
+  assert.ok(exportedBlob.size<=MAX_BYTES);
+  assert.equal(parseTemplate(await exportedBlob.text()).points.length,10000);
+  await client.importFile(exportedBlob);
+  assert.equal(client.snapshot().error,'');assert.equal(client.snapshot().draft.points.length,10000);
+  const large=JSON.parse(JSON.stringify(createTemplate()));
+  large.points=Array.from({length:121},(_,i)=>({...large.points[0],id:`large-${i}`,tag:`标签${i}`,group:i%2?'B':'A',function_code:i%3===0?6:3,address:i}));
+  await client.importFile({size:100,text:async()=>JSON.stringify(large)});
+  assert.equal(nodes['point-list'].children.length,50);
+  await nodes['point-next'].dispatch('click');assert.match(nodes['point-page-status'].textContent,/第 2/);
+  assert.equal(nodes['point-list'].children[0].children[0].children[0].textContent,'标签50');
+  await nodes['point-list'].children[3].dispatch('keydown',{key:'Enter'});
+  assert.equal(nodes['point-tag'].value,'标签53');
+  nodes['point-group-filter'].value='group:B';await nodes['point-group-filter'].dispatch('change');
+  assert.match(nodes['point-page-status'].textContent,/60 个匹配/);
+  nodes['point-access-filter'].value='write';await nodes['point-access-filter'].dispatch('change');
+  assert.match(nodes['point-page-status'].textContent,/20 个匹配/);
+  assert.equal(nodes['point-tag'].value,'标签53','filters retain selected detail');
+  nodes['point-search'].value='no-result';await nodes['point-search'].dispatch('input');
+  assert.match(nodes['point-page-status'].textContent,/0 个匹配/);
+  nodes['point-search'].value='';await nodes['point-search'].dispatch('input');
+  // Duplicate tag validation locates the offending point outside the current page.
+  client.editPoint(120,{...large.points[120],tag:large.points[0].tag});
+  const invalidCalls=calls.length;await nodes['save'].dispatch('click');
+  assert.equal(calls.length,invalidCalls);assert.equal(nodes['point-tag'].attributes['aria-invalid'],'true');
+  assert.equal(nodes['point-id'].value,'large-120');assert.match(nodes['point-page-status'].textContent,/第 3/);
+  assert.match(nodes['error-point-tag'].textContent,/重复/);
+  nodes['point-tag'].value='独立标签';await nodes['point-tag'].dispatch('input');
+  assert.equal(nodes['point-tag'].attributes['aria-invalid'],undefined);
+  client.editPoint(120,{...client.snapshot().draft.points[120],enum_value:0});
+  await nodes['save'].dispatch('click');assert.equal(nodes['point-advanced'].open,true);
+  assert.equal(nodes['point-enum_value'].attributes['aria-invalid'],'true');
+  await nodes['point-list'].children[0].dispatch('click');
+  assert.equal(nodes['point-enum_value'].attributes['aria-invalid'],undefined,'switch clears stale field errors');
+  assert.equal(nodes['point-id'].value,'large-100','switch does not relocate to the previous invalid point');
+  // 修正另一点的错误后，保存当前模板仍停在选中的点位。
+  client.editPoint(120,{...large.points[120],tag:'独立标签'});
+  await nodes['point-list'].children[3].dispatch('click');
+  assert.equal(nodes['point-id'].value,'large-103');
+  await nodes['save'].dispatch('click');
+  assert.equal(client.snapshot().dirty,false);assert.equal(nodes['point-id'].value,'large-103');
   const template=JSON.parse(JSON.stringify(createTemplate()));
   template.name='<img src=x onerror=alert(1)>'; template.points[0].tag='<script>alert(1)</script>';
   template.notes=['多行说明\n保持换行'];template.sources=[{file:'来源.pdf',sha256:'a'.repeat(64)}];
   nodes['import-file'].files=[{size:100,text:async()=>JSON.stringify(template)}];
   await nodes['import-file'].dispatch('change');
   assert.equal(nodes['meta-name'].value,template.name);
-  assert.equal(nodes['point-list'].children[0].children[0].textContent,template.points[0].tag);
+  assert.equal(nodes['point-list'].children[0].children[0].children[0].textContent,template.points[0].tag);
+  const importedSnapshot=JSON.stringify(client.snapshot().draft);
+  const badImport={...template,points:[...template.points,{...template.points[0],id:'new-id',address:'bad'}]};
+  await client.importFile({size:100,text:async()=>JSON.stringify(badImport)});
+  assert.equal(JSON.stringify(client.snapshot().draft),importedSnapshot,'invalid import preserves current draft');
+  assert.equal(client.snapshot().validationError,null,'import errors do not mark existing draft fields');
+  assert.equal(nodes['metadata-details'].open,false);
+  assert.match(nodes['metadata-summary'].textContent,/0 基/);
+  assert.equal(nodes['export-draft'].disabled,false);
+  nodes['point-address'].value='bad';await nodes['point-address'].dispatch('input');
+  const beforeInvalid=calls.length;await nodes['save'].dispatch('click');
+  assert.equal(calls.length,beforeInvalid,'invalid draft never submitted');
+  assert.equal(nodes['point-address'].attributes['aria-invalid'],'true');
+  assert.match(nodes['error-point-address'].textContent,/地址/);
+  assert.equal(nodes['point-address'].focused,true);
+  nodes['point-address'].value='0';await nodes['point-address'].dispatch('input');
+  assert.equal(nodes['point-address'].attributes['aria-invalid'],undefined);
   nodes['point-scale'].value='1.234567890123456789e-22'; await nodes['point-scale'].dispatch('input');
   nodes['point-data_type'].value='BOOL'; await nodes['point-data_type'].dispatch('input');
   nodes['point-default_selected'].value='false'; await nodes['point-default_selected'].dispatch('input');
@@ -342,14 +424,26 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(draft.points[0].enum_value,0); assert.equal(draft.points[0].default_selected,false);
   assert.equal(draft.points[0].condition,'机型条件');
   assert.deepEqual(JSON.parse(JSON.stringify(draft.notes)),template.notes);
+  const beforeExport=calls.length;await nodes['export-draft'].dispatch('click');
+  assert.equal(calls.length,beforeExport,'draft export is local');
+  const exported=JSON.parse(await exportedBlob.text());
+  assert.equal(exported.points[0].scale,'1.234567890123456789e-22');
+  assert.equal(exported.points[0].enum_value,0);
+  assert.equal(document.body.children.at(-1).href,'blob:current-draft');
   let prevented=false; const event={preventDefault:()=>prevented=true}; windowEvents.beforeunload(event);assert.equal(prevented,true);
   status=409; await nodes['save'].dispatch('click');
-  assert.equal(client.snapshot().conflict,true); assert.equal(nodes['point-scale'].value,'1.234567890123456789e-22');
+  assert.equal(client.snapshot().conflict,true);assert.equal(client.snapshot().validationError,null);assert.equal(nodes['point-address'].attributes['aria-invalid'],undefined); assert.equal(nodes['point-scale'].value,'1.234567890123456789e-22');
   assert.match(nodes['message'].textContent,/草稿已保留/);
   status=200; slow=true; const saving=nodes['save'].dispatch('click');
   assert.equal(nodes['save'].disabled,true);assert.equal(nodes['new-template'].disabled,true);assert.equal(nodes['point-editor'].disabled,true);
+  window.location.hash='#trash';const pendingHash=windowEvents.hashchange();
+  assert.equal(client.snapshot().pending,true);
   const posted=JSON.parse(calls.at(-1).options.body);
   finishSave(response({id:'saved-id',revision:3,created_at:1,updated_at:3,template:posted}));await saving;slow=false;
+  await pendingHash;
+  assert.equal(client.snapshot().view,'trash','pending history navigation is reconciled after save');
+  assert.equal(window.location.hash,'#trash');
+  await nodes['library-view'].dispatch('click');
   assert.equal(client.snapshot().dirty,false);assert.equal(nodes['save'].disabled,false);
   assert.equal(nodes['point-scale'].value,posted.points[0].scale);
   assert.equal(nodes['point-enum_value'].value,0);
@@ -360,15 +454,22 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   await nodes['download'].dispatch('click');assert.equal(document.body.children.at(-1).href,'/api/v1/modbus-templates/saved-id/download');
   await nodes['copy-template'].dispatch('click');assert.equal(client.snapshot().record,null);
   assert.equal(nodes['download'].disabled,true);assert.notEqual(client.snapshot().draft.id,posted.id);
+  assert.equal(nodes['export-draft'].disabled,false,'new template can export current draft');
+  await nodes['export-draft'].dispatch('click');
+  assert.equal(JSON.parse(await exportedBlob.text()).id,client.snapshot().draft.id);
   // 回收站卡片只以文本展示导入名称，显示服务端时间，切换及恢复失败保留右侧草稿。
   storedTemplate=posted;
   const copied=JSON.parse(JSON.stringify(client.snapshot().draft));
   trash=[{id:'trash-id',revision:5,name:posted.name,manufacturer:'厂家',models:[],point_count:1,deleted_at:1000,expires_at:2000}];
-  await nodes['trash-view'].dispatch('click');assert.equal(nodes['library-title'].textContent,'回收站');
+  await nodes['trash-view'].dispatch('click');assert.equal(window.location.hash,'#trash');assert.equal(nodes['library-title'].textContent,'回收站');
   assert.equal(nodes['editor-panel'].hidden,true);assert.equal(nodes['library-controls'].hidden,true);
   assert.equal(nodes['workbench'].attributes['data-view'],'trash');
   assert.equal(nodes['trash-total'].textContent,'1');
   assert.equal(nodes['trash-view'].attributes['aria-pressed'],'true');
+  window.location.hash='#library';await windowEvents.hashchange();
+  assert.equal(client.snapshot().view,'library');assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
+  window.location.hash='#trash';await windowEvents.hashchange();
+  assert.equal(client.snapshot().view,'trash');assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
   const card=nodes['template-list'].children[0].children[0];
   assert.equal(card.children[0].textContent,posted.name);
   assert.match(card.children[3].textContent,/删除：/);assert.match(card.children[4].textContent,/到期：/);
@@ -382,6 +483,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(nodes['trash-total'].textContent,'0');
   assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
   await nodes['library-view'].dispatch('click');assert.equal(nodes['library-title'].textContent,'全部点表');
+  assert.doesNotMatch(nodes['message'].textContent,/回收站有/);
   assert.equal(nodes['editor-panel'].hidden,false);assert.equal(nodes['library-controls'].hidden,false);
   assert.equal(nodes['meta-name'].value,copied.name);
   assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);

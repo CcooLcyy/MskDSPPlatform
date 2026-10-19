@@ -16,6 +16,7 @@ class UpdatePageTests(unittest.TestCase):
         for css_class in ('app-shell', 'app-sidebar', 'app-topbar', 'page-heading'):
             self.assertIn(f'class="{css_class}"', page)
         self.assertIn('href="/modbus-templates#trash"', page)
+        self.assertIn('点表工作台</a>', page)
         self.assertIn('aria-labelledby="current-heading"', page)
         self.assertIn('aria-labelledby="available-heading"', page)
         self.assertIn('id="task-status"', page)
@@ -38,6 +39,60 @@ class UpdatePageTests(unittest.TestCase):
         self.assertIn("/readyz", page)
         self.assertIn("/api/v1/auth/me", page)
         self.assertIn("/api/v1/auth/logout", page)
+
+    # 安装前可核对版本与缺失说明；取消不提交，连续点击仅提交一次。
+    def test_install_confirmation_behavior(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("未找到 Node，页面静态契约检查仍执行")
+        page = PAGE.read_text(encoding="utf-8")
+        self.assertIn('id="release-notes"', page)
+        self.assertIn("confirmApply:review => window.confirm(review)", page)
+        script = re.search(r'<script type="module">([\s\S]*?)</script>', page).group(1)
+        library = script.split("// 页面启动")[0]
+        scenario = r'''
+const assert=require('node:assert/strict');
+const vm=require('node:vm');
+const context=vm.createContext({AbortController,setTimeout,clearTimeout});
+vm.runInContext(LIBRARY+'\nthis.api={createUpdateClient,installConfirmation,getView};',context);
+const {createUpdateClient,installConfirmation,getView}=context.api;
+const status={enabled:true,current_version:'1.0',latest_version:'2.0',state:'available',update_available:true,message:'发现新版本，可手动更新'};
+const review=installConfirmation(status);
+assert.match(review,/当前版本：1\.0/); assert.match(review,/目标版本：2\.0/);
+assert.match(review,/1\.0 → 2\.0/);
+assert.match(review,/未提供变更说明/); assert.match(review,/短暂重连/);
+assert.match(review,/实际安装版本以任务结果为准/);
+assert.doesNotMatch(review,/发现新版本，可手动更新/);
+assert.equal(getView({...status,latest_version:''}).applyDisabled,true);
+const response=(body,code=200)=>({ok:code<400,status:code,json:async()=>body});
+let accept=false,finishPost,calls=[],reviews=[];
+const client=createUpdateClient({fetchImpl:async(url,options)=>{
+  calls.push({url,options});
+  if(url==='/api/v1/auth/me') return response({username:'admin',role:'admin'});
+  if(options.method==='POST') return await new Promise(resolve=>{finishPost=resolve});
+  return response(status);
+},onChange:()=>{},reload:()=>{},confirmApply:review=>{reviews.push(review);return accept}});
+(async()=>{
+  await client.refresh(); await client.action('apply');
+  assert.equal(reviews[0],review); assert.equal(calls.filter(c=>c.options.method==='POST').length,0);
+  assert.equal(client.snapshot().pending,false); assert.equal(client.snapshot().view.applyDisabled,false);
+  accept=true;
+  const sending=client.action('apply'); assert.equal(client.snapshot().pending,true);
+  await client.action('apply'); await client.refresh();
+  assert.equal(reviews.length,2); assert.equal(calls.filter(c=>c.options.method==='POST').length,1);
+  assert.equal(calls.at(-1).url,'/api/update/apply'); assert.equal(calls.at(-1).options.body,'{}');
+  finishPost(response({...status,state:'updating',job_id:'job'},202)); await sending;
+  assert.equal(client.snapshot().view.applyDisabled,true);
+  const unconfirmed=createUpdateClient({fetchImpl:async(url,options)=>{
+    assert.notEqual(options.method,'POST');
+    return response(url==='/api/v1/auth/me'?{username:'admin',role:'admin'}:status);
+  },onChange:()=>{},reload:()=>{}});
+  await unconfirmed.refresh(); await unconfirmed.action('apply');
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+        import json
+        result = subprocess.run([node, "-e", "const LIBRARY=" + json.dumps(library) + ";\n" + scenario], capture_output=True, text=True, encoding="utf-8", timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     # 回退必须确认具体目标；没有更新源时也可用，失败和重连不能重复提交。
     def test_rollback_client_behavior(self):
@@ -181,7 +236,7 @@ const client = createUpdateClient({
       return {ok:true,status:202,json:async()=>postStatus || status({state:'updating',job_id:'own-job'})};
     }
     return {ok:true,status:200,json:async()=>current};
-  }, onChange:()=>{}, reload:()=>reloads++
+  }, onChange:()=>{}, reload:()=>reloads++, confirmApply:()=>true
 });
 (async()=>{
   await client.refresh();
@@ -277,7 +332,7 @@ const client = createUpdateClient({
         authCalls.push({url,options});
         if(url===rejectedPath && reject) return {ok:false,status:401,json:async()=>({error:'请登录'})};
         return {ok:true,status:200,json:async()=>url==='/api/v1/auth/me'?{username:'root',role:'admin'}:status()};
-      },onChange:()=>{},reload:()=>{},onUnauthorized:()=>redirects++
+      },onChange:()=>{},reload:()=>{},onUnauthorized:()=>redirects++,confirmApply:()=>true
     });
     assert.equal(authClient.snapshot().view.checkDisabled,true);
     if(rejectedPath!=='/api/v1/auth/me') await authClient.refresh();
@@ -330,7 +385,7 @@ const client = createUpdateClient({
       if(url==='/readyz') return await new Promise(resolve=>{finishReady=resolve});
       if(url==='/api/update/apply') return {ok:true,status:202,json:async()=>status({state:'updating',job_id:'race'})};
       return {ok:true,status:200,json:async()=>raceStatus};
-    },onChange:()=>{},reload:()=>raceReloads++,onUnauthorized:()=>{}
+    },onChange:()=>{},reload:()=>raceReloads++,onUnauthorized:()=>{},confirmApply:()=>true
   });
   await raceClient.refresh(); await raceClient.action('apply');
   raceStatus=status({state:'succeeded',current_version:'2',job_id:'race'});
