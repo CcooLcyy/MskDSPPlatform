@@ -378,6 +378,29 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   large.points=Array.from({length:121},(_,i)=>({...large.points[0],id:`large-${i}`,tag:`标签${i}`,group:i%2?'B':'A',function_code:i%3===0?6:3,address:i}));
   await client.importFile({size:100,text:async()=>JSON.stringify(large)});
   assert.equal(nodes['point-list'].children.length,50);
+  // 重建五十行时只读取固定次数的页面状态，不能逐格序列化整个草稿。
+  const readSnapshot=client.snapshot;let snapshotReads=0;
+  client.snapshot=()=>{snapshotReads++;return readSnapshot();};
+  for (const visible of [true,false]) {
+    snapshotReads=0;nodes['show-function-code'].checked=visible;
+    await nodes['show-function-code'].dispatch('change');
+    assert.equal(nodes['point-list'].children.length,50);
+    assert.equal(nodes['column-function-code'].hidden,!visible);
+    assert.ok(snapshotReads<=2,`列切换重建五十行只能读取固定次数的快照，实际 ${snapshotReads} 次`);
+  }
+  client.snapshot=readSnapshot;
+  // 单元格渲染后状态可能变化，点击仍必须检查最新请求状态和授权。
+  const guardedCell=nodes['point-list'].children[1].children[1];
+  const guardedSelection=nodes['point-id'].value,guardedDraft=JSON.stringify(readSnapshot().draft);
+  for (const flags of [{pending:true},{pending:false,authorized:false}]) {
+    snapshotReads=0;
+    client.snapshot=()=>{snapshotReads++;return {...readSnapshot(),...flags};};
+    await guardedCell.dispatch('click');
+    assert.equal(snapshotReads,1,'拒绝单元格点击只需读取一次最新快照');
+    assert.equal(nodes['point-id'].value,guardedSelection,'请求中或授权失效时不能切换点位');
+    assert.equal(JSON.stringify(readSnapshot().draft),guardedDraft,'拒绝点击时保留草稿');
+    client.snapshot=readSnapshot;
+  }
   // 真实单元格事件写入同一草稿，切点和属性栏始终显示该草稿；显式保存前不发请求。
   const beforeInline=calls.length;
   const firstRow=nodes['point-list'].children[0];

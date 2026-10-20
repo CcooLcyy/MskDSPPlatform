@@ -679,14 +679,18 @@ function startInline(index,key,cell) {
   input.addEventListener('blur',() => { if (inlineEdit?.input === input) finishInline(); });
   render(state); input.focus();
 }
-function editableCell(point,index,key) {
+function editableCell(point,index,key,state) {
   const title = {address:'地址',scale:'倍率',unit:'单位'}[key];
   const cell = make('td',point[key] === '' ? '—' : point[key],'editable-cell');
-  const state = client.snapshot();
+  // 复用本轮渲染快照，避免逐格序列化整张草稿。
   cell.tabIndex = state.pending || !state.authorized ? -1 : 0;
   cell.dataset.field = `point-${key}`;
   cell.setAttribute('aria-label',`${title} ${point[key] || '未填写'}，双击或按 Enter 编辑`);
-  cell.addEventListener('click',event => { event.stopPropagation(); if (!client.snapshot().pending && client.snapshot().authorized) selectPoint(index,false); });
+  cell.addEventListener('click',event => {
+    event.stopPropagation();
+    const current = client.snapshot();
+    if (!current.pending && current.authorized) selectPoint(index,false);
+  });
   cell.addEventListener('dblclick',event => { event.stopPropagation(); startInline(index,key,cell); });
   cell.addEventListener('keydown',event => {
     if (event.key === 'Enter' && event.target === cell) { event.preventDefault(); event.stopPropagation(); startInline(index,key,cell); }
@@ -734,7 +738,7 @@ function renderPoints(state) {
       const cell = make('td'), button = make('button',point.tag || '未填写标签','point-select');
       button.type = 'button'; button.disabled = state.pending || !state.authorized;
       button.setAttribute('aria-label',`编辑第 ${index+1} 个点位：${point.tag || '未填写标签'}`);
-      cell.append(button); row.append(cell,editableCell(point,index,'address'),make('td',point.data_type),editableCell(point,index,'scale'),editableCell(point,index,'unit'));
+      cell.append(button); row.append(cell,editableCell(point,index,'address',state),make('td',point.data_type),editableCell(point,index,'scale',state),editableCell(point,index,'unit',state));
       const functionCell = make('td',String(point.function_code).padStart(2,'0')), groupCell = make('td',point.group || '—');
       functionCell.hidden = !showFunction; groupCell.hidden = !showGroup;
       row.append(functionCell,groupCell);
