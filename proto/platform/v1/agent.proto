@@ -10,8 +10,8 @@ service AgentService {
 
   // 建立 Agent 到平台的双向长连接。
   // Agent 主动发起连接；平台通过同一条流返回 Welcome、HeartbeatAck 或 Error。
-  // 必须携带唯一 authorization: Bearer <token>；Hello 身份和现场必须匹配登记。
-  // 认证失败返回 UNAUTHENTICATED，重复在线返回 ALREADY_EXISTS。
+  // 先通过账号密码登录接口获取会话，再携带唯一 authorization: Bearer <access_token>。
+  // 认证失败返回 UNAUTHENTICATED，同账号同安装实例重复在线返回 ALREADY_EXISTS。
   rpc ConnectAgent(stream AgentMessage) returns (stream ServerMessage);
 }
 
@@ -32,9 +32,9 @@ message ServerMessage {
 }
 
 message Hello {
-  // 平台登记的 Agent 安装实例稳定标识。
+  // 客户端自动保存的安装实例标识；为空时平台为本次连接生成临时标识。
   string agent_id = 1;
-  // 必须与平台登记的现场标识一致。
+  // 兼容保留字段，不用于账号认证、授权或现场绑定。
   string site_id = 2;
   string agent_version = 3;
   string protocol_version = 4;

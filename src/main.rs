@@ -1,11 +1,12 @@
+mod account_http;
+mod accounts;
 mod auth;
 mod build_info;
+mod client_auth;
 mod config;
 mod error;
 mod grpc;
 mod http;
-mod identities;
-mod identity_http;
 mod modbus_templates;
 mod runtime;
 mod software;

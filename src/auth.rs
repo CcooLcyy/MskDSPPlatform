@@ -143,8 +143,12 @@ fn session_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 fn action_allowed(headers: &HeaderMap) -> bool {
+    action_allowed_for(headers, "auth")
+}
+
+pub(crate) fn action_allowed_for(headers: &HeaderMap, expected: &str) -> bool {
     let actions: Vec<_> = headers.get_all("X-MskDSP-Action").iter().collect();
-    if actions.len() != 1 || actions[0] != "auth" {
+    if actions.len() != 1 || actions[0] != expected {
         return false;
     }
     let hosts: Vec<_> = headers.get_all(header::HOST).iter().collect();

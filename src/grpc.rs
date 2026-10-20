@@ -3,8 +3,8 @@ pub mod agent {
 }
 
 use crate::{
+    client_auth::{ClientAuth, ClientAuthError},
     error::PlatformError,
-    identities::{IdentityError, IdentityStore},
     state::{AgentSession, SessionRegistry},
 };
 use agent::agent_service_server::AgentService;
@@ -46,19 +46,19 @@ pub async fn probe(address: &str, protocol_version: &str) -> anyhow::Result<()> 
 pub struct AgentGrpcService {
     sessions: SessionRegistry,
     protocol_version: Arc<str>,
-    identities: IdentityStore,
+    client_auth: ClientAuth,
 }
 
 impl AgentGrpcService {
     pub fn new(
         sessions: SessionRegistry,
         protocol_version: Arc<str>,
-        identities: IdentityStore,
+        client_auth: ClientAuth,
     ) -> Self {
         Self {
             sessions,
             protocol_version,
-            identities,
+            client_auth,
         }
     }
 }
@@ -85,7 +85,7 @@ impl AgentService for AgentGrpcService {
         let mut values = request.metadata().get_all("authorization").iter();
         let value = values
             .next()
-            .ok_or_else(|| Status::unauthenticated("缺少上位机接入凭据"))?;
+            .ok_or_else(|| Status::unauthenticated("请先使用上位机账号登录"))?;
         if values.next().is_some() {
             return Err(Status::unauthenticated("接入凭据只能提供一次"));
         }
@@ -98,6 +98,10 @@ impl AgentService for AgentGrpcService {
             })
             .ok_or_else(|| Status::unauthenticated("上位机接入凭据格式错误"))?
             .to_owned();
+        self.client_auth
+            .authenticate(&token)
+            .await
+            .map_err(|error| client_status(error, false))?;
         let mut inbound = request.into_inner();
         let (outbound_tx, outbound_rx) = mpsc::channel(16);
         let service = self.clone();
@@ -132,11 +136,6 @@ impl AgentGrpcService {
             Some(agent_message::Payload::Hello(hello)) => hello,
             _ => return Err(Status::invalid_argument("上位机第一条消息必须是 Hello")),
         };
-        if hello.agent_id.trim().is_empty() {
-            return Err(Status::invalid_argument(
-                PlatformError::EmptyAgentId.to_string(),
-            ));
-        }
         if hello.protocol_version != self.protocol_version.as_ref() {
             return Err(Status::failed_precondition(
                 PlatformError::UnsupportedProtocol(hello.protocol_version).to_string(),
@@ -149,35 +148,40 @@ impl AgentGrpcService {
             return Err(Status::invalid_argument("上位机身份、现场或版本信息过长"));
         }
         let identity = self
-            .identities
-            .authenticate(&hello.agent_id, token, &hello.site_id, &hello.agent_version)
+            .client_auth
+            .authenticate(token)
             .await
-            .map_err(|error| identity_status(error, false))?;
+            .map_err(|error| client_status(error, false))?;
+        let instance_id = if hello.agent_id.is_empty() {
+            Uuid::new_v4().to_string()
+        } else {
+            if hello.agent_id.trim() != hello.agent_id
+                || hello.agent_id.chars().any(char::is_control)
+            {
+                return Err(Status::invalid_argument("上位机实例标识格式不正确"));
+            }
+            hello.agent_id
+        };
+        // 账号和安装实例共同确定连接身份；同名实例不会跨账号相互覆盖。
+        let agent_id = format!("{}:{instance_id}", identity.account.id);
         let connection_id = Uuid::new_v4().to_string();
         let session = AgentSession {
             connection_id: connection_id.clone(),
-            agent_id: identity.id.clone(),
-            site_id: identity.site_id,
-            agent_version: hello.agent_version,
+            agent_id: agent_id.clone(),
+            account_id: identity.account.id.clone(),
         };
         let cancellation = self
             .sessions
             .register(session.clone())
             .await
             .map_err(|_| Status::already_exists("该上位机已经在线"))?;
-        tracing::info!(agent_id = %identity.id, %connection_id, "上位机已通过接入认证");
+        tracing::info!(account_id = %identity.account.id, %connection_id, "上位机已通过账号认证");
         // 注册后的所有退出路径均经此处清理，旧连接不能删除后来注册的新连接。
         let result = self
-            .run_session(
-                inbound,
-                outbound,
-                &session,
-                identity.credential_version,
-                &cancellation,
-            )
+            .run_session(inbound, outbound, &session, token, &cancellation)
             .await;
-        self.sessions.remove(&identity.id, &connection_id).await;
-        tracing::info!(agent_id = %identity.id, %connection_id, "上位机会话已清理");
+        self.sessions.remove(&agent_id, &connection_id).await;
+        tracing::info!(account_id = %identity.account.id, %connection_id, "上位机会话已清理");
         result
     }
 
@@ -186,14 +190,13 @@ impl AgentGrpcService {
         inbound: &mut Streaming<AgentMessage>,
         outbound: &mpsc::Sender<Result<ServerMessage, Status>>,
         session: &AgentSession,
-        credential_version: i64,
+        token: &str,
         cancellation: &CancellationToken,
     ) -> Result<(), Status> {
-        let agent_id = session.agent_id.as_str();
-        self.identities
-            .connected(agent_id, credential_version, &session.agent_version)
+        self.client_auth
+            .authenticate(token)
             .await
-            .map_err(|error| identity_status(error, true))?;
+            .map_err(|error| client_status(error, true))?;
         send_message(
             outbound,
             ServerMessage {
@@ -217,15 +220,15 @@ impl AgentGrpcService {
                 _ = outbound.closed() => return Ok(()),
                 _ = &mut heartbeat_timeout => return Err(Status::deadline_exceeded("上位机心跳超时")),
                 _ = authorization_check.tick() => {
-                    self.identities.check_session(agent_id, credential_version).await
-                        .map_err(|error| identity_status(error, true))?;
+                    self.client_auth.authenticate(token).await
+                        .map_err(|error| client_status(error, true))?;
                 }
                 message = inbound.message() => {
                     let Some(message) = message? else { return Ok(()) };
                     match message.payload {
                         Some(agent_message::Payload::Heartbeat(_)) => {
-                            self.identities.heartbeat(agent_id, credential_version).await
-                                .map_err(|error| identity_status(error, true))?;
+                            self.client_auth.authenticate(token).await
+                                .map_err(|error| client_status(error, true))?;
                             heartbeat_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(60));
                             send_message(outbound, ServerMessage {
                                 payload: Some(server_message::Payload::HeartbeatAck(HeartbeatAck { server_time_unix_ms: now_unix_ms() })),
@@ -241,12 +244,12 @@ impl AgentGrpcService {
     }
 }
 
-fn identity_status(error: IdentityError, authenticated: bool) -> Status {
+fn client_status(error: ClientAuthError, authenticated: bool) -> Status {
     match error {
-        IdentityError::Storage => Status::unavailable("上位机身份存储暂不可用"),
-        IdentityError::Invalid(message) => Status::invalid_argument(message),
+        ClientAuthError::Storage => Status::unavailable("账号存储暂不可用"),
+        ClientAuthError::Invalid(message) => Status::invalid_argument(message),
         _ if authenticated => Status::permission_denied("上位机会话授权已失效"),
-        _ => Status::unauthenticated("上位机身份或接入凭据无效"),
+        _ => Status::unauthenticated("上位机登录状态无效，请重新登录"),
     }
 }
 
@@ -273,5 +276,5 @@ fn now_unix_ms() -> i64 {
 }
 
 #[cfg(test)]
-#[path = "grpc_identity_tests.rs"]
+#[path = "grpc_account_tests.rs"]
 mod tests;

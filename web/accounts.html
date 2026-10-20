@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <script id="theme-script">
+// 在首屏绘制前恢复主题，所有页面使用同一份偏好。
+(() => {
+  const key = 'mskdsp-platform-theme';
+  const valid = value => ['system', 'light', 'dark'].includes(value);
+  const system = window.matchMedia('(prefers-color-scheme: dark)');
+  let preference = 'system';
+  try {
+    const saved = window.localStorage.getItem(key);
+    if (valid(saved)) preference = saved;
+  } catch { /* 存储受限时仍可在当前页面切换主题。 */ }
+  function apply() {
+    document.documentElement.dataset.theme = preference === 'system' ? (system.matches ? 'dark' : 'light') : preference;
+    const select = document.getElementById('theme-select');
+    if (select) select.value = preference;
+  }
+  apply();
+  system.addEventListener('change', apply);
+  window.addEventListener('storage', event => {
+    if (event.key !== key && event.key !== null) return;
+    preference = valid(event.newValue) ? event.newValue : 'system';
+    apply();
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    const select = document.getElementById('theme-select');
+    apply();
+    select.addEventListener('change', () => {
+      preference = valid(select.value) ? select.value : 'system';
+      try { window.localStorage.setItem(key, preference); }
+      catch { /* 保存失败不影响当前页面的显示。 */ }
+      apply();
+    });
+  });
+})();
+  </script>
+  <title>MskDSPPlatform · 账号管理</title>
+  <link rel="stylesheet" href="/assets/platform.css">
+  <style>
+    #message { margin-bottom: 16px; overflow-wrap: anywhere; }
+    .account-workbench { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(0, 1.8fr); gap: 18px; align-items: start; }
+    .account-filters { display: grid; grid-template-columns: minmax(0, 1fr) 100px; gap: 10px; }
+    #account-list { display: grid; gap: 8px; padding: 0; margin: 16px 0 0; list-style: none; max-height: 65vh; overflow: auto; }
+    .account-card { display: grid; width: 100%; gap: 5px; text-align: left; overflow-wrap: anywhere; padding: 12px; }
+    .account-card[aria-pressed="true"] { background: var(--selected); border-color: var(--selected-border); }
+    .account-card span { color: var(--muted); font-size: 12px; font-weight: 400; }
+    #draft-status { font-size: 12px; color: var(--warning); }
+    .account-editor .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .account-editor .actions { margin-top: 18px; }
+    .account-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; padding-top: 16px; margin: 18px 0 0; border-top: 1px solid var(--border); }
+    .account-facts dt { color: var(--muted); font-size: 12px; }
+    .account-facts dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+    #password-form { border-top: 1px solid var(--border); }
+    #password-form h3 { margin-bottom: 12px; }
+    .empty-copy { padding: 24px 0; color: var(--muted); font-size: 13px; }
+    @media (max-width: 760px) { .account-workbench { grid-template-columns: minmax(0, 1fr); } #account-list { max-height: 260px; } }
+    @media (max-width: 430px) { .account-editor .form-grid, .account-facts, .account-filters { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-topbar">
+      <a class="app-brand" href="/modbus-templates"><span class="brand-mark" aria-hidden="true">M</span><span class="brand-name">MskDSP</span></a>
+      <nav class="app-nav" aria-label="平台功能"><a class="nav-item" href="/modbus-templates">点表工作台</a><a class="nav-item" href="/software">软件管理</a><a class="nav-item" href="/accounts" aria-current="page">账号管理</a><a class="nav-item" href="/update">平台维护</a></nav>
+      <div class="account-actions"><label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><span id="username">正在确认</span><button id="logout" class="quiet" type="button" disabled>退出登录</button></div>
+    </header>
+    <main class="page-content">
+      <div class="page-heading"><div><h1>账号管理</h1><p class="page-summary">添加供上位机登录平台的账号，管理账号状态和密码。</p></div><div class="page-actions"><button id="refresh" type="button" disabled>刷新列表</button><button id="new-account" class="primary" type="button" disabled>＋ 添加账号</button></div></div>
+      <div id="message" class="status-banner" role="status" aria-live="polite">正在确认管理员身份…</div>
+      <div class="account-workbench">
+        <section class="panel" aria-labelledby="list-title">
+          <div class="panel-heading"><h2 id="list-title">上位机登录账号</h2><span id="account-count" class="badge">—</span></div>
+          <div class="panel-body">
+            <div class="account-filters"><label for="search">搜索<input id="search" type="search" placeholder="用户名或显示名"></label><label for="enabled-filter">账号状态<select id="enabled-filter"><option value="all">全部</option><option value="enabled">已启用</option><option value="disabled">已禁用</option></select></label></div>
+            <ul id="account-list"></ul><p id="list-empty" class="empty-copy" hidden>暂无账号，点击“添加账号”开始。</p>
+          </div>
+        </section>
+        <section class="panel account-editor" aria-labelledby="editor-title">
+          <div class="panel-heading"><h2 id="editor-title">选择一个账号</h2><span id="draft-status" role="status"></span></div>
+          <div id="editor-empty" class="empty-state"><strong>管理上位机登录账号</strong><span>从左侧选择账号，或添加一个新账号。</span></div>
+          <form id="account-form" hidden autocomplete="off">
+            <fieldset id="editor-fields" class="panel-body" disabled>
+              <div class="form-grid">
+                <label for="account-username">用户名<input id="account-username" name="account-username" required maxlength="64" pattern="[A-Za-z0-9_.\-]{3,64}" autocomplete="off" placeholder="例如：station01"></label>
+                <label for="display-name">显示名<input id="display-name" name="display-name" maxlength="128" placeholder="留空时使用用户名"></label>
+                <label id="create-password-label" for="create-password">密码<input id="create-password" name="create-password" type="password" autocomplete="new-password"></label>
+                <label id="create-confirm-label" for="create-confirm">确认密码<input id="create-confirm" name="create-confirm" type="password" autocomplete="new-password"></label>
+                <label id="enabled-label" class="check-label wide" for="account-enabled"><input id="account-enabled" name="enabled" type="checkbox">启用账号</label>
+              </div>
+              <p id="create-hint" class="hint">用户名为 3～64 位英文字母、数字或 _ . -，创建后不可修改。密码为 8～128 字节；显示名最多 128 字节。</p>
+              <div class="actions"><button id="save-account" class="primary" type="submit">保存修改</button><button id="discard" type="button">放弃修改并重新读取</button></div>
+              <dl id="account-facts" class="account-facts" hidden>
+                <div><dt>在线连接数</dt><dd id="account-connections">—</dd></div><div><dt>最后登录</dt><dd id="account-last-login">—</dd></div>
+                <div><dt>创建时间</dt><dd id="account-created">—</dd></div><div><dt>更新时间</dt><dd id="account-updated">—</dd></div>
+              </dl>
+            </fieldset>
+          </form>
+          <form id="password-form" hidden autocomplete="off">
+            <fieldset id="password-fields" class="panel-body" disabled>
+              <h3>重置密码</h3>
+              <div class="form-grid"><label for="reset-password">新密码<input id="reset-password" name="reset-password" type="password" required autocomplete="new-password"></label><label for="reset-confirm">确认新密码<input id="reset-confirm" name="reset-confirm" type="password" required autocomplete="new-password"></label></div>
+              <p class="hint">密码为 8～128 字节，中文通常每字占 3 字节。重置后原密码和已有登录会话失效，需要重新登录。</p>
+              <div class="actions"><button id="reset-submit" class="danger" type="submit">重置密码</button></div>
+            </fieldset>
+          </form>
+        </section>
+      </div>
+      <p class="hint">这些账号供上位机登录使用，没有 Web 管理权限。平台管理员账号独立管理，不显示在此列表中。</p>
+    </main>
+  </div>
+  <script type="module">
+// 账号草稿仅存在当前页面内存中，密码不会回填或写入浏览器存储。
+function createAccountClient({fetchImpl, confirmAction = () => false, onChange = () => {}, onUnauthorized = () => {}}) {
+  let username = '', accounts = [], selected = null, draft = null, dirty = false, creating = false;
+  let passwordDraft = {password:'', confirm:''}, error = '', notice = '', busy = false, stopped = false, conflict = false;
+  const snapshot = () => ({username, accounts:accounts.map(a => ({...a})), selected:selected ? {...selected} : null, draft:draft ? {...draft} : null, passwordDraft:{...passwordDraft}, dirty, creating, error, notice, busy, stopped, conflict});
+  const emit = () => onChange(snapshot());
+  const clearPasswords = () => { if (draft) { delete draft.password; delete draft.confirm; } passwordDraft = {password:'', confirm:''}; };
+  const requireLogin = () => { stopped = true; clearPasswords(); username = ''; accounts = []; selected = draft = null; dirty = false; emit(); onUnauthorized(); };
+  async function request(path, method = 'GET', payload = undefined) {
+    const headers = method === 'GET' ? {} : {'Content-Type':'application/json', 'X-MskDSP-Action':path.includes('/auth/') ? 'auth' : 'account'};
+    let response;
+    try { response = await fetchImpl(path, {method, credentials:'same-origin', cache:'no-store', headers, ...(payload === undefined ? {} : {body:JSON.stringify(payload)})}); }
+    catch { throw new Error('暂时无法连接平台，请稍后重试。'); }
+    if (response.status === 401) { if (!stopped) requireLogin(); throw new Error('登录已失效，请重新登录。'); }
+    const data = response.status === 204 ? null : await response.json().catch(() => null);
+    if (!response.ok) {
+      const revisionConflict = response.status === 409 && !(path === '/api/v1/accounts' && method === 'POST');
+      const problem = new Error(revisionConflict ? '记录已被其他操作更新。草稿已保留，请先放弃修改并重新读取，再重试。' : data?.error || `请求失败（${response.status}）`);
+      problem.status = response.status;
+      problem.revisionConflict = revisionConflict;
+      throw problem;
+    }
+    return data;
+  }
+  const setDraft = record => { clearPasswords(); draft = record ? {revision:record.revision, display_name:record.display_name, enabled:record.enabled} : {username:'', display_name:'', password:'', confirm:''}; dirty = false; conflict = false; };
+  const replaceAccount = record => { accounts = accounts.some(a => a.id === record.id) ? accounts.map(a => a.id === record.id ? record : a) : [record, ...accounts]; };
+  const mayLeave = () => (!dirty && !passwordDraft.password && !passwordDraft.confirm) || confirmAction('有未保存的修改，确定放弃并切换账号吗？');
+  const bytes = value => new TextEncoder().encode(value).length;
+  function passwordError(password, confirm) {
+    if (bytes(password) < 8 || bytes(password) > 128) return '密码须为 8～128 字节。';
+    if (!password.trim()) return '密码不能全部为空白字符。';
+    if (password !== confirm) return '两次输入的密码不一致。';
+    return '';
+  }
+  async function run(action) {
+    if (busy || stopped) return;
+    busy = true; error = ''; notice = ''; emit();
+    try { await action(); }
+    catch (problem) { if (!stopped) { error = problem.message; if (problem.revisionConflict) conflict = true; } }
+    finally { busy = false; emit(); }
+  }
+  return {
+    snapshot,
+    async refresh() {
+      await run(async () => {
+        if (!username) { const me = await request('/api/v1/auth/me'); if (stopped) return; if (me.role !== 'admin') { requireLogin(); return; } username = me.username; }
+        const result = await request('/api/v1/accounts'); if (stopped) return; accounts = result;
+        if (selected) {
+          const fresh = accounts.find(a => a.id === selected.id);
+          if (fresh) { selected = fresh; if (!dirty && !conflict && !passwordDraft.password && !passwordDraft.confirm) setDraft(fresh); }
+          else { error = '账号已不可用，请重新选择账号。'; conflict = true; }
+        }
+        if (dirty || passwordDraft.password || passwordDraft.confirm) notice = '列表已刷新，未保存的修改已保留。';
+      });
+    },
+    newAccount() {
+      if (busy || stopped || !username || !mayLeave()) return;
+      selected = null; creating = true; setDraft(null); error = ''; notice = ''; emit();
+    },
+    async select(id) {
+      if (busy || stopped || !username || selected?.id === id || !mayLeave()) return;
+      clearPasswords(); emit();
+      await run(async () => { const record = await request(`/api/v1/accounts/${encodeURIComponent(id)}`); if (stopped) return; selected = record; creating = false; setDraft(record); replaceAccount(record); });
+    },
+    edit(patch) {
+      if (busy || stopped || !draft) return;
+      const allowed = creating ? ['username','display_name','password','confirm'] : ['display_name','enabled'];
+      for (const field of allowed) if (Object.hasOwn(patch, field)) draft[field] = patch[field];
+      dirty = creating || draft.display_name !== selected.display_name || draft.enabled !== selected.enabled;
+      error = ''; notice = ''; emit();
+    },
+    editPassword(patch) {
+      if (busy || stopped || !selected || creating) return;
+      for (const field of ['password','confirm']) if (Object.hasOwn(patch, field)) passwordDraft[field] = patch[field];
+      error = ''; notice = ''; emit();
+    },
+    async discard() {
+      if (busy || stopped || !draft || !mayLeave()) return;
+      clearPasswords();
+      if (creating) { setDraft(null); error = ''; notice = ''; emit(); return; }
+      await run(async () => { const record = await request(`/api/v1/accounts/${encodeURIComponent(selected.id)}`); if (stopped) return; selected = record; replaceAccount(record); setDraft(record); });
+    },
+    async save() {
+      if (busy || stopped || !draft || conflict || (!creating && !dirty)) return;
+      const isNew = creating, name = draft.display_name.trim() || (isNew ? draft.username.trim() : selected.username);
+      let validation = bytes(name) > 128 ? '显示名最多 128 字节。' : '';
+      if (isNew && !/^[A-Za-z0-9_.-]{3,64}$/.test(draft.username.trim())) validation = '用户名须为 3～64 位英文字母、数字或 _ . -。';
+      if (isNew && !validation) validation = passwordError(draft.password || '', draft.confirm || '');
+      if (validation) { error = validation; notice = ''; emit(); return; }
+      if (!isNew && selected.enabled && !draft.enabled && !confirmAction('确定禁用这个账号吗？禁用后将断开已有连接，并阻止再次登录。')) return;
+      const payload = isNew ? {username:draft.username.trim(), password:draft.password, display_name:name} : {revision:draft.revision, display_name:name, enabled:draft.enabled};
+      await run(async () => {
+        const record = await request(isNew ? '/api/v1/accounts' : `/api/v1/accounts/${encodeURIComponent(selected.id)}`, isNew ? 'POST' : 'PUT', payload);
+        if (stopped) return; selected = record; creating = false; replaceAccount(record); setDraft(record); notice = isNew ? '账号已添加，可用于上位机登录。' : '账号已保存。';
+      });
+    },
+    async resetPassword() {
+      if (busy || stopped || !selected || creating || dirty || conflict) return;
+      const validation = passwordError(passwordDraft.password, passwordDraft.confirm);
+      if (validation) { error = validation; notice = ''; emit(); return; }
+      if (!confirmAction('确定重置这个账号的密码吗？原密码和已有登录会话将失效。')) return;
+      const payload = {revision:draft.revision, password:passwordDraft.password};
+      await run(async () => { const record = await request(`/api/v1/accounts/${encodeURIComponent(selected.id)}/password`, 'POST', payload); if (stopped) return; selected = record; replaceAccount(record); setDraft(record); notice = '密码已重置，请使用新密码重新登录。'; });
+    },
+    clearPasswords() { clearPasswords(); emit(); },
+    async logout() { if (busy || stopped) return; clearPasswords(); emit(); await run(async () => { await request('/api/v1/auth/logout', 'POST'); if (!stopped) requireLogin(); }); },
+  };
+}
+// 页面渲染只使用 textContent，不将账号字段拼接为 HTML。
+const $ = id => document.getElementById(id);
+let latest, renderedDraft = '';
+const client = createAccountClient({fetchImpl:(...args) => fetch(...args), confirmAction:message => window.confirm(message), onChange:render, onUnauthorized:() => window.location.replace('/login')});
+const formatTime = value => value === null || value === undefined ? '尚无记录' : new Date(value).toLocaleString('zh-CN', {hour12:false});
+function renderList(state) {
+  const term = $('search').value.trim().toLowerCase(), filter = $('enabled-filter').value;
+  const matches = state.accounts.filter(a => `${a.username} ${a.display_name}`.toLowerCase().includes(term) && (filter === 'all' || (filter === 'enabled') === a.enabled));
+  $('account-count').textContent = `${matches.length} / ${state.accounts.length}`;
+  $('account-list').replaceChildren(...matches.map(account => {
+    const item = document.createElement('li'), button = document.createElement('button'), name = document.createElement('strong'), info = document.createElement('span');
+    button.type = 'button'; button.className = 'account-card'; button.disabled = state.busy || state.stopped;
+    button.setAttribute('aria-pressed', String(state.selected?.id === account.id && !state.creating));
+    name.textContent = account.display_name; info.textContent = `${account.username} · ${account.enabled ? '已启用' : '已禁用'} · ${account.online_connections} 个在线连接`;
+    button.append(name, info); button.addEventListener('click', () => client.select(account.id)); item.append(button); return item;
+  }));
+  $('list-empty').hidden = matches.length > 0;
+  $('list-empty').textContent = state.accounts.length ? '没有匹配的账号，请调整筛选条件。' : '暂无账号，点击“添加账号”开始。';
+}
+function render(state) {
+  latest = state;
+  $('username').textContent = state.username || (state.stopped ? '未登录' : '正在确认');
+  for (const id of ['logout','refresh','new-account']) $(id).disabled = state.busy || state.stopped || !state.username;
+  $('message').textContent = state.error || state.notice || (state.busy ? '正在处理，请稍候…' : '请选择账号或添加新账号。');
+  $('message').classList.toggle('error', Boolean(state.error));
+  renderList(state);
+  const active = Boolean(state.draft), record = state.selected;
+  $('editor-empty').hidden = active; $('account-form').hidden = !active;
+  $('account-form').setAttribute('aria-busy', String(state.busy));
+  $('editor-fields').disabled = state.busy || state.stopped;
+  $('editor-title').textContent = state.creating ? '添加账号' : record?.display_name || '选择一个账号';
+  $('draft-status').textContent = state.conflict ? '记录已变化，请重新读取' : state.dirty || state.passwordDraft.password || state.passwordDraft.confirm ? '有未保存的修改' : '';
+  const draftKey = JSON.stringify([record?.id, state.draft]);
+  if (draftKey !== renderedDraft) {
+    renderedDraft = draftKey;
+    $('account-username').value = state.creating ? state.draft?.username || '' : record?.username || '';
+    $('display-name').value = state.draft?.display_name || ''; $('account-enabled').checked = state.draft?.enabled ?? true;
+  }
+  $('create-password').value = state.creating ? state.draft?.password || '' : '';
+  $('create-confirm').value = state.creating ? state.draft?.confirm || '' : '';
+  $('reset-password').value = state.passwordDraft.password; $('reset-confirm').value = state.passwordDraft.confirm;
+  $('account-username').readOnly = !state.creating;
+  for (const id of ['create-password-label','create-confirm-label','create-hint']) $(id).hidden = !state.creating;
+  $('create-password').required = state.creating; $('create-confirm').required = state.creating;
+  $('enabled-label').hidden = state.creating;
+  $('save-account').textContent = state.creating ? '添加账号' : '保存修改';
+  $('save-account').disabled = state.conflict || (!state.creating && !state.dirty);
+  $('account-facts').hidden = !record || state.creating;
+  $('password-form').hidden = !record || state.creating;
+  $('password-fields').disabled = state.busy || state.stopped || state.dirty || state.conflict;
+  if (record) {
+    $('account-connections').textContent = String(record.online_connections); $('account-last-login').textContent = formatTime(record.last_login_at);
+    $('account-created').textContent = formatTime(record.created_at); $('account-updated').textContent = formatTime(record.updated_at);
+  }
+}
+$('new-account').addEventListener('click', () => { client.newAccount(); if (latest.creating) $('account-username').focus(); });
+$('refresh').addEventListener('click', () => client.refresh());
+$('search').addEventListener('input', () => renderList(latest)); $('enabled-filter').addEventListener('change', () => renderList(latest));
+for (const [id, field] of [['account-username','username'],['display-name','display_name'],['create-password','password'],['create-confirm','confirm']]) $(id).addEventListener('input', () => client.edit({[field]:$(id).value}));
+$('account-enabled').addEventListener('change', () => client.edit({enabled:$('account-enabled').checked}));
+for (const [id, field] of [['reset-password','password'],['reset-confirm','confirm']]) $(id).addEventListener('input', () => client.editPassword({[field]:$(id).value}));
+$('account-form').addEventListener('submit', event => { event.preventDefault(); client.save(); });
+$('password-form').addEventListener('submit', event => { event.preventDefault(); client.resetPassword(); });
+$('discard').addEventListener('click', () => client.discard());
+$('logout').addEventListener('click', () => client.logout());
+window.addEventListener('pagehide', () => client.clearPasswords());
+window.addEventListener('beforeunload', event => { if (latest?.dirty || latest?.passwordDraft.password || latest?.passwordDraft.confirm) { event.preventDefault(); event.returnValue = ''; } });
+client.refresh();
+  </script>
+</body>
+</html>
