@@ -9,7 +9,6 @@ mod grpc_tests;
 pub mod http;
 #[cfg(test)]
 mod store_tests;
-pub mod tls;
 
 mod relay;
 mod response;

@@ -7,7 +7,6 @@ use std::{env, fs, net::SocketAddr, path::Path};
 pub struct AppConfig {
     pub server: ServerConfig,
     pub runtime: RuntimeConfig,
-    pub tls: TlsConfig,
     pub auth: crate::auth::AuthConfig,
     pub software: SoftwareConfig,
 }
@@ -25,16 +24,6 @@ pub struct ServerConfig {
 pub struct RuntimeConfig {
     pub protocol_version: String,
     pub environment: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct TlsConfig {
-    pub enabled: bool,
-    pub server_certificate: String,
-    pub server_private_key: String,
-    pub client_ca_certificate: String,
-    pub require_client_certificate: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -116,7 +105,6 @@ impl Default for AppConfig {
         Self {
             server: ServerConfig::default(),
             runtime: RuntimeConfig::default(),
-            tls: TlsConfig::default(),
             auth: crate::auth::AuthConfig::default(),
             software: SoftwareConfig::default(),
         }
@@ -146,18 +134,6 @@ impl Default for RuntimeConfig {
     }
 }
 
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            server_certificate: String::new(),
-            server_private_key: String::new(),
-            client_ca_certificate: String::new(),
-            require_client_certificate: false,
-        }
-    }
-}
-
 impl AppConfig {
     pub fn load() -> Result<Self> {
         let path = env::var("MSKDSP_PLATFORM_CONFIG").unwrap_or_else(|_| "config.toml".into());
@@ -180,6 +156,18 @@ impl AppConfig {
 #[cfg(test)]
 mod software_tests {
     use super::*;
+
+    // 已退出使用的旧证书字段作为未知配置忽略，不影响统一明文平台启动。
+    #[tokio::test]
+    async fn legacy_certificate_settings_do_not_affect_plaintext_runtime() {
+        for enabled in [false, true] {
+            let text = format!(
+                "[tls]\nenabled={enabled}\nserver_certificate='不存在的旧证书.pem'\nserver_private_key='不存在的旧私钥.pem'\n"
+            );
+            let config: AppConfig = toml::from_str(&text).unwrap();
+            crate::runtime::PlatformRuntime::new(config).await.unwrap();
+        }
+    }
 
     // 旧配置未提供软件仓库配置时仍可启动，发布令牌保持禁用。
     #[test]

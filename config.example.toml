@@ -23,13 +23,3 @@ username = "root"
 # password_hash = "填入完整的 Argon2id PHC 哈希"
 secure_cookie = false
 session_seconds = 28800
-
-[tls]
-# 本地开发默认关闭 TLS；公网接入应启用本进程 gRPC TLS 或受控 TLS 网关。
-# HTTP 管理入口的 HTTPS 仍由网关提供；以下设置仅作用于 gRPC。
-enabled = false
-server_certificate = ""
-server_private_key = ""
-client_ca_certificate = ""
-# 默认使用设备令牌认证；启用双向 TLS 后，内置 --probe-grpc 尚不支持客户端证书身份。
-require_client_certificate = false

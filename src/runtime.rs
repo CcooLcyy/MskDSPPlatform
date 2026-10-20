@@ -25,7 +25,6 @@ pub struct PlatformRuntime {
 impl PlatformRuntime {
     pub async fn new(config: AppConfig) -> Result<Self> {
         config.software.validate()?;
-        crate::remote::tls::server_tls(&config.tls).await?;
         Ok(Self {
             config,
             sessions: SessionRegistry::default(),
@@ -83,7 +82,6 @@ impl PlatformRuntime {
             client_auth.clone(),
             remote_hub.clone(),
         );
-        let grpc_tls = crate::remote::tls::server_tls(&self.config.tls).await?;
         let public_base_url = self.config.software.public_base_url.clone();
         let http_router = http::router(http_state.clone())
             .merge(crate::account_http::router(
@@ -132,11 +130,7 @@ impl PlatformRuntime {
                 .context("HTTP 服务异常退出")
         };
         let grpc_service = async move {
-            let mut server = Server::builder();
-            if let Some(tls) = grpc_tls {
-                server = server.tls_config(tls).context("配置 gRPC TLS 失败")?;
-            }
-            server
+            Server::builder()
                 .add_service(AgentServiceServer::new(grpc_service))
                 .add_service(crate::remote::proto::device_access_service_server::DeviceAccessServiceServer::new(remote.clone()).max_decoding_message_size(128 * 1024))
                 .add_service(crate::remote::proto::remote_access_service_server::RemoteAccessServiceServer::new(remote).max_decoding_message_size(128 * 1024))

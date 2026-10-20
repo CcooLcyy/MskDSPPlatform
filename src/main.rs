@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
         }
         [flag, address] if flag == "--probe-grpc" => {
             let config = AppConfig::load()?;
-            grpc::probe_with_tls(address, &config.runtime.protocol_version, &config.tls).await?;
+            grpc::probe(address, &config.runtime.protocol_version).await?;
             println!("gRPC 握手检查通过");
             return Ok(());
         }

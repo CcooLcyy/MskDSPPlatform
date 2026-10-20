@@ -22,41 +22,12 @@ use uuid::Uuid;
 
 pub use agent::agent_service_server::AgentServiceServer;
 
-/// 管理进程使用只读 RPC 检查 gRPC 服务，不占用上位机身份或注册临时会话。
-#[cfg(test)]
+/// 管理进程使用只读明文 RPC 检查 gRPC 服务，不占用上位机身份或注册临时会话。
 pub async fn probe(address: &str, protocol_version: &str) -> anyhow::Result<()> {
-    probe_with_tls(
-        address,
-        protocol_version,
-        &crate::config::TlsConfig::default(),
-    )
-    .await
-}
-
-pub async fn probe_with_tls(
-    address: &str,
-    protocol_version: &str,
-    tls: &crate::config::TlsConfig,
-) -> anyhow::Result<()> {
     let check = async {
-        let channel = if tls.enabled {
-            anyhow::ensure!(
-                !tls.require_client_certificate,
-                "双向 TLS 的 gRPC 自检尚未配置客户端身份，请使用单向 TLS 或独立客户端探测"
-            );
-            let certificate = tokio::fs::read(&tls.server_certificate).await?;
-            let config = tonic::transport::ClientTlsConfig::new()
-                .ca_certificate(tonic::transport::Certificate::from_pem(certificate));
-            tonic::transport::Endpoint::from_shared(format!("https://{address}"))?
-                .tls_config(config)?
-                .connect()
-                .await?
-        } else {
-            tonic::transport::Endpoint::from_shared(format!("http://{address}"))?
-                .connect()
-                .await?
-        };
-        let mut client = agent::agent_service_client::AgentServiceClient::new(channel);
+        let mut client =
+            agent::agent_service_client::AgentServiceClient::connect(format!("http://{address}"))
+                .await?;
         let response = client
             .check_health(agent::HealthRequest {})
             .await?
