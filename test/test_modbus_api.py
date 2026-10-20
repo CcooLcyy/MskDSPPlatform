@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -16,6 +17,24 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = ROOT / "target" / "debug" / ("mskdsp-platform.exe" if os.name == "nt" else "mskdsp-platform")
 STARTUP_TIMEOUT = 30.0
+
+
+def temporary_api_directory():
+    """只隔离真实进程夹具，其他测试继续使用自己的默认临时目录。"""
+    configured = os.environ.get("MSKDSP_PLATFORM_TEST_TMPDIR", "")
+    if not configured:
+        return tempfile.TemporaryDirectory(prefix="mskdsp-platform-api-")
+    try:
+        root = Path(configured).resolve(strict=True)
+        if not root.is_dir():
+            raise OSError("不是目录")
+        free = shutil.disk_usage(root).free
+        # 当前整套夹具实测峰值 3.58 MiB，保留至少八倍余量；不足时不能回退到磁盘。
+        if free < 32 * 1024 * 1024:
+            raise RuntimeError(f"平台真实进程测试数据目录至少需要 32 MiB 可用空间，当前 {free / 1024 / 1024:.2f} MiB：{root}")
+        return tempfile.TemporaryDirectory(prefix="mskdsp-platform-api-", dir=root)
+    except OSError as error:
+        raise RuntimeError(f"平台真实进程测试数据目录不可用：{configured}（{type(error).__name__}）") from error
 
 
 def port():
@@ -39,7 +58,7 @@ def template():
 @unittest.skipUnless(BINARY.exists(), "请先执行 cargo build --locked")
 class TemplateApiTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = temporary_api_directory()
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
         self.http_port, self.grpc_port = port(), port()
@@ -54,8 +73,10 @@ class TemplateApiTests(unittest.TestCase):
         self.start()
 
     def start(self):
+        temporary = self.folder / "tmp"
+        temporary.mkdir(exist_ok=True)
         env = dict(os.environ, MSKDSP_PLATFORM_CONFIG=str(self.config), MSKDSP_PLATFORM_DATA_DIR=str(self.folder / "data"),
-                   RUST_LOG="mskdsp_platform=info,tower_http=warn")
+                   TMPDIR=str(temporary), RUST_LOG="mskdsp_platform=info,tower_http=warn")
         env.pop("MSKDSP_PLATFORM_HTTP_ADDR", None)
         self.cookie = ""
         self.child = None

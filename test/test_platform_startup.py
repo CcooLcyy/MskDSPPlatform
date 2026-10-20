@@ -137,6 +137,16 @@ class PlatformStartupTests(unittest.TestCase):
         self.assertNotIn("private-response", str(failure.exception))
         self.assertNotIn("private-cookie", str(failure.exception))
 
+    # 仅子进程的临时文件跟随夹具数据目录；启动日志仍保存在 CI 产物目录。
+    def test_child_temp_directory_is_isolated_but_logs_remain_in_artifacts(self):
+        with mock.patch.object(self.runner, "request", side_effect=self.ready):
+            self.runner.start()
+        env = self.popen.call_args.kwargs["env"]
+        self.assertEqual(Path(env["TMPDIR"]), self.root / "tmp")
+        self.assertTrue((self.root / "tmp").is_dir())
+        self.assertEqual(self.runner.startup_log.parent, self.root / "package/logs/platform-startup")
+        self.assertFalse(self.runner.startup_log.is_relative_to(self.root / "tmp"))
+
     # 进程忽略正常终止时强制回收，避免失败测试留下后台平台进程。
     def test_stop_kills_process_after_terminate_timeout(self):
         self.runner.child = self.child
