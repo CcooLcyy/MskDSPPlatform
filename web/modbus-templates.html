@@ -140,11 +140,21 @@
     .workspace-footer { margin-top: 12px; }
     .property-backdrop { display: none; }
     .workbench[data-view="trash"] { display: block; }
+    .workbench[data-view="trash"] .catalog-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 14px; border-bottom: 1px solid var(--border); }
+    .workbench[data-view="trash"] .catalog-tabs { padding: 0; border: 0; }
+    .workbench[data-view="trash"] .catalog-tabs button { flex: 0 0 auto; padding: 7px 12px; white-space: nowrap; }
+    .workbench[data-view="trash"] .catalog-heading > .panel-heading { padding: 0; border: 0; }
     .workbench[data-view="trash"] .catalog-search { max-width: 420px; }
-    .workbench[data-view="trash"] #template-list { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); max-height: none; }
-    .trash-card { height: 100%; padding: 16px; }
-    .trash-card button { margin-top: 10px; justify-self: start; }
-    #trash-intro { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+    .workbench[data-view="trash"] #template-list { display: block; margin: 0; min-height: 0; max-height: none; overflow: visible; }
+    .workbench[data-view="trash"] #list-empty { margin: 0; padding: 48px 16px; }
+    .trash-card { grid-template-columns: minmax(0, 1fr) minmax(140px, .5fr) minmax(140px, .5fr) auto; gap: 4px 16px; align-items: center; padding: 16px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; }
+    #template-list > li:last-child .trash-card { border-bottom: 0; }
+    .trash-card strong { grid-column: 1; grid-row: 1; }
+    .trash-card span:nth-child(2) { grid-column: 1; grid-row: 2; }
+    .trash-card span:nth-child(3) { grid-column: 1; grid-row: 3; }
+    .trash-card span:nth-child(4) { grid-column: 2; grid-row: 1 / 4; }
+    .trash-card span:nth-child(5) { grid-column: 3; grid-row: 1 / 4; }
+    .trash-card button { grid-column: 4; grid-row: 1 / 4; margin: 0; justify-self: end; }
     @media (max-width: 1400px) { .workbench { grid-template-columns: 212px minmax(0, 1fr); } .point-area { grid-template-columns: minmax(0, 1fr) 270px; gap: 10px; } .page-content { padding: 16px; } }
     @media (max-width: 1100px) {
       .point-area { grid-template-columns: minmax(0, 1fr); }
@@ -160,6 +170,9 @@
       .page-content { padding: 12px; }
       .workbench { grid-template-columns: minmax(0, 1fr); }
       #template-list { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 210px; }
+      .trash-card { grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; }
+      .trash-card strong, .trash-card span:nth-child(n) { grid-column: 1; grid-row: auto; }
+      .trash-card button { grid-column: 2; grid-row: 1 / 6; }
       .editor-heading { align-items: flex-start; flex-wrap: wrap; }
       .editor-actions { width: 100%; }
       #draft-status { margin-right: auto; }
@@ -182,11 +195,10 @@
         <div id="message" class="status-banner" role="status" aria-live="polite">正在读取点表库…</div>
         <div id="workbench" class="workbench" data-view="library">
           <section id="library-panel" class="panel catalog-panel" aria-label="点表目录">
-            <div class="catalog-tabs" aria-label="点表目录视图"><button id="library-view" type="button" aria-pressed="true">全部点表<span id="library-total" class="nav-count">—</span></button><button id="trash-view" type="button" aria-pressed="false">回收站<span id="trash-total" class="nav-count">—</span></button></div>
-            <div class="panel-heading"><div class="section-heading"><h2 id="library-title">全部点表</h2><span id="catalog-count" class="badge">读取中</span></div><button id="refresh" class="quiet" type="button">刷新</button></div>
+            <div class="catalog-heading"><div class="catalog-tabs" aria-label="点表目录视图"><button id="library-view" type="button" aria-pressed="true">全部点表<span id="library-total" class="nav-count">—</span></button><button id="trash-view" type="button" aria-pressed="false">回收站<span id="trash-total" class="nav-count">—</span></button></div>
+            <div class="panel-heading"><div id="catalog-heading-info" class="section-heading"><h2 id="library-title">全部点表</h2><span id="catalog-count" class="badge">读取中</span></div><button id="refresh" class="quiet" type="button">刷新</button></div></div>
             <div class="panel-body">
-              <p id="trash-intro" hidden>删除的点表在 90 天内可恢复，恢复后保留原内容。切换视图会保留编辑草稿。</p>
-              <div class="catalog-search"><label>搜索点表<input id="search" type="search" placeholder="名称、厂家、型号或协议" autocomplete="off"></label></div>
+              <div id="catalog-search" class="catalog-search"><label>搜索点表<input id="search" type="search" placeholder="名称、厂家、型号或协议" autocomplete="off"></label></div>
               <ul id="template-list"></ul><p id="list-empty" hidden>暂无点表。新建或导入一张模板开始使用。</p>
               <p id="capacity-note" class="capacity-note">最多 1000 张 · 每张 10000 点 / 10 MiB</p>
             </div>
@@ -229,7 +241,7 @@
             </div>
           </section>
         </div>
-        <footer class="workspace-footer">点表保存在平台；下载 JSON 可导入上位机。保存不会向设备下发配置。</footer><noscript>请启用 JavaScript 以管理点表。</noscript>
+        <footer id="workspace-footer" class="workspace-footer">点表保存在平台；下载 JSON 可导入上位机。保存不会向设备下发配置。</footer><noscript>请启用 JavaScript 以管理点表。</noscript>
       </main>
     </div>
   </div>
@@ -445,7 +457,7 @@ function createTemplateClient({fetchImpl,onChange,confirmDiscard = () => true,on
     const result = await request(target === 'trash' ? `${BASE}/trash` : BASE);
     if (!Array.isArray(result)) throw new Error('点表接口返回了无法识别的列表');
     if (target === 'trash') { trash = result; trashLoaded = true; } else { list = result; listLoaded = true; }
-    notice = target === 'trash' ? `回收站有 ${trash.length} 张点表，删除后 90 天内可恢复。` : `已读取 ${list.length} 张点表。`;
+    notice = target === 'trash' ? '' : `已读取 ${list.length} 张点表。`;
   }
   const client = {
     snapshot,
@@ -591,7 +603,7 @@ function confirmDiscard() { return window.confirm('有未保存的修改。是�
 function renderList(state) {
   const collection = state.view === 'trash' ? state.trash : state.list;
   const items = filterTemplates(collection,element('search').value);
-  const fingerprint = JSON.stringify([state.view,items,state.record?.id,state.pending,state.authorized]);
+  const fingerprint = JSON.stringify([state.view,collection.length,items,state.record?.id,state.pending,state.authorized]);
   if (fingerprint === renderedList) return;
   renderedList = fingerprint; element('template-list').replaceChildren();
   element('library-title').textContent = state.view === 'trash' ? '回收站' : '全部点表';
@@ -610,7 +622,8 @@ function renderList(state) {
     button.addEventListener('click',() => client.load(item.id)); row.append(button); element('template-list').append(row);
   }
   element('list-empty').hidden = items.length > 0;
-  element('list-empty').textContent = collection.length ? '没有匹配的点表。' : state.view === 'trash' ? '回收站为空。删除的点表会在这里保留 90 天。' : '暂无点表。新建或导入上位机模板开始使用。';
+  element('template-list').hidden = items.length === 0;
+  element('list-empty').textContent = collection.length ? '没有匹配的点表。' : state.view === 'trash' ? '回收站为空' : '暂无点表。新建或导入上位机模板开始使用。';
 }
 function pointValues(point) {
   for (const key of POINT_FIELDS) element(`point-${key}`).value = point[key] ?? '';
@@ -838,15 +851,19 @@ function render(state) {
   element('workbench').setAttribute('data-view',state.view);
   element('editor-panel').hidden = inTrash;
   element('library-controls').hidden = inTrash;
-  element('trash-intro').hidden = !inTrash;
+  element('catalog-heading-info').hidden = inTrash;
+  element('catalog-search').hidden = inTrash && state.trashLoaded && !state.trash.length;
+  element('workspace-footer').hidden = inTrash;
+  element('library-panel').setAttribute('aria-label',inTrash ? '回收站列表' : '点表目录');
   element('capacity-note').hidden = inTrash;
   element('page-title').textContent = inTrash ? '回收站' : '点表工作台';
-  element('page-summary').textContent = inTrash ? '找回误删的点表，保留原有内容与模板信息。' : '集中管理协议点表，编辑后下载到上位机使用。';
+  element('page-summary').textContent = inTrash ? '删除的点表保留 90 天，可在到期前恢复。' : '集中管理协议点表，编辑后下载到上位机使用。';
   element('library-total').textContent = state.listLoaded ? String(state.list.length) : '—';
   element('trash-total').textContent = state.trashLoaded ? String(state.trash.length) : '—';
   const loaded = inTrash ? state.trashLoaded : state.listLoaded;
   element('catalog-count').textContent = loaded ? `${(inTrash ? state.trash : state.list).length} 张` : '读取中';
-  element('message').textContent = state.error || (state.pending ? '正在处理，请稍候…' : state.notice || '选择或导入一张点表开始编辑。');
+  element('message').textContent = state.error || (state.pending ? '正在处理，请稍候…' : state.notice || (inTrash ? '' : '选择或导入一张点表开始编辑。'));
+  element('message').hidden = !element('message').textContent;
   element('message').classList.toggle('error',Boolean(state.error));
   element('editor-panel').setAttribute('aria-busy',String(state.pending));
   for (const id of ['new-template','import','refresh','logout','library-view','trash-view']) element(id).disabled = state.pending || state.stopped || (id !== 'refresh' && !state.authorized);

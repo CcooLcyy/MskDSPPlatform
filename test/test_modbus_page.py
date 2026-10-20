@@ -55,6 +55,13 @@ class ModbusPageTests(unittest.TestCase):
         self.assertIn('@media (max-width: 1100px)', page)
         self.assertIn('.properties-open .property-panel', page)
 
+    def test_trash_layout_contract(self):
+        page = PAGE.read_text(encoding="utf-8")
+        self.assertIn('class="catalog-heading"', page)
+        for field in ('catalog-heading-info', 'catalog-search', 'workspace-footer'):
+            self.assertIn(f'id="{field}"', page)
+        self.assertNotIn('id="trash-intro"', page)
+
     def test_editor_and_client(self):
         node = shutil.which("node")
         if not node:
@@ -346,8 +353,19 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
   await tick(); assert.equal(nodes['username'].textContent,'admin');
   assert.equal(client.snapshot().view,'trash','initial trash deep link');
+  assert.equal(nodes['page-title'].textContent,'回收站');
+  assert.equal(nodes['catalog-heading-info'].hidden,true,'trash omits duplicate title and count');
+  assert.equal(nodes['catalog-search'].hidden,true,'loaded empty trash has no search controls');
+  assert.equal(nodes['template-list'].hidden,true,'empty list cannot reserve blank space');
+  assert.equal(nodes['list-empty'].hidden,false);assert.equal(nodes['list-empty'].textContent,'回收站为空');
+  assert.equal(nodes['workspace-footer'].hidden,true,'trash omits point-editor footer');
+  assert.equal(nodes['message'].hidden,true,'empty trash has no repeated read-success message');
+  assert.match(nodes['page-summary'].textContent,/90 天/);
   await nodes['library-view'].dispatch('click');
   assert.equal(window.location.hash,'#library');
+  assert.equal(nodes['catalog-heading-info'].hidden,false);
+  assert.equal(nodes['catalog-search'].hidden,false);
+  assert.equal(nodes['workspace-footer'].hidden,false);
   assert.equal(nodes['library-total'].textContent,'0');
   assert.equal(nodes['trash-total'].textContent,'0');
   // 回收站导航自身未完成时后退；旧请求不能覆盖新的地址和历史意图。
@@ -355,6 +373,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
     window.location.hash='#library';slowTrash=true;
     const loadingTrash=nodes['trash-view'].dispatch('click');await tick();
     assert.equal(client.snapshot().pending,true);
+    assert.equal(nodes['message'].hidden,false,'pending feedback stays visible');
     window.location.hash='';const wentBack=windowEvents.hashchange();
     if (targetHash) { window.location.hash=targetHash;await windowEvents.hashchange(); }
     slowTrash=false;finishTrash(response(trash));await loadingTrash;await wentBack;
@@ -605,6 +624,25 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(nodes['workbench'].attributes['data-view'],'trash');
   assert.equal(nodes['trash-total'].textContent,'1');
   assert.equal(nodes['trash-view'].attributes['aria-pressed'],'true');
+  assert.equal(nodes['catalog-heading-info'].hidden,true);
+  assert.equal(nodes['catalog-search'].hidden,false,'nonempty trash remains searchable');
+  assert.equal(nodes['template-list'].hidden,false);
+  assert.equal(nodes['workspace-footer'].hidden,true);
+  assert.equal(nodes['message'].hidden,true,'successful trash reads do not repeat count');
+  nodes['search'].value='找不到的点表';await nodes['search'].dispatch('input');
+  assert.equal(nodes['template-list'].hidden,true);
+  assert.equal(nodes['list-empty'].hidden,false);assert.match(nodes['list-empty'].textContent,/没有匹配/);
+  assert.equal(nodes['catalog-search'].hidden,false,'search with no matches must remain usable');
+  const unfilteredTrash=trash;trash=[];await nodes['refresh'].dispatch('click');
+  assert.equal(nodes['catalog-search'].hidden,true);
+  assert.equal(nodes['list-empty'].textContent,'回收站为空','refresh replaces unmatched-search text when the collection becomes empty');
+  trash=unfilteredTrash;await nodes['refresh'].dispatch('click');
+  assert.equal(nodes['catalog-search'].hidden,false);
+  assert.equal(nodes['search'].value,'找不到的点表','refresh preserves the current search');
+  assert.match(nodes['list-empty'].textContent,/没有匹配/);
+  nodes['search'].value='';await nodes['search'].dispatch('input');
+  assert.equal(nodes['template-list'].hidden,false);assert.equal(nodes['list-empty'].hidden,true);
+  assert.equal(nodes['template-list'].children.length,1);
   window.location.hash='#library';await windowEvents.hashchange();
   assert.equal(client.snapshot().view,'library');assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
   window.location.hash='#trash';await windowEvents.hashchange();
@@ -615,15 +653,28 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(card.children[3].textContent,'删除：'+new Date(1000).toLocaleString('zh-CN'));
   assert.equal(card.children[4].textContent,'到期：'+new Date(2000).toLocaleString('zh-CN'));
   status=422;await card.children[5].dispatch('click');assert.match(nodes['message'].textContent,/已满/);
+  assert.equal(nodes['message'].hidden,false,'restore failure stays visible');
+  assert.equal(nodes['message'].classList.contains('error'),true);
+  assert.equal(nodes['template-list'].hidden,false);
+  assert.equal(nodes['catalog-search'].hidden,false);
   assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
   assert.equal(nodes['template-list'].children.length,1);
   status=200;await nodes['template-list'].children[0].children[0].children[5].dispatch('click');
   assert.equal(nodes['list-empty'].hidden,false);assert.match(nodes['list-empty'].textContent,/回收站为空/);
+  assert.equal(nodes['list-empty'].textContent,'回收站为空');
+  assert.equal(nodes['template-list'].hidden,true);
+  assert.equal(nodes['catalog-search'].hidden,true,'restoring the last record returns to empty state');
+  assert.equal(nodes['message'].hidden,false,'restore success feedback stays visible');
+  assert.equal(nodes['message'].classList.contains('error'),false);
+  assert.match(nodes['message'].textContent,/恢复/);
   assert.equal(nodes['trash-total'].textContent,'0');
   assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
   await nodes['library-view'].dispatch('click');assert.equal(nodes['library-title'].textContent,'全部点表');
   assert.doesNotMatch(nodes['message'].textContent,/回收站有/);
   assert.equal(nodes['editor-panel'].hidden,false);assert.equal(nodes['library-controls'].hidden,false);
+  assert.equal(nodes['catalog-heading-info'].hidden,false);
+  assert.equal(nodes['catalog-search'].hidden,false);
+  assert.equal(nodes['workspace-footer'].hidden,false);
   assert.equal(nodes['meta-name'].value,copied.name);
   assert.deepEqual(JSON.parse(JSON.stringify(client.snapshot().draft)),copied);
   // 已读取空回收站后删除正常点表，旧零计数应失效，重新访问才显示真实数量。
