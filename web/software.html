@@ -111,24 +111,18 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="app-sidebar" aria-label="平台导航">
-      <div class="app-brand"><span class="brand-mark" aria-hidden="true">M</span><span><span class="brand-name">MskDSP</span><span class="brand-caption">远程服务平台</span></span></div>
-      <p class="nav-label">工作台</p>
+    <header class="app-topbar">
+      <a class="app-brand" href="/modbus-templates"><span class="brand-mark" aria-hidden="true">M</span><span class="brand-name">MskDSP</span></a>
       <nav class="app-nav" aria-label="平台功能">
-        <a class="nav-item" href="/modbus-templates"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 9v11"/></svg></span>点表工作台</a>
-        <a class="nav-item" href="/modbus-templates#trash"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7"/></svg></span>回收站</a>
-        <a class="nav-item" href="/software" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h16v12H4zM7 4h10v4M9 13h6M9 16h4"/></svg></span>软件管理</a>
-        <a class="nav-item" href="/update"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 15V4m-4 4 4-4 4 4M5 14v6h14v-6"/></svg></span>程序更新</a>
+        <a class="nav-item" href="/modbus-templates">点表工作台</a>
+        <a class="nav-item" href="/software" aria-current="page">软件管理</a>
+        <a class="nav-item" href="/update">平台维护</a>
       </nav>
-      <div class="sidebar-footer">MskDSPPlatform<br>点表与更新管理</div>
-    </aside>
-    <div class="app-content">
-      <header class="app-topbar">
-        <span class="topbar-label">平台管理 / 软件管理</span>
         <div class="account-actions"><label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><span id="username">正在确认</span><button id="logout" class="quiet" type="button" disabled>退出登录</button></div>
       </header>
+    <div class="app-content">
       <main class="page-content">
-        <div class="page-heading"><div><span class="eyebrow">软件仓库</span><h1>软件管理</h1><p class="page-summary">分别查看上位机、下位机与平台软件，展开历史后管理各安装包。</p></div><button id="refresh" type="button" disabled>刷新列表</button></div>
+        <div class="page-heading"><div><h1>软件管理</h1><p class="page-summary">分别查看上位机、下位机与平台软件，展开历史后管理各安装包。</p></div><button id="refresh" type="button" disabled>刷新列表</button></div>
         <div id="message" class="status-banner" role="status" aria-live="polite">正在读取版本…</div>
         <div id="software-sections"></div>
         <footer class="software-footer">平台候选包只保存历史，不公开下载，也不会自动更新。上下位机发布会切换所选通道的推荐版本；撤回仅移除当前通道引用。</footer>
@@ -198,7 +192,7 @@ function timeField(list, label, value) {
 }
 async function mutate(pkg, channel, operation) {
   if (busy || !authenticated) return;
-  if (pkg.metadata.product === 'mskdsp-platform') { message('平台候选包请到程序更新页手动升级。', true); return; }
+  if (pkg.metadata.product === 'mskdsp-platform') { message('平台候选包请到平台维护页手动升级。', true); return; }
   if (!allowedChannels(pkg).includes(channel) || !['publish','withdraw'].includes(operation)) return;
   if (operation === 'withdraw' && !pkg.channels.includes(channel)) { message('该安装包未发布到所选通道。', true); return; }
   const label = `${productNames[pkg.metadata.product] || pkg.metadata.product} ${pkg.metadata.version} · ${pkg.metadata.platform}`;
@@ -251,7 +245,7 @@ function packageDetails(pkg) {
 function packageActions(pkg) {
   const meta = pkg.metadata, actions = element('div', undefined, 'package-actions');
   if (meta.product === 'mskdsp-platform') {
-    const update = element('a', '到程序更新页检查和升级'); update.href = '/update';
+    const update = element('a', '到平台维护页检查和升级'); update.href = '/update';
     actions.append(update); return actions;
   }
   const select = element('select');
@@ -308,7 +302,7 @@ function createSections() {
     tools.append(clear, count);
     const list = element('div', undefined, 'package-list'), empty = element('div', undefined, 'software-empty'); empty.hidden = true;
     content.append(tools, list, empty); history.append(historyLabel, content); root.append(heading, summary);
-    if (product === 'mskdsp-platform') { const update = element('a', '前往程序更新页'); update.href = '/update'; heading.append(update); }
+    if (product === 'mskdsp-platform') { const update = element('a', '前往平台维护页'); update.href = '/update'; heading.append(update); }
     root.append(history); $('software-sections').append(root);
     const section = {product, root, total, summary, history, historyLabel, search, channel, architecture, view, clear, count, list, empty, listKey:'', architectureKey:''};
     sections.set(product, section);
@@ -344,7 +338,7 @@ function renderPlatformSummary() {
   }
   summary.append(row);
   if (!platformStatus.enabled) summary.append(element('p', '网页更新未启用；候选包仍可在历史中查看。', 'hint'));
-  else if (platformStatus.state === 'error') summary.append(element('p', text(platformStatus.message) || '上次更新任务失败，请前往程序更新页查看。', 'error'));
+  else if (platformStatus.state === 'error') summary.append(element('p', text(platformStatus.message) || '上次更新任务失败，请前往平台维护页查看。', 'error'));
 }
 // 只有完整来源身份一致才归组。流水线重跑及重复架构均保留独立安装包。
 function groupPackages(records, universe = records) {
@@ -450,7 +444,7 @@ async function readPlatformStatus() {
     if (!authenticated) return;
     platformStatus = status; platformError = '';
   } catch (error) {
-    platformStatus = null; platformError = `平台状态暂不可用：${error.message || '请前往程序更新页查看'}`;
+    platformStatus = null; platformError = `平台状态暂不可用：${error.message || '请前往平台维护页查看'}`;
     if (authorizationLost) throw error;
   }
   renderPlatformSummary();
@@ -482,7 +476,7 @@ try {
   if (user?.role !== 'admin' || !text(user.username).trim()) throw new Error('无法确认管理员身份，请重新登录');
   authenticated = true; $('username').textContent = user.username;
   await loadAll();
-  if (authenticated) message('展开各软件历史后可逐包操作；平台软件请前往程序更新页手动升级。');
+  if (authenticated) message('展开各软件历史后可逐包操作；平台软件请前往平台维护页手动升级。');
 } catch (error) { message(error.message || '无法读取软件信息', true); }
 finally { setBusy(false); }
   </script>

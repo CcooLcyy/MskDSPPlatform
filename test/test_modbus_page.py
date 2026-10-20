@@ -26,8 +26,9 @@ class ModbusPageTests(unittest.TestCase):
         self.assertIn("90 天", page)
         self.assertNotIn("此操作无法撤销", page)
         self.assertIn('href="/assets/platform.css"', page)
-        for classname in ("app-shell", "app-sidebar", "app-content", "app-topbar", "page-content", "page-heading", "app-nav"):
+        for classname in ("app-shell", "app-content", "app-topbar", "page-content", "page-heading", "app-nav"):
             self.assertIn(classname, page)
+        self.assertNotIn('class="app-sidebar"', page)
         for field in ("workbench", "library-panel", "library-total", "trash-total", "catalog-count", "library-controls", "point-advanced", "page-title"):
             self.assertIn(f'id="{field}"', page)
         self.assertRegex(page, r'<details[^>]*id="point-advanced"')
@@ -36,6 +37,23 @@ class ModbusPageTests(unittest.TestCase):
         self.assertEqual(len(identifiers), len(set(identifiers)), "页面控件 ID 不能重复，否则表单会读写错误的字段")
         for field in ("scale", "offset", "deadband"):
             self.assertRegex(page, rf'id="point-{field}"[^>]*type="text"')
+
+    def test_workbench_layout_contract(self):
+        page = PAGE.read_text(encoding="utf-8")
+        header = page.split('<header class="app-topbar">', 1)[1].split('</header>', 1)[0]
+        self.assertIn('href="/modbus-templates" aria-current="page">点表工作台', header)
+        self.assertIn('href="/software">软件管理', header)
+        self.assertIn('href="/update">平台维护', header)
+        self.assertNotIn('id="trash-view"', header)
+        catalog = page.split('id="library-panel"', 1)[1].split('id="editor-panel"', 1)[0]
+        self.assertIn('id="trash-view"', catalog)
+        heading = page.split('class="panel-heading editor-heading"', 1)[1].split('id="metadata-details"', 1)[0]
+        for field in ('save', 'draft-status', 'template-actions', 'copy-template', 'download', 'export-draft'):
+            self.assertIn(f'id="{field}"', heading)
+        for field in ('property-panel', 'point-basic', 'point-acquisition', 'point-advanced', 'open-properties', 'close-properties', 'property-backdrop', 'show-function-code', 'show-group'):
+            self.assertIn(f'id="{field}"', page)
+        self.assertIn('@media (max-width: 1100px)', page)
+        self.assertIn('.properties-open .property-panel', page)
 
     def test_editor_and_client(self):
         node = shutil.which("node")
@@ -281,7 +299,7 @@ const client=createTemplateClient({onChange:()=>{},confirmDiscard:()=>!denyDisca
         scenario = r'''
 const assert=require('node:assert/strict'), vm=require('node:vm');
 class Element {
-  constructor(tag='div') {this.tag=tag;this.children=[];this.events={};this.value='';this.checked=false;this.disabled=false;this.hidden=false;this.attributes={};this.dataset={};this.open=false;this.classList={toggle:()=>{}};}
+  constructor(tag='div') {this.tag=tag;this.children=[];this.events={};this.value='';this.checked=false;this.disabled=false;this.hidden=false;this.attributes={};this.dataset={};this.open=false;const classes=new Set();this.classList={toggle:(name,enabled)=>enabled?classes.add(name):classes.delete(name),contains:name=>classes.has(name)};}
   set textContent(value) {this.content=value;this.children=[];}
   get textContent() {return this.content||'';}
   get childElementCount() {return this.children.length;}
@@ -289,18 +307,21 @@ class Element {
   replaceChildren(...children) {this.children=[...children];}
   addEventListener(event,listener) {(this.events[event]??=[]).push(listener);}
   setAttribute(key,value) {this.attributes[key]=value;}
-  async dispatch(event,extra={}) {for(const listener of this.events[event]||[]) await listener({target:this,preventDefault:()=>{},...extra});}
+  getAttribute(key) {return this.attributes[key];}
+  async dispatch(event,extra={}) {for(const listener of this.events[event]||[]) await listener({target:this,preventDefault:()=>{},stopPropagation:()=>{},...extra});}
   click() {return this.dispatch('click');}
   removeAttribute(key) {delete this.attributes[key];}
-  focus() {this.focused=true;}
+  focus() {this.focused=true;document.activeElement=this;}
+  getClientRects() {return [0];}
+  querySelectorAll() {return [];}
   scrollIntoView() {this.scrolled=true;}
   remove() {}
 }
 const nodes=Object.fromEntries(IDS.map(id=>[id,new Element()]));
 const document={body:new Element('body'),getElementById:id=>nodes[id],createElement:tag=>new Element(tag),querySelectorAll:()=>[]};
-let status=200, finishSave, finishTrash, slowTrash=false, slow=false,trash=[],storedTemplate,exportedBlob; const calls=[], windowEvents={};
+let status=200, finishSave, finishTrash, slowTrash=false, slow=false,trash=[],storedTemplate,exportedBlob,narrow=false; const calls=[], windowEvents={};
 const response=(body,code=200)=>({ok:code>=200&&code<300,status:code,json:async()=>body});
-const window={confirm:()=>true,location:{assign:()=>{},hash:'#trash'},history:{pushState:(_s,_t,hash)=>window.location.hash=hash},addEventListener:(name,listener)=>windowEvents[name]=listener,fetch:async(url,options)=>{
+const window={matchMedia:()=>({matches:narrow}),confirm:()=>true,location:{assign:()=>{},hash:'#trash'},history:{pushState:(_s,_t,hash)=>window.location.hash=hash},addEventListener:(name,listener)=>windowEvents[name]=listener,fetch:async(url,options)=>{
   calls.push({url,options});
   if(url==='/api/v1/auth/me') return response({username:'admin'});
   if(url==='/api/v1/modbus-templates/trash') return slowTrash ? await new Promise(resolve=>finishTrash=resolve) : response(trash);
@@ -357,6 +378,101 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
   large.points=Array.from({length:121},(_,i)=>({...large.points[0],id:`large-${i}`,tag:`标签${i}`,group:i%2?'B':'A',function_code:i%3===0?6:3,address:i}));
   await client.importFile({size:100,text:async()=>JSON.stringify(large)});
   assert.equal(nodes['point-list'].children.length,50);
+  // 真实单元格事件写入同一草稿，切点和属性栏始终显示该草稿；显式保存前不发请求。
+  const beforeInline=calls.length;
+  const firstRow=nodes['point-list'].children[0];
+  await firstRow.dispatch('click');
+  assert.equal(nodes['point-list'].children[0],firstRow,'selecting a row keeps its cells mounted so double-click remains possible');
+  narrow=true;await nodes['close-properties'].dispatch('click');
+  await firstRow.children[1].dispatch('click');
+  assert.equal(nodes['open-properties'].attributes['aria-expanded'],'false','first click in editable cell never opens drawer before double-click');
+  assert.equal(nodes['point-list'].children[0],firstRow);
+  await firstRow.children[1].dispatch('dblclick');
+  let inline=firstRow.children[1].children[0];assert.equal(inline.focused,true);
+  inline.value='0012';await inline.dispatch('input');
+  assert.equal(client.snapshot().draft.points[0].address,12);
+  assert.equal(nodes['point-address'].value,12,'property form follows inline changes');
+  assert.equal(firstRow.children[1].children[0],inline,'typing does not remount input or lose focus');
+  await inline.dispatch('keydown',{key:'Enter'});
+  let row=nodes['point-list'].children[0];
+  await row.children[3].dispatch('keydown',{key:'Enter'});
+  inline=row.children[3].children[0];inline.value='1.234567890123456789e-22';await inline.dispatch('input');
+  await inline.dispatch('keydown',{key:'Enter'});
+  assert.equal(client.snapshot().draft.points[0].scale,'1.234567890123456789e-22');
+  row=nodes['point-list'].children[0];await row.children[4].dispatch('dblclick');
+  inline=row.children[4].children[0];inline.value='kW';await inline.dispatch('input');await inline.dispatch('blur');
+  // A 尚在编辑时直接转到 B：真实顺序为 A blur、B click、B click、B dblclick。
+  row=nodes['point-list'].children[0];await row.children[3].dispatch('dblclick');
+  inline=row.children[3].children[0];inline.value='9.876543210987654321e-23';await inline.dispatch('input');
+  const nextCell=nodes['point-list'].children[1].children[4];
+  await inline.dispatch('blur');await nextCell.dispatch('click');await nextCell.dispatch('click');
+  assert.equal(nodes['point-list'].children[1].children[4],nextCell,'switching cells preserves the second double-click target');
+  await nextCell.dispatch('dblclick');inline=nextCell.children[0];
+  assert.equal(inline.focused,true);assert.equal(inline.attributes['aria-label'],'编辑单位');
+  inline.value='V';await inline.dispatch('input');await inline.dispatch('keydown',{key:'Enter'});
+  assert.equal(client.snapshot().draft.points[1].unit,'V');
+  assert.equal(client.snapshot().draft.points[0].scale,'9.876543210987654321e-23','switch retains the first cell precision');
+  await nodes['point-list'].children[1].dispatch('click');
+  assert.equal(nodes['point-tag'].value,'标签1');
+  await nodes['point-list'].children[0].dispatch('click');assert.equal(nodes['point-unit'].value,'kW');
+  row=nodes['point-list'].children[0];await row.children[4].dispatch('keydown',{key:'Enter'});
+  inline=row.children[4].children[0];inline.value='临时单位';await inline.dispatch('input');await inline.dispatch('keydown',{key:'Escape'});
+  assert.equal(client.snapshot().draft.points[0].unit,'kW','Escape reverts only the current cell');
+  assert.equal(calls.length,beforeInline,'inline edits never submit automatically');
+  // 错误同时标记行、单元格和右侧字段，修复后清除标记；不合法输入不提交。
+  row=nodes['point-list'].children[0];await row.children[1].dispatch('dblclick');
+  inline=row.children[1].children[0];inline.value='bad';await inline.dispatch('input');await inline.dispatch('keydown',{key:'Enter'});
+  await nodes['save'].dispatch('click');assert.equal(calls.length,beforeInline);
+  row=nodes['point-list'].children[0];assert.equal(row.attributes['aria-invalid'],'true');
+  assert.equal(row.children[1].attributes['aria-invalid'],'true');assert.equal(nodes['point-address'].attributes['aria-invalid'],'true');
+  assert.equal(nodes['point-acquisition'].open,true);
+  await row.children[1].dispatch('keydown',{key:'Enter'});inline=row.children[1].children[0];
+  inline.value='0';await inline.dispatch('input');await inline.dispatch('keydown',{key:'Enter'});
+  assert.equal(nodes['point-list'].children[0].attributes['aria-invalid'],undefined);
+  assert.equal(nodes['point-address'].attributes['aria-invalid'],undefined);
+  // 功能码/分组按需显示，列选择不会丢失草稿。
+  assert.equal(nodes['point-list'].children[0].children[5].hidden,true);
+  nodes['show-function-code'].checked=true;await nodes['show-function-code'].dispatch('change');
+  nodes['show-group'].checked=true;await nodes['show-group'].dispatch('change');
+  assert.equal(nodes['column-function-code'].hidden,false);assert.equal(nodes['column-group'].hidden,false);
+  assert.equal(nodes['point-list'].children[0].children[5].hidden,false);
+  assert.equal(nodes['point-list'].children[0].children[5].textContent,'06');
+  assert.equal(nodes['point-list'].children[0].children[6].textContent,'A');
+  // 窄屏共用同一个属性表单，关闭抽屉、遮罩或 Escape 都保留草稿。
+  await nodes['close-properties'].dispatch('click');
+  nodes['open-properties'].focus();await nodes['open-properties'].dispatch('click');assert.equal(nodes['open-properties'].attributes['aria-expanded'],'true');
+  assert.equal(nodes['editor-panel'].classList.contains('properties-open'),true);
+  assert.equal(nodes['property-panel'].attributes.role,'dialog');assert.equal(nodes['property-panel'].attributes['aria-modal'],'true');
+  assert.equal(document.activeElement,nodes['close-properties']);
+  nodes['property-panel'].querySelectorAll=()=>[nodes['close-properties'],nodes['point-tag']];
+  await nodes['property-panel'].dispatch('keydown',{key:'Tab',shiftKey:true});
+  assert.equal(document.activeElement,nodes['point-tag'],'Shift+Tab stays in drawer');
+  await nodes['property-panel'].dispatch('keydown',{key:'Tab'});assert.equal(document.activeElement,nodes['close-properties']);
+  await nodes['close-properties'].dispatch('click');assert.equal(nodes['open-properties'].attributes['aria-expanded'],'false');
+  assert.equal(document.activeElement,nodes['open-properties'],'closing drawer returns focus to trigger');
+  assert.equal(nodes['property-panel'].attributes['aria-modal'],undefined);
+  await nodes['open-properties'].dispatch('click');await nodes['property-backdrop'].dispatch('click');
+  assert.equal(nodes['editor-panel'].classList.contains('properties-open'),false);
+  await nodes['open-properties'].dispatch('click');await nodes['property-panel'].dispatch('keydown',{key:'Escape'});
+  assert.equal(nodes['open-properties'].attributes['aria-expanded'],'false');
+  assert.equal(client.snapshot().draft.points[0].unit,'kW');
+  narrow=false;
+  // 桌面属性已展开、焦点在表格时缩窄，必须迁焦到新出现的 modal 中。
+  const resizeRow=nodes['point-list'].children[0];resizeRow.focus();await resizeRow.dispatch('click');
+  assert.equal(nodes['property-panel'].attributes['aria-modal'],undefined);
+  assert.equal(document.activeElement,resizeRow);
+  narrow=true;await windowEvents.resize();
+  assert.equal(nodes['property-panel'].attributes['aria-modal'],'true');
+  assert.equal(document.activeElement,nodes['close-properties'],'crossing into narrow viewport moves background focus into drawer');
+  await nodes['property-panel'].dispatch('keydown',{key:'Tab',shiftKey:true});assert.equal(document.activeElement,nodes['point-tag']);
+  await nodes['property-panel'].dispatch('keydown',{key:'Tab'});assert.equal(document.activeElement,nodes['close-properties']);
+  await nodes['close-properties'].dispatch('click');assert.equal(document.activeElement,resizeRow,'resize drawer close restores the previously focused row');
+  // 原触发节点已重绘卸载时安全回到稳定的属性按钮。
+  resizeRow.focus();await resizeRow.dispatch('click');resizeRow.isConnected=false;
+  await nodes['close-properties'].dispatch('click');assert.equal(document.activeElement,nodes['open-properties']);
+  narrow=false;
+  await nodes['toggle-catalog'].dispatch('click');assert.equal(nodes['workbench'].classList.contains('catalog-collapsed'),true);
+  await nodes['toggle-catalog'].dispatch('click');assert.equal(nodes['workbench'].classList.contains('catalog-collapsed'),false);
   await nodes['point-next'].dispatch('click');assert.match(nodes['point-page-status'].textContent,/第 2/);
   assert.equal(nodes['point-list'].children[0].children[0].children[0].textContent,'标签50');
   await nodes['point-list'].children[3].dispatch('keydown',{key:'Enter'});

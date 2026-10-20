@@ -13,10 +13,10 @@ class UpdatePageTests(unittest.TestCase):
     def test_shared_shell_and_separate_update_regions(self):
         page = PAGE.read_text(encoding="utf-8")
         self.assertIn('href="/assets/platform.css"', page)
-        for css_class in ('app-shell', 'app-sidebar', 'app-topbar', 'page-heading'):
+        for css_class in ('app-shell', 'app-topbar', 'page-heading'):
             self.assertIn(f'class="{css_class}"', page)
-        self.assertIn('href="/modbus-templates#trash"', page)
-        self.assertIn('点表工作台</a>', page)
+        self.assertNotIn('href="/modbus-templates#trash"', page)
+        self.assertIn('平台维护</a>', page)
         self.assertIn('aria-labelledby="current-heading"', page)
         self.assertIn('aria-labelledby="available-heading"', page)
         self.assertIn('id="task-status"', page)

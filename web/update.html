@@ -39,12 +39,12 @@
   });
 })();
   </script>
-  <title>MskDSPPlatform · 程序更新</title>
+  <title>MskDSPPlatform · 平台维护</title>
   <link rel="stylesheet" href="/assets/platform.css">
   <style>
     .update-content { max-width: 1250px; }
-    .version-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin-bottom: 24px; }
-    .version-panel { display: flex; flex-direction: column; padding: 22px; }
+    .version-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
+    .version-panel { display: flex; flex-direction: column; padding: 20px; }
     .version-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
     .running-badge { color: var(--success); background: var(--success-bg); }
     .version-label { color: var(--muted); font-size: 12px; }
@@ -71,24 +71,18 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="app-sidebar" aria-label="平台导航">
-      <div class="app-brand"><span class="brand-mark" aria-hidden="true">M</span><span><span class="brand-name">MskDSP</span><span class="brand-caption">远程服务平台</span></span></div>
-      <p class="nav-label">工作台</p>
+    <header class="app-topbar">
+      <a class="app-brand" href="/modbus-templates"><span class="brand-mark" aria-hidden="true">M</span><span class="brand-name">MskDSP</span></a>
       <nav class="app-nav" aria-label="平台功能">
-        <a class="nav-item" href="/modbus-templates"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 9v11"/></svg></span>点表工作台</a>
-        <a class="nav-item" href="/modbus-templates#trash"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7"/></svg></span>回收站</a>
-        <a class="nav-item" href="/software"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h16v12H4zM7 4h10v4M9 13h6M9 16h4"/></svg></span>软件管理</a>
-        <a class="nav-item" href="/update" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 15V4m-4 4 4-4 4 4M5 14v6h14v-6"/></svg></span>程序更新</a>
+        <a class="nav-item" href="/modbus-templates">点表工作台</a>
+        <a class="nav-item" href="/software">软件管理</a>
+        <a class="nav-item" href="/update" aria-current="page">平台维护</a>
       </nav>
-      <div class="sidebar-footer">MskDSPPlatform<br>点表与更新管理</div>
-    </aside>
-    <div class="app-content">
-      <header class="app-topbar">
-        <span class="topbar-label">平台管理 / 程序更新</span>
         <div class="account-actions"><label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><span id="username">正在确认</span><button id="logout" class="quiet" type="button" disabled>退出登录</button></div>
       </header>
+    <div class="app-content">
       <main class="page-content update-content">
-        <div class="page-heading"><div><span class="eyebrow">平台维护</span><h1>程序更新</h1><p class="page-summary">查看当前版本，手动检查并安装可用更新。</p></div></div>
+        <div class="page-heading"><div><h1>平台维护</h1><p class="page-summary">查看平台当前版本，手动检查、安装更新或回退上一版本。</p></div></div>
         <div class="version-grid">
           <section class="version-panel panel" aria-labelledby="current-heading">
             <div class="version-heading"><h2 id="current-heading">当前版本</h2><span class="badge running-badge">正在运行</span></div>
