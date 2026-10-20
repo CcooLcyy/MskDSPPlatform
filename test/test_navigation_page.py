@@ -39,8 +39,8 @@ class NavigationParser(HTMLParser):
 
 class NavigationPageTests(unittest.TestCase):
     def test_management_navigation_matches_routes(self):
-        expected = [('/modbus-templates', '点表工作台'), ('/software', '软件管理'), ('/accounts', '账号管理'), ('/update', '平台维护')]
-        for filename, route in [('modbus-templates.html', '/modbus-templates'), ('software.html', '/software'), ('update.html', '/update'), ('accounts.html', '/accounts')]:
+        expected = [('/modbus-templates', '点表工作台'), ('/software', '软件管理'), ('/accounts', '账号管理'), ('/devices', '设备管理'), ('/update', '平台维护')]
+        for filename, route in [('modbus-templates.html', '/modbus-templates'), ('software.html', '/software'), ('update.html', '/update'), ('accounts.html', '/accounts'), ('devices.html', '/devices')]:
             with self.subTest(page=filename):
                 parser = NavigationParser()
                 page = (ROOT / 'web' / filename).read_text(encoding='utf-8')

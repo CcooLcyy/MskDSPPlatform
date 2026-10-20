@@ -43,8 +43,8 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         [flag, address] if flag == "--probe-grpc" => {
-            let protocol_version = AppConfig::load()?.runtime.protocol_version;
-            grpc::probe(address, &protocol_version).await?;
+            let config = AppConfig::load()?;
+            grpc::probe_with_tls(address, &config.runtime.protocol_version, &config.tls).await?;
             println!("gRPC 握手检查通过");
             return Ok(());
         }
@@ -71,3 +71,5 @@ fn init_logging() {
         .compact()
         .init();
 }
+
+mod remote;
