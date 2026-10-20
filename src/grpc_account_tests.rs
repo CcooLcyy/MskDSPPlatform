@@ -555,11 +555,18 @@ async fn password_reset_and_logout_revoke_existing_connections() {
         .await;
 }
 
+// Welcome 同步后再推进该会话的过期时间，避免 CI 调度延迟先消耗短登录有效期。
 #[tokio::test]
 async fn expired_login_disconnects_without_waiting_for_heartbeat() {
-    let mut server = TestServer::with_expiry(1).await;
+    let mut server = TestServer::start().await;
     let login = server.register("field-one").await;
     let (_sender, mut stream) = server.online(&login, "computer-1").await;
+    assert!(
+        server
+            .auth
+            .expire_session_for_test(&login.access_token)
+            .await
+    );
     revoked(&mut stream).await;
     wait_count(&server.sessions, 0).await;
     server

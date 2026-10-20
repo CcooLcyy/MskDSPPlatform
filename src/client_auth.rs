@@ -214,6 +214,17 @@ impl ClientAuth {
         })
     }
 
+    /// 仅测试使用：保留会话记录并令其过期，继续验证真实过期检查与连接轮询。
+    #[cfg(test)]
+    pub(crate) async fn expire_session_for_test(&self, token: &str) -> bool {
+        let mut sessions = self.0.sessions.lock().await;
+        let Some(session) = sessions.get_mut(token) else {
+            return false;
+        };
+        session.expires_at = Instant::now();
+        true
+    }
+
     pub async fn logout(&self, token: &str) {
         if let Some(entry) = self.0.sessions.lock().await.remove(token) {
             tracing::info!(account_id = %entry.account_id, "上位机账号已退出登录");
