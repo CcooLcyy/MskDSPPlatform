@@ -4,6 +4,8 @@ mod config;
 mod error;
 mod grpc;
 mod http;
+mod identities;
+mod identity_http;
 mod modbus_templates;
 mod runtime;
 mod software;

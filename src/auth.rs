@@ -53,6 +53,10 @@ struct AuthInner {
 }
 
 impl AdminAuth {
+    pub fn username(&self) -> &str {
+        &self.0.config.username
+    }
+
     pub fn new(config: AuthConfig) -> Result<Self> {
         anyhow::ensure!(
             !config.username.is_empty()

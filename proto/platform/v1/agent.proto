@@ -5,8 +5,13 @@ package mskdsp.platform.v1;
 // Agent 与平台之间的基础连接协议。
 // 当前版本只承载身份握手、心跳和关闭通知，不包含现场业务命令。
 service AgentService {
+  // 只读健康检查，不需要身份凭据，也不创建 Agent 会话。
+  rpc CheckHealth(HealthRequest) returns (HealthResponse);
+
   // 建立 Agent 到平台的双向长连接。
   // Agent 主动发起连接；平台通过同一条流返回 Welcome、HeartbeatAck 或 Error。
+  // 必须携带唯一 authorization: Bearer <token>；Hello 身份和现场必须匹配登记。
+  // 认证失败返回 UNAUTHENTICATED，重复在线返回 ALREADY_EXISTS。
   rpc ConnectAgent(stream AgentMessage) returns (stream ServerMessage);
 }
 
@@ -27,13 +32,19 @@ message ServerMessage {
 }
 
 message Hello {
-  // Agent 安装实例的稳定标识；当前仅作连接注册标识。
+  // 平台登记的 Agent 安装实例稳定标识。
   string agent_id = 1;
-  // Agent 声明的现场标识；认证绑定将在后续版本加入。
+  // 必须与平台登记的现场标识一致。
   string site_id = 2;
   string agent_version = 3;
   string protocol_version = 4;
   repeated string capabilities = 5;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string protocol_version = 1;
 }
 
 message Welcome {

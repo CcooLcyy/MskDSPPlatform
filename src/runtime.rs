@@ -67,8 +67,17 @@ impl PlatformRuntime {
         .await
         .context("初始化软件仓库任务失败")?
         .context("初始化软件仓库失败")?;
+        let identities = crate::identities::IdentityStore::open(
+            data_root.join("identities").join("identities.sqlite3"),
+        )
+        .await
+        .context("初始化上位机身份存储失败")?;
         let public_base_url = self.config.software.public_base_url.clone();
         let http_router = http::router(http_state.clone())
+            .merge(crate::identity_http::router(
+                http_state.clone(),
+                identities.clone(),
+            ))
             .merge(crate::template_http::router(
                 http_state.clone(),
                 templates.clone(),
@@ -82,7 +91,8 @@ impl PlatformRuntime {
             .await
             .with_context(|| format!("绑定 HTTP 地址失败: {}", self.config.server.http_addr))?;
         let grpc_addr = self.config.server.grpc_addr;
-        let grpc_service = AgentGrpcService::new(self.sessions.clone(), protocol_version);
+        let grpc_service =
+            AgentGrpcService::new(self.sessions.clone(), protocol_version, identities);
         let software_publisher = crate::software::grpc::PublishGrpcService::new(
             software.clone(),
             self.config.software.publisher_token_sha256.clone(),

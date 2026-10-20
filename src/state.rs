@@ -1,9 +1,15 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Default)]
 pub struct SessionRegistry {
-    sessions: Arc<RwLock<HashMap<String, AgentSession>>>,
+    sessions: Arc<RwLock<HashMap<String, SessionEntry>>>,
+}
+
+struct SessionEntry {
+    session: AgentSession,
+    cancellation: CancellationToken,
 }
 
 #[derive(Debug, Clone)]
@@ -15,18 +21,41 @@ pub struct AgentSession {
 }
 
 impl SessionRegistry {
-    pub async fn register(&self, session: AgentSession) {
+    pub async fn register(&self, session: AgentSession) -> Result<CancellationToken, ()> {
+        let mut sessions = self.sessions.write().await;
+        if sessions.contains_key(&session.agent_id) {
+            return Err(());
+        }
+        let cancellation = CancellationToken::new();
+        sessions.insert(
+            session.agent_id.clone(),
+            SessionEntry {
+                session,
+                cancellation: cancellation.clone(),
+            },
+        );
+        Ok(cancellation)
+    }
+
+    pub async fn get(&self, agent_id: &str) -> Option<AgentSession> {
         self.sessions
-            .write()
+            .read()
             .await
-            .insert(session.agent_id.clone(), session);
+            .get(agent_id)
+            .map(|entry| entry.session.clone())
+    }
+
+    pub async fn disconnect(&self, agent_id: &str) {
+        if let Some(entry) = self.sessions.write().await.remove(agent_id) {
+            entry.cancellation.cancel();
+        }
     }
 
     pub async fn remove(&self, agent_id: &str, connection_id: &str) {
         let mut sessions = self.sessions.write().await;
         if sessions
             .get(agent_id)
-            .is_some_and(|session| session.connection_id == connection_id)
+            .is_some_and(|entry| entry.session.connection_id == connection_id)
         {
             sessions.remove(agent_id);
         }
