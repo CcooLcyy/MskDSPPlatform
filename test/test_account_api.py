@@ -1,4 +1,4 @@
-"""真实平台进程验证 Web 账号管理、上位机登录与重启持久化。"""
+"""真实平台进程验证 Web 账号管理、重启持久化与客户端 HTTP 认证入口移除。"""
 from contextlib import closing
 import json
 import sqlite3
@@ -15,8 +15,8 @@ class AccountApiTests(unittest.TestCase):
     request = platform_fixture.TemplateApiTests.request
     startup_failure = platform_fixture.TemplateApiTests.startup_failure
 
-    # 管理员创建账号，客户端用密码登录；禁用和重置撤销旧会话，重启保留账号。
-    def test_account_management_login_and_restart(self):
+    # Web 创建、禁用、重新启用和重置密码均持久化，重启后仍保留账号且不泄露密码。
+    def test_account_management_and_restart(self):
         status, page, _ = self.request("GET", "/accounts")
         self.assertEqual(status, 200)
         self.assertIn("账号管理", page.decode())
@@ -27,41 +27,55 @@ class AccountApiTests(unittest.TestCase):
         account = json.loads(raw)
         self.assertEqual(account["username"], "site.user")
         path = "/api/v1/accounts/" + account["id"]
-
-        def login(password):
-            return self.request("POST", "/api/v1/client/auth/login", {"username": "SITE.USER", "password": password},
-                                {"X-MskDSP-Action": "client-auth", "Cookie": ""})
-
-        status, raw, _ = login("field-password-1")
-        self.assertEqual(status, 200, raw)
-        token = json.loads(raw)["access_token"]
-        client = {"Authorization": "Bearer " + token, "Cookie": ""}
-        self.assertEqual(self.request("GET", "/api/v1/client/auth/me", headers=client)[0], 200)
-        self.assertEqual(self.request("GET", "/api/v1/accounts", headers=client)[0], 401)
-        self.assertEqual(self.request("GET", "/api/v1/client/auth/me")[0], 401)
+        database = self.folder / "data/accounts/accounts.sqlite3"
+        with closing(sqlite3.connect(database)) as db:
+            initial_hash, = db.execute("SELECT password_hash FROM accounts WHERE id=?", [account["id"]]).fetchone()
+            self.assertTrue(initial_hash.startswith("$argon2id$"))
+            self.assertNotIn("field-password-1", initial_hash)
         status, raw, _ = self.request("PUT", path, {"revision": 1, "display_name": "现场维护", "enabled": False}, action)
         self.assertEqual(status, 200, raw)
-        self.assertEqual(self.request("GET", "/api/v1/client/auth/me", headers=client)[0], 401)
-        self.assertEqual(login("field-password-1")[0], 401)
-        self.assertEqual(self.request("PUT", path, {"revision": 2, "display_name": "现场维护", "enabled": True}, action)[0], 200)
-        self.assertEqual(self.request("POST", path + "/password", {"revision": 3, "password": "field-password-2"}, action)[0], 200)
-        self.assertEqual(login("field-password-1")[0], 401)
-        status, raw, _ = login("field-password-2")
+        self.assertFalse(json.loads(raw)["enabled"])
+        self.assertEqual(self.request("PUT", path, {"revision": 1, "display_name": "旧版本", "enabled": True}, action)[0], 409)
+        status, raw, _ = self.request("PUT", path, {"revision": 2, "display_name": "现场维护", "enabled": True}, action)
         self.assertEqual(status, 200, raw)
-        before_restart = json.loads(raw)["access_token"]
-        with closing(sqlite3.connect(self.folder / "data/accounts/accounts.sqlite3")) as db:
-            password_hash, = db.execute("SELECT password_hash FROM accounts WHERE id=?", [account["id"]]).fetchone()
-            self.assertTrue(password_hash.startswith("$argon2id$"))
-            self.assertNotIn("field-password-2", password_hash)
+        self.assertTrue(json.loads(raw)["enabled"])
+        self.assertEqual(self.request("POST", path + "/password", {"revision": 3, "password": "field-password-2"}, action)[0], 200)
+        with closing(sqlite3.connect(database)) as db:
+            reset_hash, = db.execute("SELECT password_hash FROM accounts WHERE id=?", [account["id"]]).fetchone()
+            self.assertTrue(reset_hash.startswith("$argon2id$"))
+            self.assertNotEqual(reset_hash, initial_hash)
+            self.assertNotIn("field-password-2", reset_hash)
         self.stop()
         self.start()
-        self.assertEqual(self.request("GET", "/api/v1/client/auth/me", headers={"Authorization": "Bearer " + before_restart})[0], 401)
-        self.assertEqual(login("field-password-2")[0], 200)
         status, raw, _ = self.request("GET", path)
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(raw)["revision"], 4)
+        saved = json.loads(raw)
+        self.assertEqual(saved["revision"], 4)
+        self.assertEqual(saved["username"], "site.user")
+        self.assertTrue(saved["enabled"])
+        self.assertEqual(saved["display_name"], "现场维护")
         self.assertNotIn("password", raw.decode())
+        with closing(sqlite3.connect(database)) as db:
+            self.assertEqual(db.execute("SELECT password_hash FROM accounts WHERE id=?", [account["id"]]).fetchone()[0], reset_hash)
         self.assertNotIn("field-password", self.startup_log.read_text(encoding="utf-8"))
+
+    # HTTP 仅提供 Web 管理；旧客户端认证路径在有无管理员 Cookie 时均为 404，且不触发账号登录。
+    def test_client_http_auth_routes_are_removed(self):
+        action = {"X-MskDSP-Action": "account"}
+        status, raw, _ = self.request("POST", "/api/v1/accounts",
+                                     {"username": "site.user", "password": "field-password-1"}, action)
+        self.assertEqual(status, 201, raw)
+        account = json.loads(raw)
+        for method, path in (("POST", "/api/v1/client/auth/login"),
+                             ("GET", "/api/v1/client/auth/me"),
+                             ("POST", "/api/v1/client/auth/logout")):
+            for cookie in ("", self.cookie):
+                with self.subTest(method=method, path=path, authenticated=bool(cookie)):
+                    self.assertEqual(self.request(method, path,
+                                                  {"username": "site.user", "password": "field-password-1"},
+                                                  {"X-MskDSP-Action": "client-auth", "Cookie": cookie})[0], 404)
+        with closing(sqlite3.connect(self.folder / "data/accounts/accounts.sqlite3")) as db:
+            self.assertIsNone(db.execute("SELECT last_login_at FROM accounts WHERE id=?", [account["id"]]).fetchone()[0])
 
     # 普通账号不能通过管理员入口登录，旧实例接口移除，跨源请求不能创建账号。
     def test_manager_boundary_and_simplified_entry(self):

@@ -165,6 +165,246 @@ fn changed(account: &AccountRecord, enabled: bool) -> AccountUpdate {
     }
 }
 
+fn session_request(token: &str) -> Request<agent::SessionRequest> {
+    let mut request = Request::new(agent::SessionRequest {});
+    request
+        .metadata_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    request
+}
+
+#[tokio::test]
+async fn grpc_login_session_and_logout_share_existing_client_auth() {
+    let mut server = TestServer::start().await;
+    let registered = server.register("field-one").await;
+    let login = server
+        .client
+        .login(agent::LoginRequest {
+            username: "field-one".into(),
+            password: "field-password-123".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(login.token_type, "Bearer");
+    assert_eq!(login.access_token.len(), 64);
+    assert!(login.expires_in > 0 && login.expires_in <= 28_800);
+    assert_eq!(login.account.as_ref().unwrap().id, registered.account.id);
+    assert_eq!(login.account.as_ref().unwrap().username, "field-one");
+    assert_eq!(login.account.as_ref().unwrap().display_name, "现场账号");
+    // 同一 ClientAuth 能直接验证 RPC 签发的会话，反向也成立，不另建身份体系。
+    assert_eq!(
+        server
+            .auth
+            .authenticate(&login.access_token)
+            .await
+            .unwrap()
+            .account
+            .id,
+        registered.account.id
+    );
+    for token in [&login.access_token, &registered.access_token] {
+        let current = server
+            .client
+            .get_session(session_request(token))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(current.access_token.is_empty(), "查询不能回显令牌");
+        assert_eq!(current.token_type, "Bearer");
+        assert_eq!(current.account.as_ref().unwrap().id, registered.account.id);
+        assert!(current.expires_in <= 28_800);
+    }
+    let (sender, mut stream) = server
+        .connect("rpc-computer", Some(&login.access_token), "")
+        .await
+        .unwrap();
+    assert!(matches!(
+        stream.message().await.unwrap().unwrap().payload,
+        Some(server_message::Payload::Welcome(_))
+    ));
+    server
+        .client
+        .logout(session_request(&login.access_token))
+        .await
+        .unwrap();
+    revoked(&mut stream).await;
+    drop(sender);
+    wait_count(&server.sessions, 0).await;
+    assert!(matches!(
+        server.auth.authenticate(&login.access_token).await,
+        Err(ClientAuthError::Unauthorized)
+    ));
+    assert_eq!(
+        server
+            .client
+            .get_session(session_request(&login.access_token))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unauthenticated
+    );
+    server
+        .client
+        .logout(session_request(&login.access_token))
+        .await
+        .unwrap();
+    server
+        .client
+        .logout(session_request(&"a".repeat(64)))
+        .await
+        .unwrap();
+    // 退出仅撤销当前会话，不误伤同账号的另一个登录。
+    server
+        .auth
+        .authenticate(&registered.access_token)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn grpc_login_rejects_invalid_wrong_and_disabled_accounts() {
+    let mut server = TestServer::start().await;
+    let registered = server.register("field-one").await;
+    for (username, password, code) in [
+        ("", "password", Code::InvalidArgument),
+        ("field-one", "", Code::InvalidArgument),
+        ("field-one", "wrong-password", Code::Unauthenticated),
+        ("unknown", "wrong-password", Code::Unauthenticated),
+    ] {
+        assert_eq!(
+            server
+                .client
+                .login(agent::LoginRequest {
+                    username: username.into(),
+                    password: password.into()
+                })
+                .await
+                .unwrap_err()
+                .code(),
+            code
+        );
+    }
+    server
+        .accounts
+        .update(
+            &registered.account.id,
+            registered.account.revision,
+            changed(&registered.account, false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        server
+            .client
+            .login(agent::LoginRequest {
+                username: "field-one".into(),
+                password: "field-password-123".into()
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unauthenticated
+    );
+    assert_eq!(
+        server
+            .client
+            .get_session(session_request(&registered.access_token))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unauthenticated
+    );
+}
+
+#[tokio::test]
+async fn grpc_login_uses_shared_rate_limit() {
+    let mut server = TestServer::start().await;
+    // 未知账号快速失败，并与 ClientAuth 共用十次预算。
+    for _ in 0..9 {
+        assert!(matches!(
+            server.auth.login("unknown", "wrong-password").await,
+            Err(ClientAuthError::Unauthorized)
+        ));
+    }
+    let request = || agent::LoginRequest {
+        username: "unknown".into(),
+        password: "wrong-password".into(),
+    };
+    assert_eq!(
+        server.client.login(request()).await.unwrap_err().code(),
+        Code::Unauthenticated
+    );
+    assert_eq!(
+        server.client.login(request()).await.unwrap_err().code(),
+        Code::ResourceExhausted
+    );
+}
+
+#[tokio::test]
+async fn grpc_session_and_logout_require_exactly_one_well_formed_bearer() {
+    let mut server = TestServer::start().await;
+    let login = server.register("field-one").await;
+    for values in [
+        vec![],
+        vec![
+            format!("Bearer {}", login.access_token),
+            "Bearer other".into(),
+        ],
+        vec![format!("bearer {}", login.access_token)],
+        vec![format!("Bearer {} extra", login.access_token)],
+        vec!["Bearer ".into()],
+        vec![format!("Bearer {}", "a".repeat(513))],
+    ] {
+        let request = || {
+            let mut request = Request::new(agent::SessionRequest {});
+            for value in &values {
+                request
+                    .metadata_mut()
+                    .append("authorization", value.parse().unwrap());
+            }
+            request
+        };
+        assert_eq!(
+            server
+                .client
+                .get_session(request())
+                .await
+                .unwrap_err()
+                .code(),
+            Code::Unauthenticated
+        );
+        assert_eq!(
+            server.client.logout(request()).await.unwrap_err().code(),
+            Code::Unauthenticated
+        );
+    }
+    server.auth.authenticate(&login.access_token).await.unwrap();
+}
+
+#[test]
+fn grpc_auth_error_mapping_is_explicit() {
+    for error in [
+        ClientAuthError::RateLimited,
+        ClientAuthError::Busy,
+        ClientAuthError::SessionLimit,
+    ] {
+        assert_eq!(client_status(error, false).code(), Code::ResourceExhausted);
+    }
+    assert_eq!(
+        client_status(ClientAuthError::Storage, false).code(),
+        Code::Unavailable
+    );
+    assert_eq!(
+        client_status(ClientAuthError::Invalid("bad".into()), false).code(),
+        Code::InvalidArgument
+    );
+    assert_eq!(
+        client_status(ClientAuthError::Unauthorized, false).code(),
+        Code::Unauthenticated
+    );
+}
+
 #[tokio::test]
 async fn account_login_is_required_and_legacy_credentials_do_not_work() {
     let mut server = TestServer::start().await;

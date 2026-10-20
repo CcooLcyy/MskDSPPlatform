@@ -13,6 +13,40 @@ service AgentService {
   // 先通过账号密码登录接口获取会话，再携带唯一 authorization: Bearer <access_token>。
   // 认证失败返回 UNAUTHENTICATED，同账号同安装实例重复在线返回 ALREADY_EXISTS。
   rpc ConnectAgent(stream AgentMessage) returns (stream ServerMessage);
+
+  // 使用 Web 创建的上位机账号密码登录，返回不可解析的访问会话；客户端不得记录密码或令牌。
+  // 无需 authorization；参数错误返回 INVALID_ARGUMENT，凭据无效返回 UNAUTHENTICATED，限流返回 RESOURCE_EXHAUSTED。
+  rpc Login(LoginRequest) returns (LoginResponse);
+
+  // 使用唯一 authorization: Bearer <access_token> 查询当前会话；响应 access_token 为空，不回显凭据。
+  // 缺失、重复、格式错误或失效的凭据返回 UNAUTHENTICATED，存储故障返回 UNAVAILABLE。
+  rpc GetSession(SessionRequest) returns (LoginResponse);
+
+  // 使用唯一 authorization: Bearer <access_token> 退出当前会话；格式正确但已失效的令牌幂等成功。
+  // 缺失、重复或格式错误的凭据返回 UNAUTHENTICATED；已有长连接随后因授权失效关闭。
+  rpc Logout(SessionRequest) returns (LogoutResponse);
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message SessionRequest {}
+
+message LogoutResponse {}
+
+message AccountIdentity {
+  string id = 1;
+  string username = 2;
+  string display_name = 3;
+}
+
+message LoginResponse {
+  string access_token = 1;
+  string token_type = 2;
+  uint64 expires_in = 3;
+  AccountIdentity account = 4;
 }
 
 message AgentMessage {

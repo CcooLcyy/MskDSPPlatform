@@ -1,13 +1,13 @@
 use crate::{
     accounts::{AccountError, AccountRecord, AccountStore, AccountUpdate, NewAccount},
     auth,
-    client_auth::{ClientAuth, ClientAuthError},
+    client_auth::ClientAuth,
     http::HttpState,
 };
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Request, State, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -42,9 +42,6 @@ pub fn router(http: HttpState, accounts: AccountStore, clients: ClientAuth) -> R
                 .route("/api/v1/accounts/{id}/password", post(reset_password))
                 .route_layer(middleware::from_fn_with_state(state.clone(), require_admin)),
         )
-        .route("/api/v1/client/auth/login", post(client_login))
-        .route("/api/v1/client/auth/me", get(client_me))
-        .route("/api/v1/client/auth/logout", post(client_logout))
         .layer(DefaultBodyLimit::max(8192))
         .layer(middleware::from_fn(auth::no_cache))
         .with_state(state)
@@ -81,31 +78,6 @@ impl IntoResponse for AccountError {
             Self::Storage => StatusCode::INTERNAL_SERVER_ERROR,
         };
         error(status, self)
-    }
-}
-
-impl IntoResponse for ClientAuthError {
-    fn into_response(self) -> Response {
-        let status = match self {
-            Self::Invalid(_) => StatusCode::BAD_REQUEST,
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::RateLimited | Self::Busy | Self::SessionLimit => StatusCode::TOO_MANY_REQUESTS,
-            Self::Storage => StatusCode::SERVICE_UNAVAILABLE,
-        };
-        let mut response = error(status, &self);
-        if status == StatusCode::TOO_MANY_REQUESTS {
-            response.headers_mut().insert(
-                header::RETRY_AFTER,
-                if matches!(self, Self::RateLimited) {
-                    "60"
-                } else {
-                    "1"
-                }
-                .parse()
-                .unwrap(),
-            );
-        }
-        response
     }
 }
 
@@ -278,74 +250,6 @@ async fn reset_password(
         }
         Err(error) => error.into_response(),
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LoginRequest {
-    username: String,
-    password: String,
-}
-
-async fn client_login(
-    State(state): State<AccountState>,
-    headers: HeaderMap,
-    value: Result<Json<LoginRequest>, JsonRejection>,
-) -> Response {
-    if let Err(error) = action(&headers, "client-auth") {
-        return error.into_response();
-    }
-    let input = match body(value) {
-        Ok(value) => value,
-        Err(error) => return error.into_response(),
-    };
-    match state.clients.login(&input.username, &input.password).await {
-        Ok(session) => Json(session).into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-fn bearer(headers: &HeaderMap) -> Result<&str, ClientAuthError> {
-    let mut values = headers.get_all(header::AUTHORIZATION).iter();
-    let token = values
-        .next()
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    match token {
-        Some(token)
-            if values.next().is_none()
-                && token.len() == 64
-                && token.bytes().all(|c| c.is_ascii_hexdigit()) =>
-        {
-            Ok(token)
-        }
-        _ => Err(ClientAuthError::Unauthorized),
-    }
-}
-
-async fn client_me(State(state): State<AccountState>, headers: HeaderMap) -> Response {
-    let token = match bearer(&headers) {
-        Ok(token) => token,
-        Err(error) => return error.into_response(),
-    };
-    match state.clients.authenticate(token).await {
-        Ok(session) => {
-            Json(json!({"account":session.account,"expires_in":session.expires_in})).into_response()
-        }
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn client_logout(State(state): State<AccountState>, headers: HeaderMap) -> Response {
-    if let Err(error) = action(&headers, "client-auth") {
-        return error.into_response();
-    }
-    let token = match bearer(&headers) {
-        Ok(token) => token,
-        Err(error) => return error.into_response(),
-    };
-    state.clients.logout(token).await;
-    StatusCode::NO_CONTENT.into_response()
 }
 
 #[cfg(test)]

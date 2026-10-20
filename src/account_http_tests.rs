@@ -5,7 +5,7 @@ use crate::{
 };
 use axum::{
     body::{Body, to_bytes},
-    http::Request,
+    http::{Request, header},
 };
 use tower::ServiceExt;
 
@@ -101,18 +101,72 @@ async fn create(app: &Router, cookie: &str) -> serde_json::Value {
     json(response).await
 }
 
-async fn login(app: &Router, username: &str, password: &str) -> Response {
-    request(
-        app,
-        "POST",
-        "/api/v1/client/auth/login",
-        "",
-        "",
-        "client-auth",
-        "",
-        json!({"username":username,"password":password}),
-    )
-    .await
+// 客户端只能使用 gRPC；旧 HTTP 路径对匿名、管理员和普通会话均返回 404，也不撤销有效会话。
+#[tokio::test]
+async fn client_http_auth_routes_are_absent_and_do_not_create_or_revoke_sessions() {
+    let (_directory, accounts, clients, app, cookie, sessions) = fixture().await;
+    let account = create(&app, &cookie).await;
+    let before = accounts.get(account["id"].as_str().unwrap()).await.unwrap();
+    assert!(before.last_login_at.is_none());
+    for (method, path) in [
+        ("POST", "/api/v1/client/auth/login"),
+        ("GET", "/api/v1/client/auth/me"),
+        ("POST", "/api/v1/client/auth/logout"),
+    ] {
+        for admin in ["", cookie.as_str()] {
+            assert_eq!(
+                request(
+                    &app,
+                    method,
+                    path,
+                    admin,
+                    "",
+                    "client-auth",
+                    "",
+                    json!({"username":"field.user","password":"initial-password"})
+                )
+                .await
+                .status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+    }
+    assert!(
+        accounts
+            .get(&before.id)
+            .await
+            .unwrap()
+            .last_login_at
+            .is_none(),
+        "废弃入口不得执行登录或生成会话"
+    );
+    assert_eq!(sessions.count().await, 0);
+    let signed = clients
+        .login("field.user", "initial-password")
+        .await
+        .unwrap();
+    for (method, path) in [
+        ("POST", "/api/v1/client/auth/login"),
+        ("GET", "/api/v1/client/auth/me"),
+        ("POST", "/api/v1/client/auth/logout"),
+    ] {
+        assert_eq!(
+            request(
+                &app,
+                method,
+                path,
+                "",
+                &signed.access_token,
+                "client-auth",
+                "",
+                json!({"username":"field.user","password":"initial-password"})
+            )
+            .await
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    clients.authenticate(&signed.access_token).await.unwrap();
 }
 
 // 页面和管理API仅限管理员，旧实例入口跳转，跨源与缺失标记不能写入。
@@ -180,14 +234,16 @@ async fn administrator_and_same_origin_are_required() {
 // 管理员可创建和修改账号；禁用或改密后旧登录会话失效，旧版本不能覆盖。
 #[tokio::test]
 async fn manage_account_disable_reset_and_revision_conflict() {
-    let (_directory, _accounts, _clients, app, cookie, _sessions) = fixture().await;
+    let (_directory, _accounts, clients, app, cookie, _sessions) = fixture().await;
     let account = create(&app, &cookie).await;
     assert_eq!(account["username"], "field.user");
     assert!(account.get("password_hash").is_none());
     assert!(account.get("password").is_none());
     let path = format!("/api/v1/accounts/{}", account["id"].as_str().unwrap());
-    let signed = json(login(&app, "FIELD.USER", "initial-password").await).await;
-    let token = signed["access_token"].as_str().unwrap();
+    let signed = clients
+        .login("FIELD.USER", "initial-password")
+        .await
+        .unwrap();
     let edit = json!({"revision":1,"display_name":"已停用","enabled":false});
     assert_eq!(
         request(&app, "PUT", &path, &cookie, "", "account", "", edit.clone())
@@ -201,25 +257,14 @@ async fn manage_account_disable_reset_and_revision_conflict() {
             .status(),
         StatusCode::CONFLICT
     );
-    assert_eq!(
-        request(
-            &app,
-            "GET",
-            "/api/v1/client/auth/me",
-            "",
-            token,
-            "",
-            "",
-            json!(null)
-        )
-        .await
-        .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        login(&app, "field.user", "initial-password").await.status(),
-        StatusCode::UNAUTHORIZED
-    );
+    assert!(matches!(
+        clients.authenticate(&signed.access_token).await,
+        Err(crate::client_auth::ClientAuthError::Unauthorized)
+    ));
+    assert!(matches!(
+        clients.login("field.user", "initial-password").await,
+        Err(crate::client_auth::ClientAuthError::Unauthorized)
+    ));
     assert_eq!(
         request(
             &app,
@@ -235,8 +280,17 @@ async fn manage_account_disable_reset_and_revision_conflict() {
         .status(),
         StatusCode::OK
     );
-    let signed = json(login(&app, "field.user", "initial-password").await).await;
-    let old_token = signed["access_token"].as_str().unwrap();
+    assert!(
+        matches!(
+            clients.authenticate(&signed.access_token).await,
+            Err(crate::client_auth::ClientAuthError::Unauthorized)
+        ),
+        "重新启用不恢复旧会话"
+    );
+    let fresh = clients
+        .login("field.user", "initial-password")
+        .await
+        .unwrap();
     assert_eq!(
         request(
             &app,
@@ -252,57 +306,28 @@ async fn manage_account_disable_reset_and_revision_conflict() {
         .status(),
         StatusCode::OK
     );
-    assert_eq!(
-        request(
-            &app,
-            "GET",
-            "/api/v1/client/auth/me",
-            "",
-            old_token,
-            "",
-            "",
-            json!(null)
-        )
-        .await
-        .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        login(&app, "field.user", "initial-password").await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        login(&app, "field.user", "new-password").await.status(),
-        StatusCode::OK
-    );
+    assert!(matches!(
+        clients.authenticate(&fresh.access_token).await,
+        Err(crate::client_auth::ClientAuthError::Unauthorized)
+    ));
+    assert!(matches!(
+        clients.login("field.user", "initial-password").await,
+        Err(crate::client_auth::ClientAuthError::Unauthorized)
+    ));
+    clients.login("field.user", "new-password").await.unwrap();
 }
 
-// 普通账号的会话只用于客户端登录，不能当成管理员Cookie或发布/更新权限。
+// 普通账号会话不能当成管理员 Cookie，也不能以 Bearer 越权读取账号管理数据。
 #[tokio::test]
 async fn client_sessions_cannot_escalate_to_administrator() {
-    let (_directory, _accounts, _clients, app, cookie, _sessions) = fixture().await;
+    let (_directory, _accounts, clients, app, cookie, _sessions) = fixture().await;
     create(&app, &cookie).await;
-    let response = login(&app, "field.user", "initial-password").await;
-    assert!(response.headers().get(header::SET_COOKIE).is_none());
-    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-    let signed = json(response).await;
-    let token = signed["access_token"].as_str().unwrap();
-    assert_eq!(signed["token_type"], "Bearer");
-    assert_eq!(
-        request(
-            &app,
-            "GET",
-            "/api/v1/client/auth/me",
-            "",
-            token,
-            "",
-            "",
-            json!(null)
-        )
+    let signed = clients
+        .login("field.user", "initial-password")
         .await
-        .status(),
-        StatusCode::OK
-    );
+        .unwrap();
+    let token = &signed.access_token;
+    assert_eq!(signed.token_type, "Bearer");
     assert_eq!(
         request(
             &app,
@@ -336,69 +361,31 @@ async fn client_sessions_cannot_escalate_to_administrator() {
     assert_eq!(
         request(
             &app,
-            "GET",
-            "/api/v1/client/auth/me",
-            &cookie,
+            "POST",
+            "/api/v1/accounts",
             "",
+            token,
+            "account",
             "",
-            "",
-            json!(null)
+            json!({"username":"forbidden","password":"valid-password"})
         )
         .await
         .status(),
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(
-        request(
-            &app,
-            "POST",
-            "/api/v1/client/auth/logout",
-            "",
-            token,
-            "client-auth",
-            "",
-            json!({})
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        request(
-            &app,
-            "GET",
-            "/api/v1/client/auth/me",
-            "",
-            token,
-            "",
-            "",
-            json!(null)
-        )
-        .await
-        .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        request(
-            &app,
-            "POST",
-            "/api/v1/client/auth/logout",
-            "",
-            token,
-            "client-auth",
-            "",
-            json!({})
-        )
-        .await
-        .status(),
-        StatusCode::NO_CONTENT
-    );
+    clients.authenticate(token).await.unwrap();
+    clients.logout(token).await;
+    assert!(matches!(
+        clients.authenticate(token).await,
+        Err(crate::client_auth::ClientAuthError::Unauthorized)
+    ));
+    clients.logout(token).await;
 }
 
 // 重名、管理员保留名、弱密码、未知字段和超大请求均被拒绝。
 #[tokio::test]
 async fn invalid_input_reserved_name_and_duplicate_username() {
-    let (_directory, _accounts, _clients, app, cookie, _sessions) = fixture().await;
+    let (_directory, _accounts, clients, app, cookie, _sessions) = fixture().await;
     create(&app, &cookie).await;
     assert_eq!(
         request(
@@ -465,25 +452,10 @@ async fn invalid_input_reserved_name_and_duplicate_username() {
         .status(),
         StatusCode::PAYLOAD_TOO_LARGE
     );
-    assert_eq!(
-        login(&app, "unknown", "wrong-password").await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        request(
-            &app,
-            "POST",
-            "/api/v1/client/auth/login",
-            "",
-            "",
-            "client-auth",
-            "https://evil.example",
-            json!({"username":"field.user","password":"initial-password"})
-        )
-        .await
-        .status(),
-        StatusCode::FORBIDDEN
-    );
+    assert!(matches!(
+        clients.login("unknown", "wrong-password").await,
+        Err(crate::client_auth::ClientAuthError::Unauthorized)
+    ));
 }
 
 // 使用Web创建的账号登录并建立真实gRPC连接，管理员禁用后立即断开且在线数归零。
@@ -501,8 +473,6 @@ async fn account_web_login_to_grpc_and_disable() {
     use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
     let (_directory, _accounts, clients, app, cookie, sessions) = fixture().await;
     let account = create(&app, &cookie).await;
-    let signed = json(login(&app, "field.user", "initial-password").await).await;
-    let token = signed["access_token"].as_str().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let service = AgentGrpcService::new(sessions.clone(), "platform.v1".into(), clients);
@@ -517,6 +487,15 @@ async fn account_web_login_to_grpc_and_disable() {
         agent::agent_service_client::AgentServiceClient::connect(format!("http://{address}"))
             .await
             .unwrap();
+    let signed = client
+        .login(agent::LoginRequest {
+            username: "field.user".into(),
+            password: "initial-password".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let token = &signed.access_token;
     let (sender, receiver) = mpsc::channel(2);
     sender
         .send(agent::AgentMessage {

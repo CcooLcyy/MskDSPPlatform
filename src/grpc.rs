@@ -78,26 +78,56 @@ impl AgentService for AgentGrpcService {
         }))
     }
 
+    async fn login(
+        &self,
+        request: Request<agent::LoginRequest>,
+    ) -> Result<Response<agent::LoginResponse>, Status> {
+        let request = request.into_inner();
+        let login = self
+            .client_auth
+            .login(&request.username, &request.password)
+            .await
+            .map_err(|error| client_status(error, false))?;
+        Ok(Response::new(agent::LoginResponse {
+            access_token: login.access_token,
+            token_type: login.token_type.into(),
+            expires_in: login.expires_in,
+            account: Some(account_identity(login.account)),
+        }))
+    }
+
+    async fn get_session(
+        &self,
+        request: Request<agent::SessionRequest>,
+    ) -> Result<Response<agent::LoginResponse>, Status> {
+        let token = bearer_token(request.metadata())?;
+        let session = self
+            .client_auth
+            .authenticate(&token)
+            .await
+            .map_err(|error| client_status(error, false))?;
+        Ok(Response::new(agent::LoginResponse {
+            access_token: String::new(),
+            token_type: "Bearer".into(),
+            expires_in: session.expires_in,
+            account: Some(account_identity(session.account)),
+        }))
+    }
+
+    async fn logout(
+        &self,
+        request: Request<agent::SessionRequest>,
+    ) -> Result<Response<agent::LogoutResponse>, Status> {
+        let token = bearer_token(request.metadata())?;
+        self.client_auth.logout(&token).await;
+        Ok(Response::new(agent::LogoutResponse {}))
+    }
+
     async fn connect_agent(
         &self,
         request: Request<Streaming<AgentMessage>>,
     ) -> Result<Response<Self::ConnectAgentStream>, Status> {
-        let mut values = request.metadata().get_all("authorization").iter();
-        let value = values
-            .next()
-            .ok_or_else(|| Status::unauthenticated("请先使用上位机账号登录"))?;
-        if values.next().is_some() {
-            return Err(Status::unauthenticated("接入凭据只能提供一次"));
-        }
-        let token = value
-            .to_str()
-            .ok()
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .filter(|token| {
-                !token.is_empty() && token.len() <= 512 && !token.chars().any(char::is_whitespace)
-            })
-            .ok_or_else(|| Status::unauthenticated("上位机接入凭据格式错误"))?
-            .to_owned();
+        let token = bearer_token(request.metadata())?;
         self.client_auth
             .authenticate(&token)
             .await
@@ -248,8 +278,38 @@ fn client_status(error: ClientAuthError, authenticated: bool) -> Status {
     match error {
         ClientAuthError::Storage => Status::unavailable("账号存储暂不可用"),
         ClientAuthError::Invalid(message) => Status::invalid_argument(message),
+        ClientAuthError::RateLimited | ClientAuthError::Busy | ClientAuthError::SessionLimit => {
+            Status::resource_exhausted(error.to_string())
+        }
         _ if authenticated => Status::permission_denied("上位机会话授权已失效"),
         _ => Status::unauthenticated("上位机登录状态无效，请重新登录"),
+    }
+}
+
+fn bearer_token(metadata: &tonic::metadata::MetadataMap) -> Result<String, Status> {
+    let mut values = metadata.get_all("authorization").iter();
+    let value = values
+        .next()
+        .ok_or_else(|| Status::unauthenticated("请先使用上位机账号登录"))?;
+    if values.next().is_some() {
+        return Err(Status::unauthenticated("接入凭据只能提供一次"));
+    }
+    value
+        .to_str()
+        .ok()
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|token| {
+            !token.is_empty() && token.len() <= 512 && !token.chars().any(char::is_whitespace)
+        })
+        .map(str::to_owned)
+        .ok_or_else(|| Status::unauthenticated("上位机接入凭据格式错误"))
+}
+
+fn account_identity(account: crate::accounts::AccountRecord) -> agent::AccountIdentity {
+    agent::AccountIdentity {
+        id: account.id,
+        username: account.username,
+        display_name: account.display_name,
     }
 }
 
