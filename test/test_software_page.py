@@ -1,4 +1,4 @@
-"""执行实际软件版本页面脚本，验证会话、发布流程和安全文本渲染。"""
+"""执行真实软件管理脚本，验证独立分区、保守归组和逐包操作边界。"""
 import json
 from pathlib import Path
 import re
@@ -6,177 +6,119 @@ import shutil
 import subprocess
 import unittest
 
-PAGE = Path(__file__).resolve().parents[1] / "web/software.html"
-
+PAGE = Path(__file__).resolve().parents[1] / 'web/software.html'
+HARNESS = r'''
+const assert=require('node:assert/strict'), vm=require('node:vm');
+let currentDocument;
+class Element {
+ constructor(tag='div') { this.tag=tag;this.children=[];this.events={};this.value='';this.disabled=false;this.attributes={};this.ownText='';this.className='';this.classes=new Set();this.open=false;this.classList={toggle:(n,v)=>v?this.classes.add(n):this.classes.delete(n)}; }
+ set innerHTML(_) { throw new Error('禁止动态 innerHTML'); }
+ set textContent(v) {this.replaceChildren();this.ownText=String(v);}
+ get textContent() {return this.ownText+this.children.map(n=>n.textContent).join('');}
+ append(...nodes) {const wasEmpty=this.children.length===0;for(const n of nodes){n.parentNode=this;this.children.push(n);}if(this.tag==='select'&&wasEmpty&&nodes.length)this.value=nodes[0].value;}
+ replaceChildren(...nodes) {if(this.children.some(n=>n.contains(currentDocument?.activeElement)))currentDocument.activeElement=null;this.children=[];this.ownText='';this.append(...nodes);}
+ contains(n){return this===n||this.children.some(c=>c.contains(n));}
+ addEventListener(n,f){this.events[n]=f;}
+ setAttribute(n,v){this.attributes[n]=String(v);}
+ getAttribute(n){return this.attributes[n]??null;}
+ focus(){currentDocument.activeElement=this;}
+}
+const flatten=nodes=>nodes.flatMap(n=>[n,...flatten(n.children)]);
+function record(fields={}){const {metadata={},...rest}=fields;return {id:'upper-new',metadata:{product:'mskdsp-upper',version:'1.2.3',platform:'windows-x86_64-nsis',file_name:'installer.exe',size:2048,sha256:'a'.repeat(64),notes:'Release notes',...metadata},channels:[],ever_published:false,created_at:'2026-10-15T00:00:00Z',...rest};}
+const lower=f=>record({id:'lower',...f,metadata:{product:'mskdsp-lower',version:'0.4.0',platform:'linux-arm64',file_name:'lower.tar.gz',...f?.metadata}});
+const platform=f=>record({id:'platform',...f,metadata:{product:'mskdsp-platform',version:'0.0.1-ci.20261018t094236.6.98+sha.aaaaaaa',platform:'linux-amd64',file_name:'platform.tar.gz',channel:'ci',source_ref:'main',source_sha:'a'.repeat(40),build_time:'2026-10-18T09:42:36Z',...f?.metadata}});
+const response=(status,body)=>({ok:status>=200&&status<300,status,json:async()=>body});
+async function open({records=[record(),lower(),platform()],user={username:'operator',role:'admin'},rejectAt='',failList=false,statusCode=200,statusBody={enabled:true,state:'available',current_version:'0.1.0',latest_version:'0.2.0',message:'等待管理员确认'}}={}){
+ const ids={};for(const m of HTML.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"/g)){const n=new Element(m[1]);n.id=m[2];ids[n.id]=n;}if(ids.view)ids.view.value='list';
+ const calls=[],redirects=[],confirms=[],state={records,failList,rejectAt,statusCode,statusBody,allowConfirm:true,publishFailure:false,hold:false,finish:null};
+ const all=()=>flatten(Object.values(ids));const document={activeElement:null,getElementById:id=>all().find(n=>n.id===id)||null,createElement:t=>new Element(t),querySelectorAll:()=>all().filter(n=>n.getAttribute('data-package-control')!==null)};currentDocument=document;
+ const context=vm.createContext({AbortController,setTimeout,clearTimeout,document,window:{confirm:v=>{confirms.push(v);return state.allowConfirm;}},location:{assign:v=>redirects.push(v)},fetch:async(path,options)=>{
+  calls.push({path,options});if(path===state.rejectAt)return response(401,{error:'请重新登录'});
+  if(path==='/api/v1/auth/me')return response(200,user);if(path==='/api/v1/auth/logout')return response(204,null);
+  if(path==='/api/update/status'){if(state.statusCode===0)throw new Error('维护接口离线');return response(state.statusCode,state.statusBody);}
+  if(options.method==='POST'){
+   if(state.publishFailure)return response(412,{error:'尚未配置公开地址'});if(state.hold)await new Promise(r=>{state.finish=r;});
+   const channel=JSON.parse(options.body).channel,target=decodeURIComponent(path.split('/').at(-2)),chosen=state.records.find(p=>p.id===target),publish=path.endsWith('/publish');
+   state.records=state.records.map(p=>{if(p.id===target)return {...p,channels:publish?[...new Set([...p.channels,channel])]:p.channels.filter(n=>n!==channel),ever_published:true};
+    const replaced=chosen.metadata.product==='mskdsp-upper'?p.metadata.version!==chosen.metadata.version:p.metadata.platform===chosen.metadata.platform;
+    return publish&&p.metadata.product===chosen.metadata.product&&replaced?{...p,channels:p.channels.filter(n=>n!==channel)}:p;});return response(200,state.records.find(p=>p.id===target));}
+  if(state.failList)throw new Error('网络离线');return response(200,state.records);
+ }});
+ await vm.runInContext('(async()=>{'+SCRIPT+'\nthis.api={refresh,mutate,sections:typeof sections===\'undefined\'?null:sections,groupPackages:typeof groupPackages===\'undefined\'?null:groupPackages,snapshot:()=>({busy,authenticated,packages})};})()',context);
+ const section=p=>context.api.sections.get('mskdsp-'+p),expand=async p=>{const s=section(p);s.history.open=true;await s.history.events.toggle();return s;};
+ return {ids,calls,redirects,confirms,state,api:context.api,document,section,expand,flatten};
+}
+'''
 
 class SoftwarePageTests(unittest.TestCase):
-    def test_browser_script(self):
-        node = shutil.which("node")
-        self.assertIsNotNone(node, "软件版本页面行为测试需要 Node")
-        page = PAGE.read_text(encoding="utf-8")
-        script = re.search(r'<script type="module">([\s\S]*?)</script>', page).group(1)
-        syntax = subprocess.run([node, "--check", "--input-type=module"], input=script,
-                                capture_output=True, text=True, encoding="utf-8", timeout=15)
-        self.assertEqual(syntax.returncode, 0, syntax.stderr)
-        scenario = r'''
-const assert = require('node:assert/strict');
-const vm = require('node:vm');
-class Element {
-  constructor(tag='div') { this.tag=tag; this.children=[]; this.events={}; this.value=''; this.disabled=false; this.attributes={}; this.textContent=''; this.className=''; this.classes=new Set(); this.classList={toggle:(name,value)=>value?this.classes.add(name):this.classes.delete(name)}; }
-  set innerHTML(_) { throw new Error('动态内容不能使用 innerHTML'); }
-  append(...children) { this.children.push(...children); if(this.tag==='select'&&!this.value&&children.length) this.value=children[0].value; }
-  replaceChildren(...children) { this.children=[...children]; }
-  addEventListener(name, fn) { this.events[name]=fn; }
-  setAttribute(name, value) { this.attributes[name]=value; }
-  getAttribute(name) { return this.attributes[name] ?? null; }
-}
-function record(fields={}) {
-  return {id:'package-id',metadata:{product:'mskdsp-upper',version:'1.2.3',platform:'windows-x86_64-nsis',file_name:'installer.exe',size:2048,sha256:'a'.repeat(64),notes:'Release notes',...fields.metadata},channels:[],ever_published:false,created_at:'2026-10-15T00:00:00Z',...fields};
-}
-const response = (status, body) => ({ok:status>=200&&status<300,status,json:async()=>body});
-async function open({records=[record()],user={username:'operator',role:'admin'},rejectAt='',failList=false}={}) {
-  const ids={}; for(const name of ['message','refresh','logout','product','channel','architecture','version-search','view','clear-filters','packages','count','empty','empty-title','empty-description','username']) ids[name]=new Element();
-  ids.view.value='list';
-  const calls=[],redirects=[],confirms=[];
-  const state={records,failList,rejectAt,allowConfirm:true,publishFailure:false,hold:null,finish:null};
-  const flatten=nodes=>nodes.flatMap(node=>[node,...flatten(node.children)]);
-  const context=vm.createContext({AbortController,setTimeout,clearTimeout,
-    document:{getElementById:name=>ids[name],createElement:tag=>new Element(tag),querySelectorAll:()=>flatten(ids.packages.children).filter(node=>['button','select'].includes(node.tag))},
-    window:{confirm:value=>{confirms.push(value);return state.allowConfirm;}},location:{assign:value=>redirects.push(value)},
-    fetch:async(path,options)=>{
-      calls.push({path,options});
-      if(path===state.rejectAt) return response(401,{error:'请重新登录'});
-      if(path==='/api/v1/auth/me') return response(200,user);
-      if(path==='/api/v1/auth/logout') return response(204,null);
-      if(options.method==='POST') {
-        if(state.publishFailure) return response(412,{error:'尚未配置公开地址'});
-        if(state.hold) await new Promise(resolve=>{state.finish=resolve;});
-        const channel=JSON.parse(options.body).channel;
-        state.records=state.records.map(pkg=>({...pkg,channels:path.endsWith('/publish')?[channel]:[],ever_published:true}));
-        return response(200,state.records[0]);
-      }
-      if(state.failList) throw new Error('网络离线');
-      return response(200,state.records);
-    }});
-  await vm.runInContext('(async()=>{'+SCRIPT+'\nthis.api={refresh,mutate,render,snapshot:()=>({busy,authenticated,packages})};})()',context);
-  return {ids,calls,redirects,confirms,state,api:context.api,flatten};
-}
-(async()=>{
-  // 读取身份后才展示数据；动态标题、说明和链接参数不会成为 HTML。
-  const malicious=record({id:'id/<script>',metadata:{product:'mskdsp-upper',version:'<img src=x onerror=alert(1)>',platform:'windows-x86_64-nsis',file_name:'installer.exe',size:2048,sha256:'a'.repeat(64),notes:'<script>alert(1)</script>'},ever_published:true});
-  const page=await open({records:[malicious,record({id:'lower',metadata:{product:'mskdsp-lower',version:'1.0.0',platform:'linux-x64',file_name:'lower.tar.gz',size:1024,sha256:'b'.repeat(64)}})]});
-  assert.equal(page.calls[0].path,'/api/v1/auth/me');
-  assert.equal(page.calls[1].path,'/api/v1/software/packages');
-  assert.equal(page.calls.length,2); assert.equal(page.ids.username.textContent,'operator');
-  const nodes=page.flatten(page.ids.packages.children);
-  assert(nodes.some(node=>node.textContent===malicious.metadata.version));
-  assert(nodes.some(node=>node.tag==='p'&&node.textContent===malicious.metadata.notes));
-  assert(nodes.some(node=>node.tag==='a'&&node.href==='/software/packages/id%2F%3Cscript%3E/installer.exe'));
-  page.ids.product.value='mskdsp-lower'; page.ids.product.events.change();
-  assert.equal(page.ids.count.textContent,'1 个安装包');
-  const lowerSelect=page.flatten(page.ids.packages.children).find(node=>node.tag==='select');
-  assert.equal(lowerSelect.children.length,1); assert.equal(lowerSelect.children[0].value,'ci');
-  page.ids.product.value=''; page.ids.product.events.change();
-  // 平台包显示完整构建身份和候选状态，只允许跳到程序更新页，不提供发布或下载。
-  const platformRecord=record({id:'platform-candidate',metadata:{product:'mskdsp-platform',version:'0.0.1-ci.20261018t094236.6.98+sha.aaaaaaa',platform:'linux-amd64',file_name:'platform-binary.tar.gz',size:1024,sha256:'a'.repeat(64),channel:'ci',source_ref:'main',source_sha:'a'.repeat(40),build_time:'2026-10-18T09:42:36Z'}});
-  const candidate=await open({records:[platformRecord,record()]});
-  candidate.ids.product.value='mskdsp-platform'; candidate.ids.product.events.change();
-  assert.equal(candidate.ids.count.textContent,'1 个安装包');
-  const candidateNodes=candidate.flatten(candidate.ids.packages.children);
-  assert(candidateNodes.some(node=>node.textContent==='CI 候选包 · 待手动升级'));
-  assert(candidateNodes.some(node=>node.tag==='time'&&node.attributes.datetime===platformRecord.metadata.build_time&&node.title.includes('时区')));
-  assert(candidateNodes.some(node=>node.textContent===platformRecord.metadata.source_sha));
-  assert(candidateNodes.some(node=>node.tag==='a'&&node.href==='/update'));
-  assert(!candidateNodes.some(node=>node.tag==='button'||node.tag==='select'||node.href?.startsWith('/software/packages/')));
-  const candidateCalls=candidate.calls.length;
-  await candidate.api.mutate(platformRecord,'ci','publish');
-  assert.equal(candidate.calls.length,candidateCalls); assert.equal(candidate.confirms.length,0);
-  candidate.ids.product.value=''; candidate.ids.channel.value='ci'; candidate.ids.channel.events.change();
-  assert.equal(candidate.ids.count.textContent,'1 个安装包');
-  candidate.ids.channel.value='candidate'; candidate.ids.channel.events.change();
-  assert.equal(candidate.ids.count.textContent,'1 个安装包');
-  candidate.ids.channel.value='unpublished'; candidate.ids.channel.events.change();
-  assert.equal(candidate.ids.count.textContent,'1 个安装包');
-  assert(candidate.flatten(candidate.ids.packages.children).some(node=>node.textContent==='上位机'));
-  // 默认紧凑表格，筛选可组合并清除；空仓库与无匹配结果分别说明。
-  const catalog=await open({records:[record(),record({id:'old',metadata:{product:'mskdsp-upper',version:'1.1.0',platform:'windows-x86_64-nsis',file_name:'old.exe'},channels:['stable'],ever_published:true})]});
-  assert(catalog.flatten(catalog.ids.packages.children).some(node=>node.tag==='table'));
-  const renderedTime=catalog.flatten(catalog.ids.packages.children).find(node=>node.tag==='time');
-  assert.equal(renderedTime.attributes.datetime,'2026-10-15T00:00:00Z');
-  assert.notEqual(renderedTime.textContent,renderedTime.attributes.datetime);
-  assert(renderedTime.title.includes('2026-10-15T00:00:00Z'));
-  const invalidTime=await open({records:[record({created_at:'not-a-date'})]});
-  assert(invalidTime.flatten(invalidTime.ids.packages.children).some(node=>node.tag==='time'&&node.textContent==='—'));
-  const publishedNodes=catalog.flatten(catalog.ids.packages.children);
-  const publishedSelect=publishedNodes.filter(node=>node.tag==='select').at(-1);
-  assert.equal(publishedSelect.value,'stable');
-  const withdraws=publishedNodes.filter(node=>node.tag==='button'&&node.textContent==='撤回');
-  assert.equal(withdraws[0].disabled,true); assert.equal(withdraws[1].disabled,false);
-  publishedSelect.value='beta'; publishedSelect.events.change(); assert.equal(withdraws[1].disabled,true);
-  catalog.ids['version-search'].value='1.2'; catalog.ids['version-search'].events.input();
-  assert.equal(catalog.ids.count.textContent,'1 个安装包');
-  catalog.ids.architecture.value='linux-arm64'; catalog.ids.architecture.events.change();
-  assert.equal(catalog.ids.count.textContent,'0 个安装包'); assert.equal(catalog.ids['empty-title'].textContent,'没有匹配的软件版本');
-  catalog.ids['clear-filters'].events.click(); assert.equal(catalog.ids.count.textContent,'2 个安装包');
-  catalog.ids.view.value='cards'; catalog.ids.view.events.change();
-  assert(!catalog.flatten(catalog.ids.packages.children).some(node=>node.tag==='table'));
-  assert.equal(catalog.ids.packages.children.length,2);
-  const empty=await open({records:[]}); assert.equal(empty.ids['empty-title'].textContent,'暂无软件版本');
-  // 确认展示同产品同架构的旧推荐，Stable 影响和撤回后的下载边界。
-  catalog.state.allowConfirm=false;
-  await catalog.api.mutate(catalog.state.records[0],'stable','publish');
-  assert(catalog.confirms.at(-1).includes('1.1.0 → 1.2.3'));
-  assert(catalog.confirms.at(-1).includes('稳定通道'));
-  const beforeWithdraw=catalog.calls.length;
-  await catalog.api.mutate(catalog.state.records[0],'beta','withdraw');
-  assert.equal(catalog.calls.length,beforeWithdraw); assert.equal(catalog.confirms.length,1);
-  await catalog.api.mutate(catalog.state.records[1],'stable','withdraw');
-  assert(catalog.confirms.at(-1).includes('仍可下载'));
-  // 取消确认不会提交；提交期间立即禁用，拒绝重复操作；仅显式操作才发布。
-  page.state.allowConfirm=false;
-  await page.api.mutate(malicious,'stable','publish'); assert.equal(page.calls.length,2);
-  page.state.allowConfirm=true; page.state.hold=true;
-  const publishing=page.api.mutate(malicious,'stable','publish');
-  assert.equal(page.api.snapshot().busy,true); assert.equal(page.ids.refresh.disabled,true);
-  const count=page.calls.length; await page.api.mutate(malicious,'stable','publish'); assert.equal(page.calls.length,count);
-  page.state.finish(); await publishing; page.state.hold=false;
-  const post=page.calls.find(call=>call.options.method==='POST');
-  assert.equal(post.path,'/api/v1/software/packages/id%2F%3Cscript%3E/publish');
-  assert.equal(post.options.headers['X-MskDSP-Action'],'software');
-  assert.equal(post.options.credentials,'same-origin');
-  assert.deepEqual(JSON.parse(post.options.body),{channel:'stable'});
-  assert.equal(page.api.snapshot().busy,false); assert.equal(page.ids.refresh.disabled,false);
-  assert(page.ids.message.textContent.includes('已发布'));
-  await page.api.mutate(page.state.records[0],'stable','withdraw');
-  assert(page.calls.some(call=>call.path.endsWith('/withdraw')));
-  assert.equal(page.state.records[0].channels.length,0); assert(page.ids.message.textContent.includes('撤回'));
-  // 服务端错误、断网可见且允许刷新恢复，不会自动重复发布。
-  page.state.publishFailure=true;
-  await page.api.mutate(page.state.records[0],'beta','publish');
-  assert.equal(page.ids.message.textContent,'尚未配置公开地址'); assert(page.ids.message.classes.has('error'));
-  assert.equal(page.ids.refresh.disabled,false); page.state.publishFailure=false;
-  page.state.failList=true; await page.api.refresh();
-  assert.equal(page.ids.message.textContent,'网络离线'); assert.equal(page.ids.refresh.disabled,false);
-  const posts=page.calls.filter(call=>call.options.method==='POST').length;
-  page.state.failList=false; await page.api.refresh();
-  assert.equal(page.calls.filter(call=>call.options.method==='POST').length,posts);
-  // 会话失效后跳转登录并禁用变更；非管理员不能读取版本列表。
-  const denied=await open({user:{username:'viewer',role:'viewer'}});
-  assert.equal(denied.calls.length,1); assert.equal(denied.ids.refresh.disabled,true);
-  for(const rejectAt of ['/api/v1/auth/me','/api/v1/software/packages']) {
-    const expired=await open({rejectAt});
-    assert.deepEqual(expired.redirects,['/login']); assert.equal(expired.ids.refresh.disabled,true);
-  }
-  await page.ids.logout.events.click();
-  assert.equal(page.calls.at(-1).path,'/api/v1/auth/logout');
-  assert.equal(page.calls.at(-1).options.headers['X-MskDSP-Action'],'auth');
-  assert.deepEqual(page.redirects,['/login']);
-})().catch(error=>{console.error(error);process.exitCode=1});
-'''
-        result = subprocess.run([node, "-e", "const SCRIPT=" + json.dumps(script) + ";\n" + scenario],
-                                capture_output=True, text=True, encoding="utf-8", timeout=20)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    @classmethod
 
+    def setUpClass(cls):
+        cls.node=shutil.which('node')
+        if not cls.node: raise AssertionError('软件页面行为测试需要 Node')
+        cls.page=PAGE.read_text(encoding='utf-8-sig')
+        cls.script=re.search(r'<script type="module">([\s\S]*?)</script>',cls.page).group(1)
+        syntax=subprocess.run([cls.node,'--check','--input-type=module'],input=cls.script,capture_output=True,text=True,encoding='utf-8',timeout=15)
+        if syntax.returncode: raise AssertionError(syntax.stderr)
 
-if __name__ == "__main__":
-    unittest.main()
+    def run_scenario(self,scenario):
+        source='const SCRIPT='+json.dumps(self.script)+';const HTML='+json.dumps(self.page)+';\n'+HARNESS+'\n(async()=>{\n'+scenario+'\n})().catch(e=>{console.error(e);process.exitCode=1});'
+        result=subprocess.run([self.node],input=source,capture_output=True,text=True,encoding='utf-8',timeout=20)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+
+    def test_fixed_sections_and_read_only_platform_status(self):
+        self.run_scenario(r'''
+const p=await open();assert(p.api.sections);assert.equal(p.api.sections.size,3);assert.equal(p.document.getElementById('product'),null);
+for(const product of ['upper','lower','platform'])assert.equal(p.section(product).history.open,false);
+assert(p.section('upper').summary.textContent.includes('暂无推荐版本'));assert(p.section('platform').summary.textContent.includes('0.1.0'));assert(p.section('platform').summary.textContent.includes('0.2.0'));
+assert.equal(p.calls[0].path,'/api/v1/auth/me');assert.equal(p.calls.filter(c=>c.path==='/api/update/status').length,1);assert(p.calls.every(c=>!c.options.method||c.options.method==='GET'));
+const empty=await open({records:[]});for(const product of ['upper','lower','platform'])assert((await empty.expand(product)).empty.textContent.includes('暂无安装包'));
+        ''')
+
+    def test_local_filters_summary_and_focus_survive_refresh(self):
+        self.run_scenario(r'''
+const old=record({id:'old',metadata:{version:'1.1.0'},channels:['stable'],ever_published:true});const p=await open({records:[record(),old,lower(),platform()]});const u=await p.expand('upper'),l=await p.expand('lower'),summary=u.summary.textContent;
+u.search.value='missing';u.search.focus();u.search.events.input();assert.equal(u.count.textContent,'0 个安装包');assert(u.empty.textContent.includes('没有匹配'));assert.equal(u.summary.textContent,summary);assert(summary.includes('1.1.0'));assert.equal(l.count.textContent,'1 个安装包');assert.equal(p.document.activeElement,u.search);
+l.search.value='0.4';l.search.events.input();l.channel.value='unpublished';l.channel.events.change();const search=l.search;search.focus();await p.api.refresh();assert.equal(p.document.activeElement,search);assert.equal(p.section('lower').search,search);assert.equal(l.search.value,'0.4');assert.equal(l.channel.value,'unpublished');assert(u.history.open&&l.history.open);
+u.clear.events.click();assert.equal(u.count.textContent,'2 个安装包');assert.equal(l.search.value,'0.4');u.architecture.value='linux-arm64';u.architecture.events.change();assert.equal(u.count.textContent,'0 个安装包');u.clear.events.click();u.view.value='cards';u.view.events.change();assert(!flatten(u.list.children).some(n=>n.tag==='table'));assert.equal(l.channel.value,'unpublished');
+        ''')
+
+    def test_conservative_build_grouping(self):
+        self.run_scenario(r'''
+const src={source_repository:'repo',source_ref:'main',source_sha:'a'.repeat(40)};const a=lower({id:'arm',metadata:{...src,version:'0.4.0-ci-p18-b289-j292-ab39c1a',platform:'linux-arm64'}}),b=lower({id:'x64',metadata:{...src,version:'0.4.0-ci-p18-b290-j293-ab39c1a',platform:'linux-x64'}});const p=await open({records:[a,b]}),group=p.api.groupPackages;
+assert.equal(group([a,b]).length,1);assert.equal(group([a,b])[0].packages.length,2);
+for(const changed of [{...b,metadata:{...b.metadata,version:'0.4.0-ci-p19-b290-j293-ab39c1a'}},{...b,metadata:{...b.metadata,source_ref:'release'}},{...b,metadata:{...b.metadata,source_sha:'b'.repeat(40)}},{...b,metadata:{...b.metadata,source_repository:''}},{...b,metadata:{...b.metadata,platform:'linux-arm64'}},{...b,metadata:{...b.metadata,version:'0.5.0-ci-p18-b290-j293-ab39c1a'}}])assert.equal(group([a,changed]).length,2);
+assert.equal(group([a,b,{...b,id:'duplicate'}]).length,3);assert.equal(group([a,b],[a,b,{...b,id:'duplicate'}]).length,2);assert.equal(group([{...a,metadata:{...a.metadata,version:'0.4.0'}},{...b,metadata:{...b.metadata,version:'0.4.0'}}]).length,1);
+const nodes=flatten((await p.expand('lower')).list.children);assert(nodes.some(n=>n.textContent===a.metadata.version));assert(nodes.some(n=>n.textContent===b.metadata.version));assert.equal(nodes.filter(n=>n.tag==='button'&&n.textContent==='发布').length,2);assert(!nodes.some(n=>n.tag==='th'&&n.textContent==='产品'));
+const part=p.section('lower');part.search.value='ab39c1a';part.search.events.input();assert(flatten(part.list.children).some(n=>n.className==='build-group'));
+p.state.records.push({...b,id:'hidden-duplicate',metadata:{...b.metadata,version:'0.4.0-ci-p18-b999-j999-bbbbbbb'}});await p.api.refresh();assert.equal(part.count.textContent,'2 个安装包');assert(!flatten(part.list.children).some(n=>n.className==='build-group'));
+        ''')
+
+    def test_platform_failure_is_local_and_401_stops_actions(self):
+        self.run_scenario(r'''
+for(const options of [{statusCode:500,statusBody:{error:'维护不可用'}},{statusCode:404},{statusCode:503},{statusCode:0},{statusBody:{}},{statusBody:null}]){const p=await open(options);assert.equal((await p.expand('upper')).count.textContent,'1 个安装包');assert.equal(p.ids.refresh.disabled,false);assert(p.section('platform').summary.textContent.includes('暂不可用'));assert(!p.section('platform').summary.textContent.includes('正在运行'));assert(!p.calls.some(c=>c.options.method==='POST'));}
+const p=await open({rejectAt:'/api/update/status'});assert.deepEqual(p.redirects,['/login']);assert.equal(p.api.snapshot().authenticated,false);const count=p.calls.length;await p.api.mutate(record(),'stable','publish');await p.api.refresh();assert.equal(p.calls.length,count);
+        ''')
+
+    def test_actions_confirmations_and_other_section_preserved(self):
+        self.run_scenario(r'''
+const old=record({id:'old',metadata:{version:'1.1.0'},channels:['stable'],ever_published:true}),other=record({id:'other',metadata:{version:'1.1.0',platform:'windows-x86_64'},channels:['stable'],ever_published:true});const p=await open({records:[record(),old,other,lower()]}),u=await p.expand('upper'),l=await p.expand('lower'),nodes=flatten(u.list.children),selects=nodes.filter(n=>n.tag==='select'),withdraws=nodes.filter(n=>n.tag==='button'&&n.textContent==='撤回');assert.equal(selects.at(-1).value,'stable');assert.equal(withdraws[0].disabled,true);assert.equal(withdraws[1].disabled,false);selects.at(-1).value='beta';selects.at(-1).events.change();assert.equal(withdraws.at(-1).disabled,true);
+const calls=p.calls.length;p.state.allowConfirm=false;await p.api.mutate(p.state.records[0],'stable','publish');assert.equal(p.calls.length,calls);assert(p.confirms.at(-1).includes('1.1.0 → 1.2.3'));assert(p.confirms.at(-1).includes('windows-x86_64'));assert(p.confirms.at(-1).includes('稳定通道'));await p.api.mutate(p.state.records[0],'beta','withdraw');assert.equal(p.confirms.length,1);await p.api.mutate(old,'stable','withdraw');assert(p.confirms.at(-1).includes('仍可下载'));
+l.search.value='0.4';l.search.events.input();l.search.focus();p.state.allowConfirm=true;p.state.hold=true;const pending=p.api.mutate(p.state.records[0],'stable','publish');assert(p.api.snapshot().busy);assert(p.ids.refresh.disabled);const held=p.calls.length;await p.api.mutate(p.state.records[0],'stable','publish');assert.equal(p.calls.length,held);p.state.finish();await pending;p.state.hold=false;assert(l.history.open);assert.equal(l.search.value,'0.4');assert.equal(p.document.activeElement,l.search);assert(u.summary.textContent.includes('1.2.3'));assert(!u.summary.textContent.includes('1.1.0'));
+const post=p.calls.find(c=>c.options.method==='POST');assert.equal(post.options.headers['X-MskDSP-Action'],'software');assert.equal(post.options.credentials,'same-origin');assert.deepEqual(JSON.parse(post.options.body),{channel:'stable'});await p.api.mutate(p.state.records[0],'stable','withdraw');assert.equal(p.state.records[0].channels.length,0);assert(u.summary.textContent.includes('暂无推荐版本'));
+        ''')
+
+    def test_candidate_boundary_safe_text_and_dates(self):
+        self.run_scenario(r'''
+const candidate=platform(),malicious=record({id:'id/<script>',metadata:{version:'<img src=x onerror=alert(1)>',notes:'<script>alert(1)</script>'},channels:['ci'],ever_published:true}),p=await open({records:[candidate,malicious,lower({metadata:{platform:'linux-x64'}})]});const nodes=flatten((await p.expand('platform')).list.children);assert(nodes.some(n=>n.textContent==='CI 候选包 · 待手动升级'));assert(nodes.some(n=>n.tag==='time'&&n.getAttribute('datetime')===candidate.metadata.build_time&&n.title.includes('时区')));assert(!nodes.some(n=>n.tag==='button'||n.tag==='select'||n.href?.startsWith('/software/packages/')));const count=p.calls.length;await p.api.mutate(candidate,'ci','publish');assert.equal(p.calls.length,count);assert.equal(p.confirms.length,0);
+const upperNodes=flatten((await p.expand('upper')).list.children);assert(upperNodes.some(n=>n.textContent===malicious.metadata.version));assert(upperNodes.some(n=>n.tag==='p'&&n.textContent===malicious.metadata.notes));assert(upperNodes.some(n=>n.href==='/software/packages/id%2F%3Cscript%3E/installer.exe'));const time=upperNodes.find(n=>n.tag==='time');assert.equal(time.getAttribute('datetime'),malicious.created_at);assert.notEqual(time.textContent,malicious.created_at);const select=flatten((await p.expand('lower')).list.children).find(n=>n.tag==='select');assert.equal(select.children.length,1);assert.equal(select.value,'ci');const invalid=await open({records:[record({created_at:'invalid'})]});assert(flatten((await invalid.expand('upper')).list.children).some(n=>n.tag==='time'&&n.textContent==='—'));
+        ''')
+
+    def test_errors_recovery_and_authentication(self):
+        self.run_scenario(r'''
+const p=await open();await p.expand('upper');p.state.publishFailure=true;await p.api.mutate(p.state.records[0],'beta','publish');assert.equal(p.ids.message.textContent,'尚未配置公开地址');assert(p.ids.message.classes.has('error'));p.state.publishFailure=false;p.state.failList=true;await p.api.refresh();assert.equal(p.ids.message.textContent,'网络离线');assert.equal(p.ids.refresh.disabled,false);assert.equal(p.section('upper').count.textContent,'1 个安装包');const posts=p.calls.filter(c=>c.options.method==='POST').length;p.state.failList=false;await p.api.refresh();assert.equal(p.calls.filter(c=>c.options.method==='POST').length,posts);
+const denied=await open({user:{username:'viewer',role:'viewer'}});assert.equal(denied.calls.length,1);assert(denied.ids.refresh.disabled);for(const rejectAt of ['/api/v1/auth/me','/api/v1/software/packages']){const expired=await open({rejectAt});assert.deepEqual(expired.redirects,['/login']);assert(expired.ids.refresh.disabled);}await p.ids.logout.events.click();assert.equal(p.calls.at(-1).path,'/api/v1/auth/logout');assert.equal(p.calls.at(-1).options.headers['X-MskDSP-Action'],'auth');assert.deepEqual(p.redirects,['/login']);
+const initialFailure=await open({failList:true});assert(initialFailure.section('platform').summary.textContent.includes('0.1.0'));assert((await initialFailure.expand('upper')).empty.textContent.includes('暂不可用'));
+        ''')
+
+if __name__=='__main__': unittest.main()

@@ -35,25 +35,45 @@
   });
 })();
   </script>
-  <title>MskDSPPlatform · 软件版本</title>
+  <title>MskDSPPlatform · 软件管理</title>
   <link rel="stylesheet" href="/assets/platform.css">
   <style>
-    .catalog-tools { display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:16px; }
-    .catalog-tools label { width:160px; }
+    #message { margin-bottom:14px; }
+    #software-sections { display:grid; gap:14px; min-width:0; }
+    .software-section { padding:18px 20px; min-width:0; }
+    .software-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+    .software-heading h2 { font-size:18px; margin:0; }
+    .software-heading .hint { margin:0; font-size:12px; }
+    .software-summary { min-width:0; font-size:12px; }
+    .recommendations { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+    .channel-summary { padding:8px 10px; background:var(--subtle); border-radius:7px; min-width:0; }
+    .channel-summary strong { display:block; margin-bottom:4px; font-size:11px; color:var(--muted); }
+    .recommended-package { display:flex; flex-wrap:wrap; gap:4px 8px; min-width:0; line-height:1.6; }
+    .recommended-package .summary-version { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; flex:1 1 80px; }
+    .recommended-package .summary-architecture { color:var(--muted); overflow-wrap:anywhere; }
+    .platform-status { display:flex; gap:10px 24px; flex-wrap:wrap; }
+    .platform-status p { margin:0; min-width:0; overflow-wrap:anywhere; }
+    .platform-status strong { color:var(--muted); font-weight:400; margin-right:8px; }
+    .software-summary .error { color:var(--danger); margin:0; }
+    .software-history { margin-top:12px; border-top:1px solid var(--border); padding-top:10px; min-width:0; }
+    .software-history > summary { cursor:pointer; font-size:12px; color:var(--link); width:fit-content; }
+    .history-content { padding-top:14px; min-width:0; }
+    .catalog-tools { display:flex; gap:10px; align-items:end; flex-wrap:wrap; margin-bottom:12px; }
+    .catalog-tools label { width:145px; }
     .catalog-tools .version-search { flex:1; min-width:160px; max-width:260px; }
-    .catalog-tools .view-picker { width:120px; }
-    #message { margin-bottom:16px; }
+    .catalog-tools .view-picker { width:115px; }
+    .catalog-count { margin:0; font-size:12px; align-self:center; }
+    .package-list { display:grid; gap:12px; min-width:0; }
     .package-table-wrap { overflow:auto; width:100%; max-width:100%; min-width:0; }
     .package-table { width:100%; border-collapse:collapse; font-size:12px; }
-    .package-table th { text-align:left; white-space:nowrap; color:var(--muted); background:var(--subtle); padding:12px; }
-    .package-table td { padding:12px; vertical-align:top; overflow-wrap:anywhere; }
+    .package-table th { text-align:left; white-space:nowrap; color:var(--muted); background:var(--subtle); padding:10px; }
+    .package-table td { padding:10px; vertical-align:top; overflow-wrap:anywhere; }
     .package-table .version-cell { min-width:150px; max-width:300px; font-weight:600; }
-    .package-table .architecture-cell { max-width:160px; }
+    .package-table .architecture-cell { min-width:90px; max-width:160px; }
     .package-table .date-cell { min-width:110px; color:var(--muted); }
     .package-table tbody + tbody { border-top:1px solid var(--border); }
-    .package-table .detail-cell { padding:0 12px 12px; }
-    .package-table details { max-width:900px; }
-    .package-details summary { cursor:pointer; color:var(--link); font-size:12px; }
+    .package-table .detail-cell { padding:0 10px 10px; }
+    .package-details summary,.build-group > summary { cursor:pointer; color:var(--link); font-size:12px; }
     .package-details dl { display:grid; grid-template-columns:80px minmax(0,1fr); gap:8px 12px; font-size:12px; }
     .package-details dt { color:var(--muted); }
     .package-details dd { margin:0; overflow-wrap:anywhere; }
@@ -62,30 +82,31 @@
     .package-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
     .package-actions select { width:auto; min-width:85px; }
     .package-actions button,.package-actions a { font-size:12px; }
-    .package-grid { display:grid; gap:18px; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); }
-    .package-card { padding:22px; overflow-wrap:anywhere; }
-    .package-card h2 { font-size:20px; margin:10px 0 4px; }
-    .package-card .identity { color:var(--muted); margin:0 0 14px; font-size:12px; }
-    .package-card dl { display:grid; grid-template-columns:64px 1fr; gap:8px 12px; font-size:12px; }
-    .package-card dt { color:var(--muted); }
-    .package-card dd { margin:0; }
-    .package-card .channels { display:flex; flex-wrap:wrap; gap:6px; min-height:27px; }
-    .package-card .notes { white-space:pre-wrap; font-size:12px; color:var(--muted); }
-    .package-card .actions { border-top:1px solid var(--border); margin-top:18px; padding-top:16px; }
-    .package-card button { font-size:12px; }
-    .package-card a { font-size:12px; }
-    .package-card details { margin-top:12px; font-size:12px; }
-    .package-card summary { cursor:pointer; color:var(--muted); }
-    .package-card .digest { word-break:break-all; }
-    .software-footer { margin-top:24px; }
+    .package-grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(min(280px,100%),1fr)); }
+    .package-card { padding:16px; overflow-wrap:anywhere; }
+    .package-card h3 { font-size:16px; margin:0 0 8px; }
+    .package-card .identity { color:var(--muted); margin:0 0 10px; font-size:12px; }
+    .package-card .actions { border-top:1px solid var(--border); margin-top:12px; padding-top:12px; }
+    .package-card details { margin-top:10px; }
+    .build-group { min-width:0; border:1px solid var(--border); border-radius:8px; padding:10px; }
+    .build-group > summary { overflow-wrap:anywhere; }
+    .build-group[open] > summary { margin-bottom:10px; }
+    .software-empty { padding:18px; color:var(--muted); font-size:12px; }
+    .software-empty p { margin:0 0 6px; }
+    .software-footer { margin-top:18px; }
     @media(max-width:650px) {
+      .software-section { padding:15px; }
+      .software-heading { align-items:start; }
+      .recommendations { grid-template-columns:1fr; gap:6px; }
+      .channel-summary { display:grid; grid-template-columns:48px minmax(0,1fr); gap:8px; }
+      .channel-summary strong { margin:0; }
       .catalog-tools { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
       .catalog-tools label,.catalog-tools .view-picker { width:100%; min-width:0; }
       .catalog-tools .version-search { grid-column:1 / -1; min-width:0; max-width:none; }
       .catalog-tools input,.catalog-tools select { min-width:0; }
-      .catalog-tools #count { align-self:center; text-align:right; }
+      .catalog-count { text-align:right; }
+      .platform-status { display:grid; gap:6px; }
     }
-    @media(max-width:430px) { .package-grid { grid-template-columns:minmax(0,1fr); } .package-card { padding:17px; } }
   </style>
 </head>
 <body>
@@ -96,30 +117,20 @@
       <nav class="app-nav" aria-label="平台功能">
         <a class="nav-item" href="/modbus-templates"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 9v11"/></svg></span>点表工作台</a>
         <a class="nav-item" href="/modbus-templates#trash"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7"/></svg></span>回收站</a>
-        <a class="nav-item" href="/software" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h16v12H4zM7 4h10v4M9 13h6M9 16h4"/></svg></span>软件版本</a>
+        <a class="nav-item" href="/software" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 8h16v12H4zM7 4h10v4M9 13h6M9 16h4"/></svg></span>软件管理</a>
         <a class="nav-item" href="/update"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 15V4m-4 4 4-4 4 4M5 14v6h14v-6"/></svg></span>程序更新</a>
       </nav>
       <div class="sidebar-footer">MskDSPPlatform<br>点表与更新管理</div>
     </aside>
     <div class="app-content">
       <header class="app-topbar">
-        <span class="topbar-label">平台管理 / 软件版本</span>
+        <span class="topbar-label">平台管理 / 软件管理</span>
         <div class="account-actions"><label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><span id="username">正在确认</span><button id="logout" class="quiet" type="button" disabled>退出登录</button></div>
       </header>
       <main class="page-content">
-        <div class="page-heading"><div><span class="eyebrow">软件仓库</span><h1>软件版本</h1><p class="page-summary">管理软件历史版本；平台 CI 包入库后，由管理员在程序更新页手动升级。</p></div><button id="refresh" type="button" disabled>刷新列表</button></div>
+        <div class="page-heading"><div><span class="eyebrow">软件仓库</span><h1>软件管理</h1><p class="page-summary">分别查看上位机、下位机与平台软件，展开历史后管理各安装包。</p></div><button id="refresh" type="button" disabled>刷新列表</button></div>
         <div id="message" class="status-banner" role="status" aria-live="polite">正在读取版本…</div>
-        <div class="catalog-tools">
-          <label class="version-search">搜索版本<input id="version-search" type="search" placeholder="输入版本号" autocomplete="off"></label>
-          <label>产品<select id="product"><option value="">全部产品</option><option value="mskdsp-upper">上位机</option><option value="mskdsp-lower">下位机</option><option value="mskdsp-platform">平台自身</option></select></label>
-          <label>发布通道<select id="channel"><option value="">全部版本</option><option value="candidate">平台候选包</option><option value="unpublished">待发布 / 已撤回</option><option value="ci">CI</option><option value="beta">Beta</option><option value="stable">Stable</option></select></label>
-          <label>架构<select id="architecture"><option value="">全部架构</option></select></label>
-          <label class="view-picker">显示方式<select id="view"><option value="list">紧凑列表</option><option value="cards">版本卡片</option></select></label>
-          <button id="clear-filters" type="button" class="quiet">清除筛选</button>
-          <span id="count" class="hint" role="status" aria-live="polite"></span>
-        </div>
-        <div id="packages"></div>
-        <div id="empty" class="panel empty-state" hidden><strong id="empty-title">暂无软件版本</strong><span id="empty-description">安装包上传并校验通过后会显示在这里。</span></div>
+        <div id="software-sections"></div>
         <footer class="software-footer">平台候选包只保存历史，不公开下载，也不会自动更新。上下位机发布会切换所选通道的推荐版本；撤回仅移除当前通道引用。</footer>
         <noscript>请启用 JavaScript 以查看和管理软件版本。</noscript>
       </main>
@@ -127,8 +138,10 @@
   </div>
   <script type="module">
 const $ = id => document.getElementById(id);
-const productNames = {'mskdsp-upper':'上位机', 'mskdsp-lower':'下位机', 'mskdsp-platform':'平台自身'};
-let packages = [], busy = true, authenticated = false;
+const productNames = {'mskdsp-upper':'上位机', 'mskdsp-lower':'下位机', 'mskdsp-platform':'平台软件'};
+let packages = [], busy = true, authenticated = false, catalogLoaded = false;
+let platformStatus = null, platformError = '', authorizationLost = false;
+const sections = new Map();
 const text = value => typeof value === 'string' ? value : '';
 function message(value, failed = false) {
   $('message').textContent = value;
@@ -144,14 +157,18 @@ function setBusy(value) {
   busy = value;
   $('refresh').disabled = value || !authenticated;
   $('logout').disabled = value || !authenticated;
-  document.querySelectorAll('.package-actions button,.package-actions select').forEach(node => { node.disabled = value || !authenticated || node.getAttribute('data-unavailable') === 'true'; });
+  document.querySelectorAll('[data-package-control]').forEach(node => { node.disabled = value || !authenticated || node.getAttribute('data-unavailable') === 'true'; });
 }
 async function request(path, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     const response = await fetch(path, {credentials:'same-origin', cache:'no-store', ...options, signal:controller.signal});
-    if (response.status === 401) { authenticated = false; location.assign('/login'); throw new Error('登录已失效，请重新登录'); }
+    if (response.status === 401) {
+      authenticated = false; setBusy(busy);
+      if (!authorizationLost) { authorizationLost = true; location.assign('/login'); }
+      throw new Error('登录已失效，请重新登录');
+    }
     const body = response.status === 204 ? null : await response.json().catch(() => null);
     if (!response.ok) throw new Error(text(body?.error) || `请求失败（HTTP ${response.status}）`);
     return body;
@@ -187,17 +204,21 @@ async function mutate(pkg, channel, operation) {
   const label = `${productNames[pkg.metadata.product] || pkg.metadata.product} ${pkg.metadata.version} · ${pkg.metadata.platform}`;
   const previous = packages.find(item => item.metadata.product === pkg.metadata.product && item.metadata.platform === pkg.metadata.platform && item.channels.includes(channel));
   const transition = `${previous?.metadata.version || '暂无推荐版本'} → ${pkg.metadata.version}`;
-  const impact = channel === 'stable' ? '\nStable 是稳定通道，发布后使用该通道的客户端将获取此推荐版本。' : '\n发布后该通道的推荐版本将切换。';
-  const warning = operation === 'publish' ? `确认将 ${label} 发布到 ${channel.toUpperCase()} 通道？\n${transition}${impact}` : `确认从 ${channel.toUpperCase()} 通道撤回 ${label}？\n仅停止该通道推荐，不自动切换其他版本；曾发布文件仍可下载。`;
+  const replaced = packages.filter(item => item.metadata.product === pkg.metadata.product && item.channels.includes(channel) && (pkg.metadata.product === 'mskdsp-upper' ? item.metadata.version !== pkg.metadata.version : item.metadata.platform === pkg.metadata.platform && item.id !== pkg.id));
+  const affected = replaced.length ? `\n将停止推荐：\n${replaced.map(item => `${item.metadata.version} · ${item.metadata.platform}`).join('\n')}` : '';
+  const upperNotice = pkg.metadata.product === 'mskdsp-upper' ? '\n上位机按通道切换版本；旧版本的其他架构也会退出推荐，新版本其他架构需逐包发布。' : '';
+  const impact = channel === 'stable' ? '\nStable 是稳定通道，使用该通道的客户端将获取此推荐版本。' : '\n发布后该通道的推荐关系将切换。';
+  const warning = operation === 'publish' ? `确认将 ${label} 发布到 ${channel.toUpperCase()} 通道？\n${transition}${affected}${upperNotice}${impact}` : `确认从 ${channel.toUpperCase()} 通道撤回 ${label}？\n仅停止该通道推荐，不自动切换其他版本；曾发布文件仍可下载。`;
   if (!window.confirm(warning)) return;
   setBusy(true);
   try {
     await request(`/api/v1/software/packages/${encodeURIComponent(pkg.id)}/${operation}`, {
       method:'POST', headers:{'Content-Type':'application/json', 'X-MskDSP-Action':'software'}, body:JSON.stringify({channel})
     });
-    await load();
+    await loadCatalog();
+    if (!authenticated) return;
     message(operation === 'publish' ? '版本已发布，通道更新清单已切换。' : '版本已从所选通道撤回。');
-  } catch (error) { message(error.message || '软件版本操作失败', true); }
+  } catch (error) { message(error.message || '软件管理操作失败', true); }
   finally { setBusy(false); }
 }
 function allowedChannels(pkg) {
@@ -234,6 +255,7 @@ function packageActions(pkg) {
     actions.append(update); return actions;
   }
   const select = element('select');
+  select.setAttribute('data-package-control', 'true');
   select.setAttribute('aria-label', `${meta.version} ${meta.platform} 发布通道`);
   const available = allowedChannels(pkg);
   for (const name of available) {
@@ -242,6 +264,7 @@ function packageActions(pkg) {
   select.value = available.find(name => pkg.channels.includes(name)) || available[0];
   const publish = element('button', '发布', 'primary'), withdraw = element('button', '撤回');
   publish.type = withdraw.type = 'button';
+  publish.setAttribute('data-package-control', 'true'); withdraw.setAttribute('data-package-control', 'true');
   const updateWithdraw = () => {
     const unavailable = !pkg.channels.includes(select.value);
     withdraw.setAttribute('data-unavailable', String(unavailable));
@@ -259,94 +282,208 @@ function packageActions(pkg) {
   }
   return actions;
 }
-function render() {
-  const product = $('product').value, channel = $('channel').value;
-  const architecture = $('architecture').value, query = $('version-search').value.trim().toLowerCase();
-  const selected = packages.filter(pkg => {
-    const platform = pkg.metadata.product === 'mskdsp-platform';
-    return (!product || pkg.metadata.product === product) && (!architecture || pkg.metadata.platform === architecture) && (!query || pkg.metadata.version.toLowerCase().includes(query)) && (!channel || (channel === 'candidate' ? platform : channel === 'unpublished' ? !platform && pkg.channels.length === 0 : pkg.channels.includes(channel) || platform && pkg.metadata.channel === channel));
-  });
-  $('packages').replaceChildren();
-  $('count').textContent = `${selected.length} 个安装包`;
-  $('empty').hidden = selected.length !== 0;
-  $('empty-title').textContent = packages.length ? '没有匹配的软件版本' : '暂无软件版本';
-  $('empty-description').textContent = packages.length ? '调整产品、通道、架构或版本号，或点击“清除筛选”查看全部版本。' : '安装包上传并校验通过后会显示在这里。';
-  const cards = $('view').value === 'cards';
-  $('packages').className = cards ? 'package-grid' : 'panel package-table-wrap';
-  $('packages').hidden = selected.length === 0;
-  let table;
-  if (!cards && selected.length) {
-    table = element('table', undefined, 'package-table');
-    table.setAttribute('aria-label', '软件版本列表');
-    const head = element('thead'), row = element('tr');
-    for (const label of ['产品','版本','架构','发布通道','入库时间','操作']) {
-      const cell = element('th', label); cell.setAttribute('scope', 'col'); row.append(cell);
+function createSections() {
+  for (const [product, name] of Object.entries(productNames)) {
+    const root = element('section', undefined, 'panel software-section');
+    root.id = product; root.setAttribute('aria-labelledby', `${product}-heading`);
+    const heading = element('div', undefined, 'software-heading'), title = element('h2', name);
+    title.id = `${product}-heading`;
+    const total = element('span', '正在读取', 'hint'); heading.append(title, total);
+    const summary = element('div', '正在读取软件信息…', 'software-summary');
+    const history = element('details', undefined, 'software-history'), historyLabel = element('summary', '查看历史版本');
+    const content = element('div', undefined, 'history-content'), tools = element('div', undefined, 'catalog-tools');
+    function control(labelText, id, tag, options, className) {
+      const label = element('label', labelText, className), input = element(tag); input.id = `${product}-${id}`;
+      if (options) for (const [value, caption] of options) { const option = element('option', caption); option.value = value; input.append(option); }
+      label.append(input); tools.append(label); return input;
     }
-    head.append(row); table.append(head); $('packages').append(table);
+    const search = control('搜索版本', 'search', 'input', null, 'version-search');
+    search.type = 'search'; search.placeholder = '输入版本号'; search.autocomplete = 'off';
+    const channelOptions = product === 'mskdsp-platform' ? [['','全部候选包'],['ci','CI 来源'],['beta','Beta 来源'],['stable','Stable 来源']] : [['','全部状态'],['unpublished','待发布 / 已撤回'],['ci','CI'],['beta','Beta'],['stable','Stable']];
+    const channel = control(product === 'mskdsp-platform' ? '入库通道' : '发布通道', 'channel', 'select', channelOptions);
+    const architecture = control('架构', 'architecture', 'select', [['','全部架构']]);
+    const view = control('显示方式', 'view', 'select', [['list','紧凑列表'],['cards','版本卡片']], 'view-picker'); view.value = 'list';
+    const clear = element('button', '清除筛选', 'quiet'); clear.type = 'button';
+    const count = element('span', '正在读取', 'hint catalog-count'); count.setAttribute('role', 'status'); count.setAttribute('aria-live', 'polite');
+    tools.append(clear, count);
+    const list = element('div', undefined, 'package-list'), empty = element('div', undefined, 'software-empty'); empty.hidden = true;
+    content.append(tools, list, empty); history.append(historyLabel, content); root.append(heading, summary);
+    if (product === 'mskdsp-platform') { const update = element('a', '前往程序更新页'); update.href = '/update'; heading.append(update); }
+    root.append(history); $('software-sections').append(root);
+    const section = {product, root, total, summary, history, historyLabel, search, channel, architecture, view, clear, count, list, empty, listKey:'', architectureKey:''};
+    sections.set(product, section);
+    search.addEventListener('input', () => renderHistory(section));
+    for (const input of [channel, architecture, view]) input.addEventListener('change', () => renderHistory(section));
+    clear.addEventListener('click', () => { search.value = channel.value = architecture.value = ''; renderHistory(section); });
+    history.addEventListener('toggle', () => { if (history.open) renderHistory(section); });
   }
-  for (const pkg of selected) {
-    const meta = pkg.metadata;
-    if (cards) {
-      const card = element('section', undefined, 'panel package-card');
-      const entered = element('p', '入库 · ', 'hint'); entered.append(timeNode(pkg.created_at));
-      card.append(element('span', productNames[meta.product] || meta.product, 'badge'), element('h2', meta.version), element('p', meta.platform, 'identity'), packageChannels(pkg), entered, packageDetails(pkg));
-      const actions = packageActions(pkg); actions.className += ' actions'; card.append(actions);
-      $('packages').append(card);
-    } else {
-      const body = element('tbody'), row = element('tr');
-      const productCell = element('td', productNames[meta.product] || meta.product);
-      const channelCell = element('td'), actionsCell = element('td');
-      channelCell.append(packageChannels(pkg)); actionsCell.append(packageActions(pkg));
-      const dateCell = element('td', undefined, 'date-cell'); dateCell.append(timeNode(pkg.created_at));
-      row.append(productCell, element('td', meta.version, 'version-cell'), element('td', meta.platform, 'architecture-cell'), channelCell, dateCell, actionsCell);
-      const detailRow = element('tr'), detailCell = element('td', undefined, 'detail-cell');
-      detailCell.setAttribute('colspan', '6'); detailCell.append(packageDetails(pkg)); detailRow.append(detailCell);
-      body.append(row, detailRow); table.append(body);
-    }
-  }
-  setBusy(busy);
 }
-async function load() {
+function renderRecommendations(section, records) {
+  section.summary.replaceChildren();
+  const grid = element('div', undefined, 'recommendations');
+  for (const channel of ['stable','beta','ci']) {
+    const box = element('div', undefined, 'channel-summary'); box.append(element('strong', channel.toUpperCase()));
+    const refs = records.filter(pkg => pkg.channels.includes(channel));
+    const values = element('div');
+    if (!refs.length) values.append(element('span', '暂无推荐版本', 'hint'));
+    for (const pkg of refs) {
+      const item = element('div', undefined, 'recommended-package');
+      const version = element('span', pkg.metadata.version, 'summary-version'); version.title = pkg.metadata.version;
+      item.append(element('span', pkg.metadata.platform, 'summary-architecture'), version); values.append(item);
+    }
+    box.append(values); grid.append(box);
+  }
+  section.summary.append(grid);
+}
+function renderPlatformSummary() {
+  const summary = sections.get('mskdsp-platform').summary; summary.replaceChildren();
+  if (platformError || !platformStatus) { summary.append(element('p', platformError || '正在读取平台更新状态…', platformError ? 'error' : 'hint')); return; }
+  const row = element('div', undefined, 'platform-status');
+  for (const [label, value] of [['当前运行版本',text(platformStatus.current_version) || '未知'],['上次检查结果',text(platformStatus.latest_version) || '暂无可用版本信息']]) {
+    const item = element('p'); item.append(element('strong', label), element('span', value)); row.append(item);
+  }
+  summary.append(row);
+  if (!platformStatus.enabled) summary.append(element('p', '网页更新未启用；候选包仍可在历史中查看。', 'hint'));
+  else if (platformStatus.state === 'error') summary.append(element('p', text(platformStatus.message) || '上次更新任务失败，请前往程序更新页查看。', 'error'));
+}
+// 只有完整来源身份一致才归组。流水线重跑及重复架构均保留独立安装包。
+function groupPackages(records, universe = records) {
+  const buckets = new Map(), keys = new Map();
+  for (const pkg of universe) {
+    const meta = pkg.metadata;
+    if (!text(meta.source_repository).trim() || !text(meta.source_ref).trim() || !/^[0-9a-f]{40}$/i.test(text(meta.source_sha))) continue;
+    const ci = meta.version.match(/^(.+)-ci-p([0-9]+)-b[0-9]+-j[0-9]+-[0-9a-f]+$/i);
+    const identity = ci ? ['ci',ci[1],ci[2]] : ['version',meta.version];
+    const key = JSON.stringify([meta.product,meta.source_repository,meta.source_ref,meta.source_sha,...identity]);
+    keys.set(pkg, key);
+    if (!buckets.has(key)) buckets.set(key, {label:ci ? `${ci[1]} · CI p${ci[2]}` : meta.version, packages:[]});
+    buckets.get(key).packages.push(pkg);
+  }
+  const result = [], used = new Set();
+  for (const pkg of records) {
+    const key = keys.get(pkg), bucket = buckets.get(key);
+    const visible = bucket?.packages.filter(item => records.includes(item));
+    const merge = bucket && visible.length > 1 && new Set(bucket.packages.map(item => item.metadata.platform)).size === bucket.packages.length;
+    if (!merge) { result.push({label:pkg.metadata.version, packages:[pkg]}); continue; }
+    if (!used.has(key)) { used.add(key); result.push({label:bucket.label, packages:visible}); }
+  }
+  return result;
+}
+function packageTable(records) {
+  const wrap = element('div', undefined, 'package-table-wrap'), table = element('table', undefined, 'package-table');
+  table.setAttribute('aria-label', '安装包历史版本');
+  const head = element('thead'), header = element('tr');
+  for (const label of ['版本','架构',records[0]?.metadata.product === 'mskdsp-platform' ? '状态' : '发布通道','入库时间','操作']) { const cell = element('th', label); cell.setAttribute('scope','col'); header.append(cell); }
+  head.append(header); table.append(head);
+  for (const pkg of records) {
+    const body = element('tbody'), row = element('tr'), channel = element('td'), actions = element('td'), date = element('td', undefined, 'date-cell');
+    channel.append(packageChannels(pkg)); actions.append(packageActions(pkg)); date.append(timeNode(pkg.created_at));
+    row.append(element('td', pkg.metadata.version, 'version-cell'), element('td', pkg.metadata.platform, 'architecture-cell'), channel, date, actions);
+    const detailRow = element('tr'), detail = element('td', undefined, 'detail-cell'); detail.setAttribute('colspan','5'); detail.append(packageDetails(pkg)); detailRow.append(detail);
+    body.append(row, detailRow); table.append(body);
+  }
+  wrap.append(table); return wrap;
+}
+function packageCards(records) {
+  const grid = element('div', undefined, 'package-grid');
+  for (const pkg of records) {
+    const card = element('section', undefined, 'panel package-card'), entered = element('p', '入库 · ', 'hint'); entered.append(timeNode(pkg.created_at));
+    const actions = packageActions(pkg); actions.className += ' actions';
+    card.append(element('h3', pkg.metadata.version), element('p', pkg.metadata.platform, 'identity'), packageChannels(pkg), entered, packageDetails(pkg), actions); grid.append(card);
+  }
+  return grid;
+}
+function renderHistory(section) {
+  const records = packages.filter(pkg => pkg.metadata.product === section.product), query = section.search.value.trim().toLowerCase();
+  const selected = records.filter(pkg => (!query || pkg.metadata.version.toLowerCase().includes(query)) && (!section.architecture.value || pkg.metadata.platform === section.architecture.value) && (!section.channel.value || (section.product === 'mskdsp-platform' ? pkg.metadata.channel === section.channel.value : section.channel.value === 'unpublished' ? pkg.channels.length === 0 : pkg.channels.includes(section.channel.value))));
+  section.count.textContent = catalogLoaded ? `${selected.length} 个安装包` : '目录尚未读取成功';
+  section.empty.hidden = selected.length !== 0;
+  section.empty.textContent = !catalogLoaded ? '目录暂不可用，请刷新后重试。' : records.length ? '没有匹配的软件版本。请调整条件或清除本区块筛选。' : '暂无安装包。上传并校验通过后会显示在这里。';
+  if (!section.history.open) return;
+  const key = JSON.stringify([records,selected.map(pkg => pkg.id),section.view.value]);
+  if (section.listKey === key) return;
+  section.listKey = key; section.list.replaceChildren();
+  const display = section.view.value === 'cards' ? packageCards : packageTable;
+  let singles = [];
+  const flush = () => { if (singles.length) { section.list.append(display(singles)); singles = []; } };
+  for (const group of groupPackages(selected, records)) {
+    if (group.packages.length === 1) { singles.push(group.packages[0]); continue; }
+    flush();
+    const details = element('details', undefined, 'build-group');
+    details.append(element('summary', `${group.label} · ${group.packages.length} 个架构（逐包操作）`), display(group.packages)); section.list.append(details);
+  }
+  flush(); setBusy(busy);
+}
+function render() {
+  for (const section of sections.values()) {
+    const records = packages.filter(pkg => pkg.metadata.product === section.product);
+    section.total.textContent = catalogLoaded ? `${records.length} 个安装包` : '目录尚未读取成功';
+    section.historyLabel.textContent = `历史版本${catalogLoaded ? ` · ${records.length} 个安装包` : ''}`;
+    if (section.product !== 'mskdsp-platform') {
+      if (catalogLoaded) renderRecommendations(section, records);
+      else section.summary.textContent = '软件目录暂不可用，请刷新后重试。';
+    }
+    const names = [...new Set(records.map(pkg => pkg.metadata.platform))].sort(), selected = section.architecture.value;
+    // 原选项即使不在新目录中也保留，避免刷新悄悄清除用户筛选。
+    if (selected && !names.includes(selected)) names.push(selected);
+    const key = JSON.stringify(names);
+    if (section.architectureKey !== key) {
+      section.architectureKey = key; section.architecture.replaceChildren();
+      for (const name of ['',...names]) { const option = element('option', name || '全部架构'); option.value = name; section.architecture.append(option); }
+      section.architecture.value = selected;
+    }
+    renderHistory(section);
+  }
+  renderPlatformSummary(); setBusy(busy);
+}
+async function loadCatalog() {
   const records = await request('/api/v1/software/packages');
-  if (!Array.isArray(records) || !records.every(pkg => pkg && typeof pkg.id === 'string' && pkg.metadata && typeof pkg.metadata.product === 'string' && typeof pkg.metadata.version === 'string' && typeof pkg.metadata.file_name === 'string' && Array.isArray(pkg.channels))) {
-    throw new Error('软件仓库返回了无法识别的版本列表');
+  if (!Array.isArray(records) || !records.every(pkg => pkg && typeof pkg.id === 'string' && pkg.metadata && Object.hasOwn(productNames,pkg.metadata.product) && typeof pkg.metadata.version === 'string' && typeof pkg.metadata.platform === 'string' && typeof pkg.metadata.file_name === 'string' && Array.isArray(pkg.channels) && pkg.channels.every(channel => typeof channel === 'string'))) throw new Error('软件仓库返回了无法识别的版本列表');
+  if (!authenticated) return;
+  packages = records; catalogLoaded = true; render();
+}
+async function readPlatformStatus() {
+  try {
+    const status = await request('/api/update/status');
+    const states = ['idle','checking','empty','available','current','updating','succeeded','rolling_back','rolled_back','error'];
+    if (!status || typeof status.enabled !== 'boolean' || !states.includes(status.state)) throw new Error('状态格式无法识别');
+    if (!authenticated) return;
+    platformStatus = status; platformError = '';
+  } catch (error) {
+    platformStatus = null; platformError = `平台状态暂不可用：${error.message || '请前往程序更新页查看'}`;
+    if (authorizationLost) throw error;
   }
-  packages = records;
-  const previousArchitecture = $('architecture').value;
-  $('architecture').replaceChildren();
-  for (const name of ['', ...new Set(packages.map(pkg => text(pkg.metadata.platform)).filter(Boolean))].sort()) {
-    const option = element('option', name || '全部架构'); option.value = name; $('architecture').append(option);
-  }
-  if ([...new Set(packages.map(pkg => pkg.metadata.platform))].includes(previousArchitecture)) $('architecture').value = previousArchitecture;
+  renderPlatformSummary();
+}
+async function loadAll() {
+  const results = await Promise.allSettled([loadCatalog(), readPlatformStatus()]);
   render();
+  const failed = results.find(result => result.status === 'rejected');
+  if (failed) throw failed.reason;
 }
 async function refresh() {
-  if (busy) return;
+  if (busy || !authenticated) return;
   setBusy(true);
-  try { await load(); message('版本列表已更新。'); }
-  catch (error) { message(error.message || '读取版本失败', true); }
+  try { await loadAll(); if (authenticated) message(platformError ? '软件目录已刷新，平台状态暂不可用。' : '软件目录与平台状态已刷新。'); }
+  catch (error) { message(error.message || '读取软件目录失败', true); }
   finally { setBusy(false); }
 }
+createSections();
 $('refresh').addEventListener('click', refresh);
-$('product').addEventListener('change', render); $('channel').addEventListener('change', render);
-$('architecture').addEventListener('change', render); $('view').addEventListener('change', render);
-$('version-search').addEventListener('input', render);
-$('clear-filters').addEventListener('click', () => {
-  for (const id of ['product','channel','architecture','version-search']) $(id).value = '';
-  render();
-});
 $('logout').addEventListener('click', async () => {
-  if (busy) return;
+  if (busy || !authenticated) return;
   setBusy(true);
-  try { await request('/api/v1/auth/logout', {method:'POST', headers:{'Content-Type':'application/json','X-MskDSP-Action':'auth'}, body:'{}'}); location.assign('/login'); }
-  catch (error) { message(error.message || '退出失败，请重试', true); setBusy(false); }
+  try { await request('/api/v1/auth/logout', {method:'POST', headers:{'Content-Type':'application/json','X-MskDSP-Action':'auth'}, body:'{}'}); authenticated = false; authorizationLost = true; location.assign('/login'); }
+  catch (error) { message(error.message || '退出失败，请重试', true); }
+  finally { setBusy(false); }
 });
 try {
   const user = await request('/api/v1/auth/me');
   if (user?.role !== 'admin' || !text(user.username).trim()) throw new Error('无法确认管理员身份，请重新登录');
   authenticated = true; $('username').textContent = user.username;
-  await load(); message('平台候选包需手动升级；上下位机安装包可在此发布到更新通道。');
-} catch (error) { message(error.message || '无法读取软件版本', true); }
+  await loadAll();
+  if (authenticated) message('展开各软件历史后可逐包操作；平台软件请前往程序更新页手动升级。');
+} catch (error) { message(error.message || '无法读取软件信息', true); }
 finally { setBusy(false); }
   </script>
 </body></html>
