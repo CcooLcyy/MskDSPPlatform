@@ -33,6 +33,7 @@ pub struct DeviceRecord {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewDevice {
+    #[serde(default = "new_device_id")]
     pub device_id: String,
     pub display_name: String,
 }
@@ -82,6 +83,10 @@ fn digest(value: &str) -> String {
 }
 fn token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+// 省略标识时由平台分配，与可修改的展示名称保持独立。
+fn new_device_id() -> String {
+    format!("device-{}", Uuid::new_v4().simple())
 }
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRecord> {
     Ok(DeviceRecord {

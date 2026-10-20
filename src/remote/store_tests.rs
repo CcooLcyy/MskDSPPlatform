@@ -1,5 +1,80 @@
 use super::store::*;
 
+// 仅提供中文名称时生成独立 ID；改名、轮换及重新打开数据库均保持身份。
+#[tokio::test]
+async fn generated_device_ids_are_independent_and_persist() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("devices.sqlite3");
+    let store = DeviceStore::open(path.clone()).await.unwrap();
+    let input = || {
+        serde_json::from_value::<NewDevice>(serde_json::json!({
+            "display_name": "一号光伏网关"
+        }))
+        .unwrap()
+    };
+    let first = store.create(input()).await.unwrap();
+    let second = store.create(input()).await.unwrap();
+    let id = first.device.device_id.clone();
+    assert!(id.starts_with("device-"));
+    assert_eq!(id.len(), 39);
+    assert!(valid_service(&id));
+    assert_ne!(id, second.device.device_id);
+    assert_ne!(first.token, second.token);
+    assert_eq!(first.device.display_name, "一号光伏网关");
+    assert_eq!(
+        store.authenticate(&first.token).await.unwrap().device_id,
+        id
+    );
+    let renamed = store
+        .update(
+            &id,
+            DeviceUpdate {
+                display_name: "更名后的网关".into(),
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.device_id, id);
+    let rotated = store.rotate(&id).await.unwrap();
+    assert_eq!(rotated.device.device_id, id);
+    assert!(store.authenticate(&first.token).await.is_err());
+    drop(store);
+    let reopened = DeviceStore::open(path).await.unwrap();
+    assert_eq!(
+        reopened
+            .authenticate(&rotated.token)
+            .await
+            .unwrap()
+            .device_id,
+        id
+    );
+    assert_eq!(
+        reopened.get(&id).await.unwrap().display_name,
+        "更名后的网关"
+    );
+}
+
+// 显式空标识或非法标识仍拒绝，不因省略标识的兼容逻辑而绕过校验。
+#[tokio::test]
+async fn explicit_invalid_device_ids_are_still_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = DeviceStore::open(dir.path().join("devices.sqlite3"))
+        .await
+        .unwrap();
+    for id in ["", "中文标识", "a/b", "a\nb"] {
+        let input = serde_json::from_value::<NewDevice>(serde_json::json!({
+            "device_id": id, "display_name": "网关"
+        }))
+        .unwrap();
+        assert!(matches!(
+            store.create(input).await,
+            Err(StoreError::Invalid(_))
+        ));
+    }
+    assert!(store.list().await.unwrap().is_empty());
+}
+
 // 设备凭据仅返回一次，数据库保存摘要；授权按账号隔离并持久化。
 #[tokio::test]
 async fn credentials_grants_persist_and_rotate() {

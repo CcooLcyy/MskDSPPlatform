@@ -110,36 +110,44 @@ async fn device_management_is_admin_only_and_token_is_not_listed() {
         "/api/v1/devices",
         &cookie,
         "device",
-        json!({"device_id":"field","display_name":"现场"}),
+        json!({"display_name":"现场"}),
     )
     .await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let created = json_body(created).await;
+    let id = created["device_id"].as_str().unwrap();
+    assert!(id.starts_with("device-"));
+    assert_eq!(created["display_name"], "现场");
+    assert_eq!(created["enabled"], true);
+    let device_path = format!("/api/v1/devices/{id}");
+    let grants_path = format!("{device_path}/grants");
+    let token_path = format!("{device_path}/token");
     let token = created["token"].as_str().unwrap();
-    assert!(store.authenticate(token).await.is_ok());
+    assert_eq!(store.authenticate(token).await.unwrap().device_id, id);
+    assert_eq!(created["token"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        call(&app, "GET", &device_path, &cookie, "", json!(null))
+            .await
+            .status(),
+        StatusCode::OK
+    );
     let listed =
         json_body(call(&app, "GET", "/api/v1/devices", &cookie, "", json!(null)).await).await;
     assert!(listed[0].get("token").is_none());
     assert!(listed[0].get("token_hash").is_none());
+    assert_eq!(listed[0]["device_id"], id);
     let grants = json!([{"account_id":account.id,"allow_grpc":true,"allow_ssh":false}]);
     assert_eq!(
-        call(
-            &app,
-            "PUT",
-            "/api/v1/devices/field/grants",
-            &cookie,
-            "device",
-            grants
-        )
-        .await
-        .status(),
+        call(&app, "PUT", &grants_path, &cookie, "device", grants)
+            .await
+            .status(),
         StatusCode::NO_CONTENT
     );
     assert_eq!(
         call(
             &app,
             "PUT",
-            "/api/v1/devices/field/grants",
+            &grants_path,
             &cookie,
             "device",
             json!([{"account_id":"missing","allow_grpc":true,"allow_ssh":false}])
@@ -148,18 +156,9 @@ async fn device_management_is_admin_only_and_token_is_not_listed() {
         .status(),
         StatusCode::BAD_REQUEST
     );
-    let rotated = json_body(
-        call(
-            &app,
-            "POST",
-            "/api/v1/devices/field/token",
-            &cookie,
-            "device",
-            json!(null),
-        )
-        .await,
-    )
-    .await;
+    let rotated =
+        json_body(call(&app, "POST", &token_path, &cookie, "device", json!(null)).await).await;
+    assert_eq!(rotated["device_id"], id);
     assert!(store.authenticate(token).await.is_err());
     assert!(
         store
@@ -168,17 +167,23 @@ async fn device_management_is_admin_only_and_token_is_not_listed() {
             .is_ok()
     );
     assert_eq!(
-        call(
-            &app,
-            "DELETE",
-            "/api/v1/devices/field",
-            &cookie,
-            "device",
-            json!(null)
-        )
-        .await
-        .status(),
+        call(&app, "DELETE", &device_path, &cookie, "device", json!(null))
+            .await
+            .status(),
         StatusCode::NO_CONTENT
     );
     assert!(store.list().await.unwrap().is_empty());
+
+    // 兼容既有 API 调用，显式设备 ID 继续原样保存。
+    let legacy = call(
+        &app,
+        "POST",
+        "/api/v1/devices",
+        &cookie,
+        "device",
+        json!({"device_id":"field","display_name":"已有接口"}),
+    )
+    .await;
+    assert_eq!(legacy.status(), StatusCode::CREATED);
+    assert_eq!(json_body(legacy).await["device_id"], "field");
 }
