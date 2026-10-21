@@ -106,6 +106,19 @@ fn get(db: &Connection, id: &str) -> Result<DeviceRecord, StoreError> {
     .map_err(storage)?
     .ok_or(StoreError::NotFound)
 }
+fn validate_grants(grants: &[Grant]) -> Result<(), StoreError> {
+    let mut ids = HashSet::new();
+    if grants.len() > 1024
+        || grants.iter().any(|g| {
+            g.account_id.is_empty() || g.account_id.len() > 128 || !ids.insert(g.account_id.clone())
+        })
+    {
+        return Err(StoreError::Invalid(
+            "授权账号无效、重复或超过 1024 个".into(),
+        ));
+    }
+    Ok(())
+}
 impl DeviceStore {
     pub async fn open(path: PathBuf) -> Result<Self, StoreError> {
         tokio::task::spawn_blocking(move||{
@@ -137,7 +150,12 @@ impl DeviceStore {
         .await
         .map_err(storage)?
     }
-    pub async fn create(&self, input: NewDevice) -> Result<CreatedDevice, StoreError> {
+    pub async fn create(
+        &self,
+        input: NewDevice,
+        grants: Vec<Grant>,
+    ) -> Result<CreatedDevice, StoreError> {
+        validate_grants(&grants)?;
         if !valid_service(&input.device_id) {
             return Err(StoreError::Invalid(
                 "设备标识只允许 1～128 位字母、数字、点、横线或下划线".into(),
@@ -150,6 +168,9 @@ impl DeviceStore {
             let count:i64=tx.query_row("SELECT count(*) FROM devices",[],|r|r.get(0)).map_err(storage)?;if count>=10_000{return Err(StoreError::Invalid("设备数量已达到上限".into()))}
             if get(&tx,&input.device_id).is_ok(){return Err(StoreError::Conflict)}
             tx.execute("INSERT INTO devices(id,display_name,enabled,token_hash,created_at)VALUES(?1,?2,1,?3,?4)",params![input.device_id,display,hashed,chrono::Utc::now().timestamp_millis()]).map_err(storage)?;
+            for grant in grants {
+                tx.execute("INSERT INTO grants(device_id,account_id,allow_grpc,allow_ssh)VALUES(?1,?2,?3,?4)",params![input.device_id,grant.account_id,grant.allow_grpc,grant.allow_ssh]).map_err(storage)?;
+            }
             let device=get(&tx,&input.device_id)?;tx.commit().map_err(storage)?;tracing::info!(device_id=%device.device_id,"已创建设备身份");Ok(CreatedDevice{device,token})}).await
     }
     pub async fn get(&self, id: &str) -> Result<DeviceRecord, StoreError> {
@@ -214,18 +235,7 @@ impl DeviceStore {
         self.run(move|db|{get(db,&id)?;let mut q=db.prepare("SELECT account_id,allow_grpc,allow_ssh FROM grants WHERE device_id=?1 ORDER BY account_id").map_err(storage)?;q.query_map([id],|r|Ok(Grant{account_id:r.get(0)?,allow_grpc:r.get(1)?,allow_ssh:r.get(2)?})).map_err(storage)?.collect::<Result<Vec<_>,_>>().map_err(storage)}).await
     }
     pub async fn set_grants(&self, id: &str, grants: Vec<Grant>) -> Result<(), StoreError> {
-        let mut ids = HashSet::new();
-        if grants.len() > 1024
-            || grants.iter().any(|g| {
-                g.account_id.is_empty()
-                    || g.account_id.len() > 128
-                    || !ids.insert(g.account_id.clone())
-            })
-        {
-            return Err(StoreError::Invalid(
-                "授权账号无效、重复或超过 1024 个".into(),
-            ));
-        }
+        validate_grants(&grants)?;
         let id = id.to_owned();
         self.run(move|db|{let tx=db.transaction().map_err(storage)?;get(&tx,&id)?;tx.execute("DELETE FROM grants WHERE device_id=?1",[&id]).map_err(storage)?;for grant in grants{tx.execute("INSERT INTO grants(device_id,account_id,allow_grpc,allow_ssh)VALUES(?1,?2,?3,?4)",params![id,grant.account_id,grant.allow_grpc,grant.allow_ssh]).map_err(storage)?;}tx.commit().map_err(storage)?;Ok(())}).await
     }

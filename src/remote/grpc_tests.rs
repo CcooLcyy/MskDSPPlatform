@@ -45,10 +45,13 @@ impl Fixture {
             .await
             .unwrap();
         let created = store
-            .create(NewDevice {
-                device_id: "field".into(),
-                display_name: "现场".into(),
-            })
+            .create(
+                NewDevice {
+                    device_id: "field".into(),
+                    display_name: "现场".into(),
+                },
+                vec![],
+            )
             .await
             .unwrap();
         let accounts = AccountStore::open(dir.path().join("accounts.sqlite3"))

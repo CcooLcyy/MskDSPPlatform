@@ -1,5 +1,57 @@
 use super::store::*;
 
+// 默认授权与设备原子落盘，授权写入中途失败不能留下不可用的设备身份。
+#[tokio::test]
+async fn device_and_initial_grants_are_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("devices.sqlite3");
+    let store = DeviceStore::open(path.clone()).await.unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_grant BEFORE INSERT ON grants WHEN NEW.account_id='rejected' BEGIN SELECT RAISE(ABORT,'授权写入失败'); END;").unwrap();
+    let input = || NewDevice {
+        device_id: "new-device".into(),
+        display_name: "新设备".into(),
+    };
+    let grants = || {
+        vec![
+            Grant {
+                account_id: "allowed".into(),
+                allow_grpc: true,
+                allow_ssh: true,
+            },
+            Grant {
+                account_id: "rejected".into(),
+                allow_grpc: true,
+                allow_ssh: true,
+            },
+        ]
+    };
+    assert!(matches!(
+        store.create(input(), grants()).await,
+        Err(StoreError::Storage)
+    ));
+    assert!(store.list().await.unwrap().is_empty());
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM grants", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+    db.execute_batch("DROP TRIGGER reject_grant;").unwrap();
+    store.create(input(), grants()).await.unwrap();
+    drop(store);
+    let reopened = DeviceStore::open(path).await.unwrap();
+    assert_eq!(reopened.grants("new-device").await.unwrap().len(), 2);
+    for account in ["allowed", "rejected"] {
+        reopened
+            .authorize("new-device", account, "ModuleManager")
+            .await
+            .unwrap();
+        reopened
+            .authorize("new-device", account, "ssh")
+            .await
+            .unwrap();
+    }
+}
+
 // 仅提供中文名称时生成独立 ID；改名、轮换及重新打开数据库均保持身份。
 #[tokio::test]
 async fn generated_device_ids_are_independent_and_persist() {
@@ -12,8 +64,8 @@ async fn generated_device_ids_are_independent_and_persist() {
         }))
         .unwrap()
     };
-    let first = store.create(input()).await.unwrap();
-    let second = store.create(input()).await.unwrap();
+    let first = store.create(input(), vec![]).await.unwrap();
+    let second = store.create(input(), vec![]).await.unwrap();
     let id = first.device.device_id.clone();
     assert!(id.starts_with("device-"));
     assert_eq!(id.len(), 39);
@@ -68,7 +120,7 @@ async fn explicit_invalid_device_ids_are_still_rejected() {
         }))
         .unwrap();
         assert!(matches!(
-            store.create(input).await,
+            store.create(input, vec![]).await,
             Err(StoreError::Invalid(_))
         ));
     }
@@ -82,10 +134,13 @@ async fn credentials_grants_persist_and_rotate() {
     let path = dir.path().join("devices.sqlite3");
     let store = DeviceStore::open(path.clone()).await.unwrap();
     let created = store
-        .create(NewDevice {
-            device_id: "field-01".into(),
-            display_name: "现场一".into(),
-        })
+        .create(
+            NewDevice {
+                device_id: "field-01".into(),
+                display_name: "现场一".into(),
+            },
+            vec![],
+        )
         .await
         .unwrap();
     assert!(created.token.len() >= 32);
@@ -173,10 +228,13 @@ async fn token_is_hashed_and_invalid_grants_preserve_previous_values() {
     let path = dir.path().join("devices.sqlite3");
     let store = DeviceStore::open(path.clone()).await.unwrap();
     let created = store
-        .create(NewDevice {
-            device_id: "device".into(),
-            display_name: "现场".into(),
-        })
+        .create(
+            NewDevice {
+                device_id: "device".into(),
+                display_name: "现场".into(),
+            },
+            vec![],
+        )
         .await
         .unwrap();
     let db = rusqlite::Connection::open(path).unwrap();

@@ -35,6 +35,210 @@ async fn call(
 async fn json_body(response: Response) -> Value {
     serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
 }
+async fn admin_app(store: DeviceStore, accounts: AccountStore) -> (Router, String) {
+    let state = HttpState {
+        auth: AdminAuth::new(AuthConfig {
+            password_hash: hash_password("admin-test-password").unwrap(),
+            ..AuthConfig::default()
+        })
+        .unwrap(),
+        sessions: SessionRegistry::default(),
+        protocol_version: "platform.v1".into(),
+    };
+    let app =
+        crate::http::router(state.clone()).merge(router(state, store, accounts, Hub::default()));
+    let login = call(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        "",
+        "auth",
+        json!({"username":"root","password":"admin-test-password"}),
+    )
+    .await;
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    (app, cookie)
+}
+
+// 创建时为全部已有账号持久化两项权限；停用账号仍不能登录，旧授权与后建账号不受影响。
+#[tokio::test]
+async fn device_creation_grants_existing_accounts_without_changing_other_permissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let device_db = dir.path().join("devices.sqlite3");
+    let store = DeviceStore::open(device_db.clone()).await.unwrap();
+    let accounts = AccountStore::open(dir.path().join("accounts.sqlite3"))
+        .await
+        .unwrap();
+    let mut existing_accounts = Vec::new();
+    for username in ["operator-one", "operator-two", "disabled-operator"] {
+        existing_accounts.push(
+            accounts
+                .create(crate::accounts::NewAccount {
+                    username: username.into(),
+                    password: "field-password-123".into(),
+                    display_name: username.into(),
+                })
+                .await
+                .unwrap(),
+        );
+    }
+    let disabled = &existing_accounts[2];
+    accounts
+        .update(
+            &disabled.id,
+            disabled.revision,
+            crate::accounts::AccountUpdate {
+                display_name: disabled.display_name.clone(),
+                enabled: false,
+            },
+        )
+        .await
+        .unwrap();
+    let custom_grants = vec![Grant {
+        account_id: existing_accounts[0].id.clone(),
+        allow_grpc: false,
+        allow_ssh: true,
+    }];
+    store
+        .create(
+            NewDevice {
+                device_id: "old-device".into(),
+                display_name: "原有设备".into(),
+            },
+            custom_grants.clone(),
+        )
+        .await
+        .unwrap();
+    store
+        .create(
+            NewDevice {
+                device_id: "old-ungranted-device".into(),
+                display_name: "原有未授权设备".into(),
+            },
+            vec![],
+        )
+        .await
+        .unwrap();
+    let (app, cookie) = admin_app(store, accounts.clone()).await;
+    let created = call(
+        &app,
+        "POST",
+        "/api/v1/devices",
+        &cookie,
+        "device",
+        json!({"display_name":"研发测试"}),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created = json_body(created).await;
+    let id = created["device_id"].as_str().unwrap();
+    let grants_path = format!("/api/v1/devices/{id}/grants");
+    let mut expected = existing_accounts
+        .iter()
+        .map(|account| Grant {
+            account_id: account.id.clone(),
+            allow_grpc: true,
+            allow_ssh: true,
+        })
+        .collect::<Vec<_>>();
+    expected.sort_by(|left, right| left.account_id.cmp(&right.account_id));
+    let response = call(&app, "GET", &grants_path, &cookie, "", json!(null)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await, json!(expected));
+
+    // 重新打开数据库，确认权限在创建成功时已经落盘。
+    let reopened = DeviceStore::open(device_db).await.unwrap();
+    assert_eq!(json!(reopened.grants(id).await.unwrap()), json!(expected));
+    for account in &existing_accounts {
+        reopened
+            .authorize(id, &account.id, "DataCenter")
+            .await
+            .unwrap();
+        reopened.authorize(id, &account.id, "ssh").await.unwrap();
+    }
+    assert!(
+        accounts
+            .verify("operator-one", "field-password-123")
+            .await
+            .is_ok()
+    );
+    assert!(matches!(
+        accounts
+            .verify("disabled-operator", "field-password-123")
+            .await,
+        Err(crate::accounts::AccountError::Unauthorized)
+    ));
+    assert_eq!(
+        json!(reopened.grants("old-device").await.unwrap()),
+        json!(custom_grants)
+    );
+    assert!(
+        reopened
+            .grants("old-ungranted-device")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let later = accounts
+        .create(crate::accounts::NewAccount {
+            username: "later-operator".into(),
+            password: "field-password-123".into(),
+            display_name: "后建账号".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(json!(reopened.grants(id).await.unwrap()), json!(expected));
+    assert!(reopened.for_account(&later.id).await.unwrap().is_empty());
+    for service in ["DataCenter", "ssh"] {
+        assert!(matches!(
+            reopened.authorize(id, &later.id, service).await,
+            Err(StoreError::Denied)
+        ));
+    }
+}
+
+// 没有上位机账号时仍可创建设备，设备凭据有效且授权为空。
+#[tokio::test]
+async fn device_creation_without_accounts_keeps_empty_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let device_db = dir.path().join("devices.sqlite3");
+    let store = DeviceStore::open(device_db.clone()).await.unwrap();
+    let accounts = AccountStore::open(dir.path().join("accounts.sqlite3"))
+        .await
+        .unwrap();
+    let (app, cookie) = admin_app(store, accounts).await;
+    let created = call(
+        &app,
+        "POST",
+        "/api/v1/devices",
+        &cookie,
+        "device",
+        json!({"device_id":"first-device","display_name":"首台设备"}),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created = json_body(created).await;
+    assert_eq!(created["device_id"], "first-device");
+    let reopened = DeviceStore::open(device_db).await.unwrap();
+    assert!(reopened.grants("first-device").await.unwrap().is_empty());
+    assert_eq!(
+        reopened
+            .authenticate(created["token"].as_str().unwrap())
+            .await
+            .unwrap()
+            .device_id,
+        "first-device"
+    );
+}
+
 // 管理员权限与操作标记保护设备凭据；创建、授权、轮换、删除均可实际执行。
 #[tokio::test]
 async fn device_management_is_admin_only_and_token_is_not_listed() {
