@@ -2,6 +2,7 @@
 from contextlib import closing
 import os
 from pathlib import Path
+import runpy
 import sqlite3
 import shutil
 import tempfile
@@ -13,6 +14,22 @@ import test_modbus_api as api
 
 
 class PlatformApiStorageTests(unittest.TestCase):
+    # 真实进程夹具必须读取 Cargo 的外部 target，未设置时保留本地目录兼容。
+    def test_platform_binary_follows_cargo_target_and_local_default(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            suffix = "mskdsp-platform.exe" if os.name == "nt" else "mskdsp-platform"
+            binary = Path(temporary) / "debug" / suffix
+            binary.parent.mkdir()
+            binary.write_text("真实进程夹具的程序存在性种子", encoding="utf-8")
+            for configured, target in ((temporary, Path(temporary)), ("", api.ROOT / "target"),
+                                       ("custom-target", api.ROOT / "custom-target")):
+                with self.subTest(configured=configured), mock.patch.dict(
+                        os.environ, {"CARGO_TARGET_DIR": configured}):
+                    loaded = runpy.run_path(api.__file__)
+                    self.assertEqual(loaded["BINARY"], target / "debug" / suffix)
+                    if configured == temporary:
+                        self.assertFalse(getattr(loaded["TemplateApiTests"], "__unittest_skip__", False))
+
     # 模拟默认磁盘临时目录不可用：显式根仍可建立 SQLite、提交并完整清理。
     def test_explicit_root_avoids_default_disk_and_preserves_database_io(self):
         original = tempfile.TemporaryDirectory

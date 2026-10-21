@@ -16,25 +16,13 @@ verify:
   timeout: 30m
   variables:
     GIT_SUBMODULE_STRATEGY: normal
-  cache:
-    key:
-      prefix: rust-1.94.1-linux-amd64
-      files: [Cargo.lock]
-    paths: [.cargo/registry/, .cargo/git/, target/]
-    policy: pull-push
-    when: always
+    CARGO_HOME: /ci-cache/platform/rust-1.94.1/cargo
+    CARGO_TARGET_DIR: /ci-cache/platform/rust-1.94.1/target
+    PLATFORM_CACHE_MOUNT: /ci-cache
+  cache: []
+  resource_group: platform-verify-cache
   script:
-    - set -o pipefail
-    - mkdir -p package/logs .ci-tmp
-    - export TMPDIR="$CI_PROJECT_DIR/.ci-tmp"
-    - python3 -B script/init_platform_proto.py
-    - cargo fmt --all -- --check
-    - cargo build --locked 2>&1 | tee package/logs/cargo-build.log
-    - test -x target/debug/mskdsp-platform
-    - node --version
-    - cargo test --locked --all-targets 2>&1 | tee package/logs/cargo-test.log
-    # 仅真实平台进程夹具的数据与 SQLite 使用容器内有界 tmpfs；日志及其他测试仍走原目录。
-    - MSKDSP_PLATFORM_TEST_TMPDIR=/dev/shm python3 -B -m unittest discover -s test -p 'test_*.py' -v 2>&1 | tee package/logs/python-test.log
+    - bash script/verify_ci.sh
   artifacts:
     when: always
     expire_in: 14 days

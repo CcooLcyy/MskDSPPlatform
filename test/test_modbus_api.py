@@ -15,7 +15,11 @@ import unittest
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-BINARY = ROOT / "target" / "debug" / ("mskdsp-platform.exe" if os.name == "nt" else "mskdsp-platform")
+# CI 使用持久 target，本地未配置时仍读取项目默认调试程序。
+TARGET_DIR = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target")
+if not TARGET_DIR.is_absolute():
+    TARGET_DIR = ROOT / TARGET_DIR
+BINARY = TARGET_DIR / "debug" / ("mskdsp-platform.exe" if os.name == "nt" else "mskdsp-platform")
 STARTUP_TIMEOUT = 30.0
 
 

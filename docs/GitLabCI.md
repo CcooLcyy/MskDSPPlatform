@@ -69,10 +69,29 @@ Job token allowlist 必须允许平台项目。`metadata`、`package` 和
 
 作业标签为 `linux`、`amd64`、`docker`，使用实例级 Docker Runner。
 Runner 全局并发 6，由所有使用它的仓库共享；单个作业上限 8 CPU、16 GiB。
-Rust 检查作业按 Cargo.lock 使用 GitLab cache，缓存 `.cargo/registry`、
-`.cargo/git` 和 `target`；受保护与非保护分支缓存由 GitLab 隔离。
-Runner 宿主缓存目录为 `/home/daniel/gitlab-runner-cache`。检查失败也会保存编译缓存，
-测试临时目录位于构建卷中的 `.ci-tmp`，避免容器 overlay 的额外写入。
+Rust 检查作业直接使用宿主机 `/home/daniel/gitlab-runner-cache-direct` 到作业容器
+`/ci-cache` 的持久挂载，省去每轮 ZIP cache 的扫描、打包和解包。
+`verify` 设置 `CARGO_HOME=/ci-cache/platform/rust-1.94.1/cargo`、
+`CARGO_TARGET_DIR=/ci-cache/platform/rust-1.94.1/target` 和
+`PLATFORM_CACHE_MOUNT=/ci-cache`，并显式配置 `cache: []`。
+
+`script/verify_ci.sh` 在任何 Cargo 命令前验证两个缓存路径是绝对路径、解析符号链接后
+位于真实挂载内部且不属于项目工作区；挂载缺失或路径无效时以中文日志明确失败，
+不能回退到临时容器目录。日志记录实际缓存路径及程序缓存存在状态。
+全部检查命令和测试门禁保持原顺序，Python 真实进程测试从 `CARGO_TARGET_DIR/debug`
+读取已构建程序；未设置该变量的本地测试仍读取项目 `target/debug`。
+只有 `verify` 访问这些持久缓存，以 `resource_group: platform-verify-cache` 将同一项目
+全部分支的检查作业串行化，避免共享 target 被同时构建；Cargo 指纹仍负责依赖及源码
+变化后的重新编译。当前单 Runner 保持原 CI 工作区路径，跨工作区复用时 Cargo 可重新
+编译带有绝对路径的对象，不保证直接复用每个旧对象。工具链升级时变更版本目录，
+禁止在活动作业期间清理缓存。BuildKit、元数据、打包及发布作业保持原有行为。
+
+切换前暂停相关 Runner 接单并等待活动作业结束，备份配置，将旧 ZIP 中的 Cargo registry、
+git 和 target 一次性恢复到上述目录，保留权限及符号链接；旧 ZIP 保留以便回退。
+恢复接单前核对真实挂载。新 Runner 也必须准备相同路径；缓存不跨主机共享。
+连续两轮真实 CI 验证编译、Rust/Python/Node 测试及打包上传，核对缓存恢复/保存阶段消失、
+第二轮直接复用情况和 I/O 延迟。日志继续作为唯一 verify artifacts，缓存不归档。
+测试临时目录仍位于构建卷中的 `.ci-tmp`，避免容器 overlay 的额外写入。
 
 任务工具预装在两类镜像中，作业启动时不再重复执行 APT 安装和 rustfmt 下载：
 
