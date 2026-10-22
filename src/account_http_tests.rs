@@ -535,12 +535,12 @@ async fn client_sessions_cannot_escalate_to_administrator() {
         StatusCode::UNAUTHORIZED
     );
     clients.authenticate(token).await.unwrap();
-    clients.logout(token).await;
+    clients.logout(token).await.unwrap();
     assert!(matches!(
         clients.authenticate(token).await,
         Err(crate::client_auth::ClientAuthError::Unauthorized)
     ));
-    clients.logout(token).await;
+    clients.logout(token).await.unwrap();
 }
 
 // 重名、管理员保留名、弱密码、未知字段和超大请求均被拒绝。

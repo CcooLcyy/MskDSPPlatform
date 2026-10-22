@@ -45,8 +45,8 @@ async fn login_issues_opaque_token_and_logout_is_idempotent() {
             .id,
         account.id
     );
-    auth.logout(&login.access_token).await;
-    auth.logout(&login.access_token).await;
+    auth.logout(&login.access_token).await.unwrap();
+    auth.logout(&login.access_token).await.unwrap();
     assert!(matches!(
         auth.authenticate(&login.access_token).await,
         Err(ClientAuthError::Unauthorized)
@@ -73,40 +73,30 @@ async fn wrong_credentials_have_the_same_error_and_attempts_are_limited() {
 }
 
 #[tokio::test]
-async fn expiry_restart_and_malformed_tokens_are_rejected() {
+async fn restart_preserves_session_but_expiry_and_malformed_tokens_are_rejected() {
     let (_directory, store, auth, _account) = fixture().await;
     let login = auth
         .login("field-user", "field-password-123")
         .await
         .unwrap();
     let restarted = ClientAuth::new(store, 28_800);
-    assert!(matches!(
-        restarted.authenticate(&login.access_token).await,
-        Err(ClientAuthError::Unauthorized)
-    ));
+    assert!(restarted.authenticate(&login.access_token).await.is_ok());
     for token in ["", "old-identity-token", &"a".repeat(65), &"x".repeat(64)] {
         assert!(matches!(
             auth.authenticate(token).await,
             Err(ClientAuthError::Unauthorized)
         ));
     }
-    auth.0
-        .sessions
-        .lock()
-        .await
-        .get_mut(&login.access_token)
-        .unwrap()
-        .expires_at = Instant::now();
+    assert!(auth.expire_session_for_test(&login.access_token).await);
     assert!(matches!(
-        auth.authenticate(&login.access_token).await,
+        restarted.authenticate(&login.access_token).await,
         Err(ClientAuthError::Unauthorized)
     ));
-    assert!(auth.0.sessions.lock().await.is_empty());
 }
 
 #[tokio::test]
 async fn verification_concurrency_and_session_capacity_are_bounded() {
-    let (_directory, store, auth, account) = fixture().await;
+    let (directory, store, auth, account) = fixture().await;
     let permits = auth
         .0
         .verification_slots
@@ -119,17 +109,25 @@ async fn verification_concurrency_and_session_capacity_are_bounded() {
         Err(ClientAuthError::Busy)
     ));
     drop(permits);
-    let entry = SessionEntry {
-        account_id: account.id.clone(),
-        auth_version: account.auth_version,
-        expires_at: Instant::now() + Duration::from_secs(100),
-    };
-    {
-        let mut sessions = auth.0.sessions.lock().await;
-        for index in 0..MAX_ACCOUNT_SESSIONS {
-            sessions.insert(format!("{index:064x}"), entry.clone());
-        }
-    }
+    let mut connection =
+        rusqlite::Connection::open(directory.path().join("accounts.sqlite3")).unwrap();
+    let now = chrono::Utc::now().timestamp_millis();
+    let insert =
+        "WITH RECURSIVE slots(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM slots WHERE n+1<?1)
+        INSERT INTO client_sessions_v1(token_hash,account_id,auth_version,issued_at,expires_at)
+        SELECT printf('%064x',n),?2,?3,?4,?5 FROM slots";
+    connection
+        .execute(
+            insert,
+            rusqlite::params![
+                crate::accounts::sessions::MAX_ACCOUNT_SESSIONS as i64,
+                account.id,
+                account.auth_version,
+                now,
+                now + 100_000
+            ],
+        )
+        .unwrap();
     assert!(matches!(
         auth.login("field-user", "field-password-123").await,
         Err(ClientAuthError::SessionLimit)
@@ -142,23 +140,38 @@ async fn verification_concurrency_and_session_capacity_are_bounded() {
             .last_login_at
             .is_none()
     );
-    {
-        let mut sessions = auth.0.sessions.lock().await;
-        sessions.clear();
-        for index in 0..MAX_SESSIONS {
-            sessions.insert(
-                format!("{index:064x}"),
-                SessionEntry {
-                    account_id: "other-account".into(),
-                    ..entry.clone()
-                },
-            );
-        }
-    }
+    let other = store.create(serde_json::from_value(serde_json::json!({
+        "username": "capacity-user", "display_name": "容量测试", "password": "field-password-123"
+    })).unwrap()).await.unwrap();
+    let transaction = connection.transaction().unwrap();
+    transaction
+        .execute("DELETE FROM client_sessions_v1", [])
+        .unwrap();
+    transaction
+        .execute(
+            insert,
+            rusqlite::params![
+                crate::accounts::sessions::MAX_SESSIONS as i64,
+                other.id,
+                other.auth_version,
+                now,
+                now + 100_000
+            ],
+        )
+        .unwrap();
+    transaction.commit().unwrap();
     assert!(matches!(
         auth.login("field-user", "field-password-123").await,
         Err(ClientAuthError::SessionLimit)
     ));
+    assert!(
+        store
+            .get(&account.id)
+            .await
+            .unwrap()
+            .last_login_at
+            .is_none()
+    );
 }
 
 #[tokio::test]

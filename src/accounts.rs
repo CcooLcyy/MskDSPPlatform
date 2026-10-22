@@ -172,6 +172,7 @@ impl AccountStore {
             connection
                 .pragma_update(None, "journal_mode", "WAL")
                 .map_err(storage_error)?;
+            sessions::initialize(&connection)?;
             Ok(Self(Arc::new(Mutex::new(connection))))
         })
         .await
@@ -313,6 +314,7 @@ impl AccountStore {
         .await
     }
 
+    #[cfg(test)]
     pub async fn check_authorization(
         &self,
         id: &str,
@@ -333,6 +335,7 @@ impl AccountStore {
         .await
     }
 
+    #[cfg(test)]
     pub async fn touch_login(
         &self,
         id: &str,
@@ -435,3 +438,6 @@ fn storage_error(_error: impl std::fmt::Display) -> AccountError {
 #[cfg(test)]
 #[path = "account_store_tests.rs"]
 mod tests;
+
+#[path = "account_sessions.rs"]
+pub(crate) mod sessions;

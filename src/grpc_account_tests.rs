@@ -626,7 +626,7 @@ async fn password_reset_and_logout_revoke_existing_connections() {
         .await
         .unwrap();
     let (_sender2, mut stream2) = server.online(&fresh, "computer-1").await;
-    server.auth.logout(&fresh.access_token).await;
+    server.auth.logout(&fresh.access_token).await.unwrap();
     revoked(&mut stream2).await;
     wait_count(&server.sessions, 0).await;
     server

@@ -119,7 +119,10 @@ impl AgentService for AgentGrpcService {
         request: Request<agent::SessionRequest>,
     ) -> Result<Response<agent::LogoutResponse>, Status> {
         let token = bearer_token(request.metadata())?;
-        self.client_auth.logout(&token).await;
+        self.client_auth
+            .logout(&token)
+            .await
+            .map_err(|error| client_status(error, false))?;
         Ok(Response::new(agent::LogoutResponse {}))
     }
 
@@ -339,3 +342,7 @@ fn now_unix_ms() -> i64 {
 #[cfg(test)]
 #[path = "grpc_account_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "grpc_session_restart_tests.rs"]
+mod session_restart_tests;

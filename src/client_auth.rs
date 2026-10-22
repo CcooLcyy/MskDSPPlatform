@@ -1,7 +1,7 @@
 use crate::accounts::{AccountError, AccountRecord, AccountStore};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -9,25 +9,14 @@ use thiserror::Error;
 use tokio::sync::{Mutex, Semaphore};
 use uuid::Uuid;
 
-const MAX_SESSIONS: usize = 1024;
-const MAX_ACCOUNT_SESSIONS: usize = 16;
-
 #[derive(Clone)]
 pub struct ClientAuth(Arc<ClientAuthInner>);
 
 struct ClientAuthInner {
     store: AccountStore,
     session_seconds: u64,
-    sessions: Mutex<HashMap<String, SessionEntry>>,
     attempts: Mutex<(Instant, u32)>,
     verification_slots: Arc<Semaphore>,
-}
-
-#[derive(Clone)]
-struct SessionEntry {
-    account_id: String,
-    auth_version: i64,
-    expires_at: Instant,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,7 +54,6 @@ impl ClientAuth {
         Self(Arc::new(ClientAuthInner {
             store,
             session_seconds: session_seconds.max(1),
-            sessions: Mutex::new(HashMap::new()),
             attempts: Mutex::new((Instant::now(), 0)),
             verification_slots: Arc::new(Semaphore::new(2)),
         }))
@@ -133,42 +121,19 @@ impl ClientAuth {
         .await
         .map_err(|_| ClientAuthError::Storage)?
         .map_err(account_error)?;
-        let now = Instant::now();
-        let mut sessions = self.0.sessions.lock().await;
-        sessions.retain(|_, session| {
-            session.expires_at > now
-                && (session.account_id != account.id
-                    || session.auth_version == account.auth_version)
-        });
-        if sessions.len() >= MAX_SESSIONS
-            || sessions
-                .values()
-                .filter(|entry| entry.account_id == account.id)
-                .count()
-                >= MAX_ACCOUNT_SESSIONS
-        {
-            return Err(ClientAuthError::SessionLimit);
-        }
+        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let account = self
             .0
             .store
-            .touch_login(&account.id, account.auth_version)
+            .create_client_session(
+                &account.id,
+                account.auth_version,
+                token_digest(&token),
+                self.0.session_seconds,
+            )
             .await
-            .map_err(account_error)?;
-        let token = loop {
-            let candidate = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-            if !sessions.contains_key(&candidate) {
-                break candidate;
-            }
-        };
-        sessions.insert(
-            token.clone(),
-            SessionEntry {
-                account_id: account.id.clone(),
-                auth_version: account.auth_version,
-                expires_at: now + Duration::from_secs(self.0.session_seconds),
-            },
-        );
+            .map_err(account_error)?
+            .ok_or(ClientAuthError::SessionLimit)?;
         Ok(LoginResponse {
             access_token: token,
             token_type: "Bearer",
@@ -181,64 +146,49 @@ impl ClientAuth {
         if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(ClientAuthError::Unauthorized);
         }
-        let entry = {
-            let mut sessions = self.0.sessions.lock().await;
-            let now = Instant::now();
-            sessions.retain(|_, entry| entry.expires_at > now);
-            sessions
-                .get(token)
-                .cloned()
-                .ok_or(ClientAuthError::Unauthorized)?
-        };
-        let account = match self
+        let (account, expires_in) = self
             .0
             .store
-            .check_authorization(&entry.account_id, entry.auth_version)
+            .authenticate_client_session(token_digest(token))
             .await
-        {
-            Ok(account) => account,
-            Err(AccountError::Storage) => return Err(ClientAuthError::Storage),
-            Err(_) => {
-                self.0.sessions.lock().await.remove(token);
-                return Err(ClientAuthError::Unauthorized);
-            }
-        };
-        // 数据库校验期间发生退出或过期时，不能继续使用之前读取的会话。
-        let mut sessions = self.0.sessions.lock().await;
-        let now = Instant::now();
-        sessions.retain(|_, entry| entry.expires_at > now);
-        let current = sessions.get(token).ok_or(ClientAuthError::Unauthorized)?;
+            .map_err(account_error)?;
         Ok(ClientSession {
             account,
-            expires_in: current.expires_at.saturating_duration_since(now).as_secs(),
+            expires_in,
         })
     }
 
     /// 仅测试使用：保留会话记录并令其过期，继续验证真实过期检查与连接轮询。
     #[cfg(test)]
     pub(crate) async fn expire_session_for_test(&self, token: &str) -> bool {
-        let mut sessions = self.0.sessions.lock().await;
-        let Some(session) = sessions.get_mut(token) else {
-            return false;
-        };
-        session.expires_at = Instant::now();
-        true
+        self.0
+            .store
+            .expire_client_session(token_digest(token))
+            .await
+            .unwrap()
     }
 
-    pub async fn logout(&self, token: &str) {
-        if let Some(entry) = self.0.sessions.lock().await.remove(token) {
-            tracing::info!(account_id = %entry.account_id, "上位机账号已退出登录");
-        }
+    pub async fn logout(&self, token: &str) -> Result<(), ClientAuthError> {
+        self.0
+            .store
+            .delete_client_session(token_digest(token))
+            .await
+            .map_err(account_error)?;
+        tracing::info!("上位机登录会话已退出");
+        Ok(())
     }
 
     pub async fn revoke_account(&self, account_id: &str) {
-        self.0
-            .sessions
-            .lock()
-            .await
-            .retain(|_, entry| entry.account_id != account_id);
-        tracing::info!(account_id, "上位机账号登录会话已撤销");
+        match self.0.store.delete_account_sessions(account_id).await {
+            Ok(()) => tracing::info!(account_id, "上位机账号登录会话已撤销"),
+            // 管理接口已持久化认证版本，清理失败仍会在认证时拒绝全部旧会话。
+            Err(_) => tracing::warn!(account_id, "清理上位机会话失败，旧会话仍由账号认证版本拒绝"),
+        }
     }
+}
+
+fn token_digest(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
 fn account_error(error: AccountError) -> ClientAuthError {
@@ -251,3 +201,7 @@ fn account_error(error: AccountError) -> ClientAuthError {
 #[cfg(test)]
 #[path = "client_auth_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "client_auth_persistence_tests.rs"]
+mod persistence_tests;

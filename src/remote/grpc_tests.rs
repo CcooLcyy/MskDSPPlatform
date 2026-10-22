@@ -321,7 +321,7 @@ async fn revocation_and_cancellation_release_sessions() {
     let (_device_tx, mut device, _) = f.attach(&mut control).await;
     upper.message().await.unwrap();
     device.message().await.unwrap();
-    f.auth.logout(&f.user).await;
+    f.auth.logout(&f.user).await.unwrap();
     let result = tokio::time::timeout(std::time::Duration::from_secs(3), upper.message())
         .await
         .unwrap();
