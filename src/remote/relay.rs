@@ -3,20 +3,111 @@ use super::{
     hub::{FrameSender, Peer},
     proto::*,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tonic::{Status, Streaming};
 const BLOCK: Duration = Duration::from_secs(30);
+const PROGRESS_BYTES: u64 = 2 * 1024 * 1024;
+
+struct DirectionProgress<'a> {
+    id: &'a str,
+    direction: &'a str,
+    started: Instant,
+    last_progress: Instant,
+    bytes: u64,
+    frames: u64,
+    reported_bytes: u64,
+    end_reason: &'static str,
+}
+
+impl<'a> DirectionProgress<'a> {
+    fn new(id: &'a str, direction: &'a str, target: &FrameSender) -> Self {
+        tracing::info!(tunnel_id=%id, direction, queue_capacity=target.max_capacity(), "隧道方向开始转发");
+        let now = Instant::now();
+        Self {
+            id,
+            direction,
+            started: now,
+            last_progress: now,
+            bytes: 0,
+            frames: 0,
+            reported_bytes: 0,
+            end_reason: "隧道任务或另一方向已结束",
+        }
+    }
+
+    async fn send_with_timeout(
+        &mut self,
+        target: &FrameSender,
+        input: TunnelFrame,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), Status> {
+        let bytes = match &input.payload {
+            Some(tunnel_frame::Payload::Data(data)) => data.len() as u64,
+            _ => 0,
+        };
+        let waiting = Instant::now();
+        if let Err(error) = send_with_timeout(target, input, cancel, timeout).await {
+            self.end_reason = "发送失败";
+            let waited_ms = waiting.elapsed().as_millis() as u64;
+            tracing::warn!(tunnel_id=%self.id, direction=self.direction,
+                transferred_bytes=self.bytes, transferred_frames=self.frames, pending_bytes=bytes,
+                waited_ms, queue_remaining=target.capacity(),
+                last_progress_ms=self.last_progress.elapsed().as_millis() as u64,
+                code=?error.code(), "隧道方向发送失败");
+            return Err(if error.code() == tonic::Code::DeadlineExceeded {
+                Status::deadline_exceeded(format!(
+                    "隧道响应阻塞超时：{}，已转发 {} 字节，等待 {} 毫秒",
+                    self.direction, self.bytes, waited_ms
+                ))
+            } else {
+                error
+            });
+        }
+        self.bytes += bytes;
+        self.frames += 1;
+        self.last_progress = Instant::now();
+        if self.bytes - self.reported_bytes >= PROGRESS_BYTES {
+            self.reported_bytes = self.bytes;
+            tracing::info!(tunnel_id=%self.id, direction=self.direction,
+                transferred_bytes=self.bytes, transferred_frames=self.frames,
+                elapsed_ms=self.started.elapsed().as_millis() as u64,
+                queue_remaining=target.capacity(), "隧道方向转发进展");
+        }
+        Ok(())
+    }
+}
+
+impl Drop for DirectionProgress<'_> {
+    fn drop(&mut self) {
+        tracing::info!(tunnel_id=%self.id, direction=self.direction,
+            transferred_bytes=self.bytes, transferred_frames=self.frames,
+            elapsed_ms=self.started.elapsed().as_millis() as u64,
+            last_progress_ms=self.last_progress.elapsed().as_millis() as u64,
+            reason=self.end_reason, "隧道方向转发结束");
+    }
+}
+
 pub async fn send<T: Send>(
     tx: &mpsc::Sender<Result<T, Status>>,
     value: T,
     cancel: &CancellationToken,
 ) -> Result<(), Status> {
+    send_with_timeout(tx, value, cancel, BLOCK).await
+}
+
+async fn send_with_timeout<T: Send>(
+    tx: &mpsc::Sender<Result<T, Status>>,
+    value: T,
+    cancel: &CancellationToken,
+    timeout: Duration,
+) -> Result<(), Status> {
     tokio::select! {
      biased;
      _=cancel.cancelled()=>Err(Status::unavailable("设备控制连接已断开")),
-     result=tokio::time::timeout(BLOCK,tx.send(Ok(value)))=>{
+     result=tokio::time::timeout(timeout,tx.send(Ok(value)))=>{
       result.map_err(|_|Status::deadline_exceeded("隧道响应阻塞超时"))?
        .map_err(|_|Status::cancelled("接收端已关闭"))
      }
@@ -93,18 +184,37 @@ async fn pump(
     half_notify: mpsc::Sender<()>,
 ) -> Result<bool, Status> {
     let mut half = false;
+    let mut progress = DirectionProgress::new(id, direction, outbound);
     loop {
-        let input = inbound.message().await?;
+        let input = match inbound.message().await {
+            Ok(input) => input,
+            Err(error) => {
+                progress.end_reason = "接收失败";
+                tracing::warn!(tunnel_id=%id, direction, code=?error.code(), "隧道方向接收失败");
+                return Err(error);
+            }
+        };
         let eof = input.is_none();
         let was_half = half;
-        let closed = forward(input, &mut half, outbound, cancel, id, direction).await?;
+        let closed = match forward(input, &mut half, outbound, cancel, &mut progress).await {
+            Ok(closed) => closed,
+            Err(error) => {
+                if progress.end_reason != "发送失败" {
+                    progress.end_reason = "帧校验失败";
+                    tracing::warn!(tunnel_id=%id, direction, code=?error.code(), "隧道方向帧校验失败");
+                }
+                return Err(error);
+            }
+        };
         if !was_half && half {
             let _ = half_notify.send(()).await;
         }
         if closed {
+            progress.end_reason = "收到关闭帧";
             return Ok(true);
         }
         if eof {
+            progress.end_reason = "输入流已结束";
             return Ok(false);
         }
     }
@@ -114,20 +224,21 @@ async fn forward(
     half: &mut bool,
     target: &FrameSender,
     cancel: &CancellationToken,
-    id: &str,
-    direction: &str,
+    progress: &mut DirectionProgress<'_>,
 ) -> Result<bool, Status> {
     let Some(input) = input else {
         if !*half {
             *half = true;
-            send(
-                target,
-                TunnelFrame {
-                    payload: Some(tunnel_frame::Payload::HalfClose(TunnelHalfClose {})),
-                },
-                cancel,
-            )
-            .await?;
+            progress
+                .send_with_timeout(
+                    target,
+                    TunnelFrame {
+                        payload: Some(tunnel_frame::Payload::HalfClose(TunnelHalfClose {})),
+                    },
+                    cancel,
+                    BLOCK,
+                )
+                .await?;
         }
         return Ok(false);
     };
@@ -138,7 +249,6 @@ async fn forward(
                     "隧道数据为空、超过 64 KiB 或已半关闭",
                 ));
             }
-            tracing::debug!(tunnel_id=%id,direction,bytes=data.len(),"转发隧道数据");
         }
         Some(tunnel_frame::Payload::HalfClose(_)) => {
             if *half {
@@ -147,20 +257,93 @@ async fn forward(
             *half = true;
         }
         Some(tunnel_frame::Payload::Close(_)) => {
-            send(
-                target,
-                TunnelFrame {
-                    payload: Some(tunnel_frame::Payload::Close(TunnelClose {
-                        message: "远端已关闭隧道".into(),
-                    })),
-                },
-                cancel,
-            )
-            .await?;
+            progress
+                .send_with_timeout(
+                    target,
+                    TunnelFrame {
+                        payload: Some(tunnel_frame::Payload::Close(TunnelClose {
+                            message: "远端已关闭隧道".into(),
+                        })),
+                    },
+                    cancel,
+                    BLOCK,
+                )
+                .await?;
             return Ok(true);
         }
         _ => return Err(Status::invalid_argument("隧道建立后收到非法帧")),
     }
-    send(target, input, cancel).await?;
+    progress
+        .send_with_timeout(target, input, cancel, BLOCK)
+        .await?;
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 累计量仅统计成功入队的数据，满队列超时保留方向及已有累计量。
+    #[tokio::test]
+    async fn blocked_frame_reports_direction_without_counting_unsent_bytes() {
+        let (tx, _rx) = mpsc::channel(1);
+        let cancel = CancellationToken::new();
+        let mut progress = DirectionProgress::new("测试隧道", "上位机至下位机", &tx);
+        progress
+            .send_with_timeout(
+                &tx,
+                TunnelFrame {
+                    payload: Some(tunnel_frame::Payload::Data(vec![1; 17])),
+                },
+                &cancel,
+                BLOCK,
+            )
+            .await
+            .unwrap();
+        let error = progress
+            .send_with_timeout(
+                &tx,
+                TunnelFrame {
+                    payload: Some(tunnel_frame::Payload::Data(vec![2; 31])),
+                },
+                &cancel,
+                Duration::from_millis(20),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::DeadlineExceeded);
+        assert!(error.message().contains("上位机至下位机"));
+        assert!(error.message().contains("17"));
+        assert_eq!(progress.bytes, 17);
+        assert_eq!(progress.frames, 1);
+        assert_eq!(progress.end_reason, "发送失败");
+    }
+
+    // 控制连接取消时满队列写入立即退出，且不计未发送的字节。
+    #[tokio::test]
+    async fn cancelled_frame_preserves_successful_progress() {
+        let (tx, _rx) = mpsc::channel(1);
+        let cancel = CancellationToken::new();
+        let mut progress = DirectionProgress::new("测试隧道", "下位机至上位机", &tx);
+        tx.send(Ok(TunnelFrame {
+            payload: Some(tunnel_frame::Payload::Ready(TunnelReady {})),
+        }))
+        .await
+        .unwrap();
+        cancel.cancel();
+        let error = progress
+            .send_with_timeout(
+                &tx,
+                TunnelFrame {
+                    payload: Some(tunnel_frame::Payload::Data(vec![3; 7])),
+                },
+                &cancel,
+                BLOCK,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::Unavailable);
+        assert_eq!(progress.bytes, 0);
+        assert_eq!(progress.frames, 0);
+    }
 }

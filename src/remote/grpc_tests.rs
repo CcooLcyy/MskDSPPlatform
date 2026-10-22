@@ -506,17 +506,17 @@ async fn duplicate_device_and_rotated_credentials() {
     );
 }
 
-// 一个方向发送队列阻塞时，反方向仍可立即回传，验证真正独立的双向 pump。
+// 上传背压时反向与心跳仍活跃，取消后清理隧道且复用控制连接重新传输。
 #[tokio::test]
-async fn blocked_upload_does_not_block_reverse_direction() {
+async fn blocked_upload_keeps_reverse_heartbeat_and_reopen_available() {
     let mut f = Fixture::start().await;
-    let (_device_tx, mut control) = f.online().await;
+    let (control_tx, mut control) = f.online().await;
     let (upper_tx, mut upper) = f.open().await;
     let (device_tx, mut device, _) = f.attach(&mut control).await;
     upper.message().await.unwrap();
     device.message().await.unwrap();
     let writer = tokio::spawn(async move {
-        for _ in 0..256 {
+        for _ in 0..1024 {
             if upper_tx
                 .send(frame(tunnel_frame::Payload::Data(vec![1; 65536])))
                 .await
@@ -528,6 +528,7 @@ async fn blocked_upload_does_not_block_reverse_direction() {
     });
     // 下位机不读取上传流，使上位机至下位机方向触发背压。
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    assert!(!writer.is_finished(), "上传发送必须仍被背压阻塞");
     device_tx
         .send(frame(tunnel_frame::Payload::Data(
             b"reverse-remains-live".to_vec(),
@@ -545,7 +546,66 @@ async fn blocked_upload_does_not_block_reverse_direction() {
             b"reverse-remains-live".to_vec()
         ))
     );
+    control_tx
+        .send(DeviceMessage {
+            payload: Some(device_message::Payload::Heartbeat(DeviceHeartbeat {
+                services: vec!["ssh".into()],
+            })),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), control.message())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .payload,
+        Some(platform_message::Payload::HeartbeatAck(_))
+    ));
+    drop(upper);
     writer.abort();
+    let _ = writer.await;
+    drop(device);
+    drop(device_tx);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !f.hub.0.lock().await.tunnels.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(f.hub.snapshot("field").await.is_some());
+    let (retry_tx, mut retry) = f.open().await;
+    let (_device_tx, mut device, _) = f.attach(&mut control).await;
+    retry.message().await.unwrap();
+    device.message().await.unwrap();
+    retry_tx
+        .send(frame(tunnel_frame::Payload::Data(
+            "重试成功".as_bytes().to_vec(),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), device.message())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .payload,
+        Some(tunnel_frame::Payload::Data("重试成功".as_bytes().to_vec()))
+    );
+    drop(retry);
+    drop(retry_tx);
+    drop(device);
+    drop(_device_tx);
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !f.hub.0.lock().await.tunnels.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 // 控制通知入队受阻也纳入同一十五秒打开期限，过期会话清理并拒绝晚附着。
@@ -579,7 +639,7 @@ async fn open_deadline_includes_blocked_control_notification() {
     assert!(f.hub.0.lock().await.tunnels.is_empty());
 }
 
-// 真实本机 TCP 服务接收完整上传后才回写，隧道必须传递 EOF 并保留全部尾部。
+// 真实本机 TCP 服务接收 50 MiB 上传后才回写，隧道传递 EOF 并保留全部尾部。
 #[tokio::test]
 async fn tcp_echo_roundtrip_preserves_binary_tail() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -630,7 +690,7 @@ async fn tcp_echo_roundtrip_preserves_binary_tail() {
                 .unwrap();
         }
     });
-    let payload: Vec<u8> = (0..131_072).map(|n| (n % 256) as u8).collect();
+    let payload: Vec<u8> = (0..50 * 1024 * 1024).map(|n| (n % 251) as u8).collect();
     for chunk in payload.chunks(65536) {
         upper_tx
             .send(frame(tunnel_frame::Payload::Data(chunk.to_vec())))
