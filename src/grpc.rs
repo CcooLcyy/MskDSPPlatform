@@ -310,6 +310,7 @@ fn account_identity(account: crate::accounts::AccountRecord) -> agent::AccountId
         id: account.id,
         username: account.username,
         display_name: account.display_name,
+        role: account.role,
     }
 }
 

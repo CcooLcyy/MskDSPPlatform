@@ -59,6 +59,7 @@ impl Fixture {
             .unwrap();
         let account = accounts
             .create(NewAccount {
+                role: "operator".into(),
                 username: "operator".into(),
                 password: "field-password-123".into(),
                 display_name: "操作员".into(),

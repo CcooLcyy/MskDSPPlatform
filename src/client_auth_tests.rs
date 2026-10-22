@@ -8,6 +8,7 @@ async fn fixture() -> (tempfile::TempDir, AccountStore, ClientAuth, AccountRecor
         .unwrap();
     let account = store
         .create(NewAccount {
+            role: "operator".into(),
             username: "field-user".into(),
             display_name: "现场账号".into(),
             password: "field-password-123".into(),
@@ -165,6 +166,7 @@ async fn revoking_account_removes_all_its_tokens_without_affecting_other_account
     let (_directory, store, auth, account) = fixture().await;
     store
         .create(NewAccount {
+            role: "operator".into(),
             username: "second-user".into(),
             display_name: "其他账号".into(),
             password: "other-password-123".into(),
@@ -207,6 +209,7 @@ async fn account_changes_revalidate_sessions_and_reset_allows_fresh_login() {
             &account.id,
             account.revision,
             AccountUpdate {
+                role: None,
                 display_name: "更新名称".into(),
                 enabled: true,
             },
@@ -226,6 +229,7 @@ async fn account_changes_revalidate_sessions_and_reset_allows_fresh_login() {
             &account.id,
             renamed.revision,
             AccountUpdate {
+                role: None,
                 display_name: renamed.display_name,
                 enabled: false,
             },
@@ -245,6 +249,7 @@ async fn account_changes_revalidate_sessions_and_reset_allows_fresh_login() {
             &account.id,
             disabled.revision,
             AccountUpdate {
+                role: None,
                 display_name: disabled.display_name,
                 enabled: true,
             },

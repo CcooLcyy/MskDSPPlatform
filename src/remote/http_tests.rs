@@ -81,6 +81,7 @@ async fn device_creation_grants_existing_accounts_without_changing_other_permiss
         existing_accounts.push(
             accounts
                 .create(crate::accounts::NewAccount {
+                    role: "operator".into(),
                     username: username.into(),
                     password: "field-password-123".into(),
                     display_name: username.into(),
@@ -95,6 +96,7 @@ async fn device_creation_grants_existing_accounts_without_changing_other_permiss
             &disabled.id,
             disabled.revision,
             crate::accounts::AccountUpdate {
+                role: None,
                 display_name: disabled.display_name.clone(),
                 enabled: false,
             },
@@ -189,6 +191,7 @@ async fn device_creation_grants_existing_accounts_without_changing_other_permiss
 
     let later = accounts
         .create(crate::accounts::NewAccount {
+            role: "operator".into(),
             username: "later-operator".into(),
             password: "field-password-123".into(),
             display_name: "后建账号".into(),
@@ -251,6 +254,7 @@ async fn device_management_is_admin_only_and_token_is_not_listed() {
         .unwrap();
     let account = accounts
         .create(crate::accounts::NewAccount {
+            role: "operator".into(),
             username: "operator".into(),
             password: "field-password-123".into(),
             display_name: "维护".into(),

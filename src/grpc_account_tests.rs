@@ -64,6 +64,7 @@ impl TestServer {
     async fn register(&self, username: &str) -> LoginResponse {
         self.accounts
             .create(NewAccount {
+                role: "operator".into(),
                 username: username.into(),
                 display_name: "现场账号".into(),
                 password: "field-password-123".into(),
@@ -160,6 +161,7 @@ async fn revoked(stream: &mut Streaming<ServerMessage>) {
 
 fn changed(account: &AccountRecord, enabled: bool) -> AccountUpdate {
     AccountUpdate {
+        role: None,
         display_name: account.display_name.clone(),
         enabled,
     }
@@ -171,6 +173,87 @@ fn session_request(token: &str) -> Request<agent::SessionRequest> {
         .metadata_mut()
         .insert("authorization", format!("Bearer {token}").parse().unwrap());
     request
+}
+
+#[tokio::test]
+async fn grpc_roles_refresh_in_existing_session_without_reconnect_or_expiry_extension() {
+    let mut server = TestServer::start().await;
+    let registered = server.register("field-role").await;
+    let first = server
+        .client
+        .get_session(session_request(&registered.access_token))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(first.account.as_ref().unwrap().role, "operator");
+    let (sender, mut stream) = server.online(&registered, "role-computer").await;
+    let mut revision = registered.account.revision;
+    for role in ["admin", "operator"] {
+        let updated = server
+            .accounts
+            .update(
+                &registered.account.id,
+                revision,
+                AccountUpdate {
+                    display_name: format!("角色 {role}"),
+                    enabled: true,
+                    role: Some(role.into()),
+                },
+            )
+            .await
+            .unwrap();
+        revision = updated.revision;
+        assert_eq!(updated.auth_version, registered.account.auth_version);
+        let current = server
+            .client
+            .get_session(session_request(&registered.access_token))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(current.account.as_ref().unwrap().role, role);
+        assert_eq!(
+            current.account.as_ref().unwrap().display_name,
+            format!("角色 {role}")
+        );
+        assert!(current.expires_in <= first.expires_in);
+        assert!(current.access_token.is_empty());
+        sender
+            .send(AgentMessage {
+                payload: Some(agent_message::Payload::Heartbeat(agent::Heartbeat {
+                    sent_at_unix_ms: 0,
+                })),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            stream.message().await.unwrap().unwrap().payload,
+            Some(server_message::Payload::HeartbeatAck(_))
+        ));
+    }
+    let updated = server
+        .accounts
+        .update(
+            &registered.account.id,
+            revision,
+            AccountUpdate {
+                display_name: "管理员".into(),
+                enabled: true,
+                role: Some("admin".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let fresh = server
+        .client
+        .login(agent::LoginRequest {
+            username: "field-role".into(),
+            password: "field-password-123".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(fresh.account.as_ref().unwrap().role, updated.role);
+    assert_eq!(server.sessions.count().await, 1);
 }
 
 #[tokio::test]

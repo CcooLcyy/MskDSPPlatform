@@ -40,6 +40,8 @@ message AccountIdentity {
   string id = 1;
   string username = 2;
   string display_name = 3;
+  // 上位机业务角色：admin（管理员）或 operator（运维人员），不授予平台 Web 管理权限。
+  string role = 4;
 }
 
 message LoginResponse {

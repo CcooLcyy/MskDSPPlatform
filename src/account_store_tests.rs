@@ -8,12 +8,153 @@ async fn fixture() -> (tempfile::TempDir, AccountStore) {
     (directory, store)
 }
 
+#[tokio::test]
+async fn role_defaults_to_operator_and_explicit_admin_persists() {
+    let (directory, store) = fixture().await;
+    let operator = store.create(account("field-operator")).await.unwrap();
+    assert_eq!(serde_json::to_value(operator).unwrap()["role"], "operator");
+    let admin = serde_json::from_value(serde_json::json!({
+        "username":"field-admin", "password":"test-password", "role":"admin"
+    }))
+    .expect("角色必须是受支持的创建字段");
+    let admin = store.create(admin).await.unwrap();
+    assert_eq!(serde_json::to_value(&admin).unwrap()["role"], "admin");
+    drop(store);
+    let reopened = AccountStore::open(directory.path().join("accounts/accounts.sqlite3"))
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(reopened.get(&admin.id).await.unwrap()).unwrap()["role"],
+        "admin"
+    );
+}
+
+#[tokio::test]
+async fn role_updates_preserve_authorization_and_reject_invalid_values_atomically() {
+    let (_directory, store) = fixture().await;
+    let created = store.create(account("field-roles")).await.unwrap();
+    let role_update = |role: &str| {
+        serde_json::from_value(serde_json::json!({
+            "display_name":"现场", "enabled":true, "role":role
+        }))
+        .expect("角色必须是受支持的更新字段")
+    };
+    let admin = store
+        .update(&created.id, 1, role_update("admin"))
+        .await
+        .unwrap();
+    assert_eq!(serde_json::to_value(&admin).unwrap()["role"], "admin");
+    assert_eq!(admin.revision, 2);
+    assert_eq!(admin.auth_version, created.auth_version);
+    let live = store
+        .check_authorization(&created.id, created.auth_version)
+        .await
+        .unwrap();
+    assert_eq!(serde_json::to_value(live).unwrap()["role"], "admin");
+    assert!(matches!(
+        store.update(&created.id, 1, role_update("operator")).await,
+        Err(AccountError::Conflict)
+    ));
+    for role in ["", "root", "ADMIN", " admin "] {
+        assert!(matches!(
+            store.update(&created.id, 2, role_update(role)).await,
+            Err(AccountError::Invalid(_))
+        ));
+        assert_eq!(store.get(&created.id).await.unwrap().revision, 2);
+        let new = serde_json::from_value(
+            serde_json::json!({"username":"invalid-role", "password":"test-password", "role":role}),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.create(new).await,
+            Err(AccountError::Invalid(_))
+        ));
+    }
+    let legacy =
+        serde_json::from_value(serde_json::json!({"display_name":"兼容更新", "enabled":true}))
+            .unwrap();
+    let preserved = store.update(&created.id, 2, legacy).await.unwrap();
+    assert_eq!(serde_json::to_value(preserved).unwrap()["role"], "admin");
+}
+
+#[tokio::test]
+async fn migrates_version_one_without_changing_credentials_revisions_or_login_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("legacy.sqlite3");
+    let hash = crate::auth::hash_password("legacy-password").unwrap();
+    {
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE accounts (id TEXT PRIMARY KEY NOT NULL, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, enabled INTEGER NOT NULL, revision INTEGER NOT NULL, auth_version INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_login_at INTEGER); PRAGMA user_version=1;").unwrap();
+        connection.execute("INSERT INTO accounts VALUES ('legacy-id','legacy-user','旧账号',?1,1,7,3,100,200,300)", [&hash]).unwrap();
+    }
+    let store = AccountStore::open(path.clone()).await.unwrap();
+    let migrated = store
+        .verify("legacy-user", "legacy-password")
+        .await
+        .unwrap();
+    assert_eq!(serde_json::to_value(&migrated).unwrap()["role"], "operator");
+    assert_eq!(migrated.revision, 7);
+    assert_eq!(migrated.auth_version, 3);
+    assert_eq!(
+        (
+            migrated.created_at,
+            migrated.updated_at,
+            migrated.last_login_at
+        ),
+        (100, 200, Some(300))
+    );
+    store.check_authorization("legacy-id", 3).await.unwrap();
+    drop(store);
+    let reopened = AccountStore::open(path.clone()).await.unwrap();
+    assert_eq!(reopened.list().await.unwrap().len(), 1);
+    let connection = Connection::open(path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT password_hash FROM accounts", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        hash
+    );
+}
+
 fn account(username: &str) -> NewAccount {
     NewAccount {
+        role: "operator".into(),
         username: username.into(),
         password: "test-password".into(),
         display_name: String::new(),
     }
+}
+
+#[tokio::test]
+async fn malformed_legacy_schema_is_not_partially_migrated() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("broken.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection.execute_batch("CREATE TABLE accounts (id TEXT); INSERT INTO accounts VALUES ('preserved'); PRAGMA user_version=1;").unwrap();
+    assert!(matches!(
+        AccountStore::open(path).await,
+        Err(AccountError::Storage)
+    ));
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert!(connection.prepare("SELECT role FROM accounts").is_err());
+    assert_eq!(
+        connection
+            .query_row("SELECT id FROM accounts", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "preserved"
+    );
 }
 
 #[tokio::test]
@@ -100,6 +241,7 @@ async fn accepts_exact_field_boundaries_and_preserves_password_spaces() {
     let (_directory, store) = fixture().await;
     store
         .create(NewAccount {
+            role: "operator".into(),
             username: "abc".into(),
             password: " 123456 ".into(),
             display_name: "名".into(),
@@ -114,6 +256,7 @@ async fn accepts_exact_field_boundaries_and_preserves_password_spaces() {
     let display_name = format!("{}aa", "界".repeat(42));
     let created = store
         .create(NewAccount {
+            role: "operator".into(),
             username: "a".repeat(64),
             password: "密".repeat(42) + "aa",
             display_name: display_name.clone(),
@@ -143,6 +286,7 @@ async fn revision_guards_edits_and_auth_version_invalidates_old_sessions() {
             &created.id,
             1,
             AccountUpdate {
+                role: None,
                 display_name: "  现场一  ".into(),
                 enabled: true,
             },
@@ -158,6 +302,7 @@ async fn revision_guards_edits_and_auth_version_invalidates_old_sessions() {
                 &created.id,
                 1,
                 AccountUpdate {
+                    role: None,
                     display_name: "过期修改".into(),
                     enabled: false
                 }
@@ -170,6 +315,7 @@ async fn revision_guards_edits_and_auth_version_invalidates_old_sessions() {
             &created.id,
             2,
             AccountUpdate {
+                role: None,
                 display_name: "现场一".into(),
                 enabled: false,
             },
@@ -190,6 +336,7 @@ async fn revision_guards_edits_and_auth_version_invalidates_old_sessions() {
             &created.id,
             3,
             AccountUpdate {
+                role: None,
                 display_name: "现场一".into(),
                 enabled: true,
             },
@@ -324,6 +471,7 @@ async fn concurrent_edits_only_accept_one_revision() {
             &created.id,
             1,
             AccountUpdate {
+                role: None,
                 display_name: "甲".into(),
                 enabled: true
             }
@@ -332,6 +480,7 @@ async fn concurrent_edits_only_accept_one_revision() {
             &created.id,
             1,
             AccountUpdate {
+                role: None,
                 display_name: "乙".into(),
                 enabled: true
             }

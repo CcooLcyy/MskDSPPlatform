@@ -15,6 +15,43 @@ class AccountApiTests(unittest.TestCase):
     request = platform_fixture.TemplateApiTests.request
     startup_failure = platform_fixture.TemplateApiTests.startup_failure
 
+    def test_role_assignment_conflict_validation_and_restart(self):
+        action = {"X-MskDSP-Action": "account"}
+        status, raw, _ = self.request("POST", "/api/v1/accounts",
+                                     {"username": "role.user", "password": "field-password-1"}, action)
+        self.assertEqual(status, 201, raw)
+        account = json.loads(raw)
+        self.assertEqual(account["role"], "operator")
+        path = "/api/v1/accounts/" + account["id"]
+        update = {"revision": 1, "display_name": "现场管理员", "enabled": True, "role": "admin"}
+        status, raw, _ = self.request("PUT", path, update, action)
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)["role"], "admin")
+        self.assertEqual(self.request("PUT", path, update, action)[0], 409)
+        for role in ("", "root", "ADMIN"):
+            self.assertEqual(self.request("PUT", path, dict(update, revision=2, role=role, enabled=False), action)[0], 400)
+        # 兼容旧管理客户端：不传角色，原管理员角色仍保留。
+        status, raw, _ = self.request("PUT", path, {"revision": 2, "display_name": "现场管理员", "enabled": True}, action)
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)["role"], "admin")
+        database = self.folder / "data/accounts/accounts.sqlite3"
+        with closing(sqlite3.connect(database)) as db:
+            self.assertEqual(db.execute("SELECT role,revision,auth_version FROM accounts WHERE id=?", [account["id"]]).fetchone(), ("admin", 3, 1))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.stop()
+        self.start()
+        status, raw, _ = self.request("GET", path)
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)["role"], "admin")
+        self.assertEqual(json.loads(raw)["revision"], 3)
+        status, raw, _ = self.request("GET", "/api/v1/accounts")
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)[0]["role"], "admin")
+        status, raw, _ = self.request("POST", "/api/v1/accounts",
+                                     {"username": "explicit.admin", "password": "field-password-1", "role": "admin"}, action)
+        self.assertEqual(status, 201, raw)
+        self.assertEqual(json.loads(raw)["role"], "admin")
+
     # Web 创建、禁用、重新启用和重置密码均持久化，重启后仍保留账号且不泄露密码。
     def test_account_management_and_restart(self):
         status, page, _ = self.request("GET", "/accounts")

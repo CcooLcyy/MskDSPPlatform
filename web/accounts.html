@@ -70,7 +70,7 @@
       <div class="account-actions"><label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><span id="username">正在确认</span><button id="logout" class="quiet" type="button" disabled>退出登录</button></div>
     </header>
     <main class="page-content">
-      <div class="page-heading"><div><h1>账号管理</h1><p class="page-summary">添加供上位机登录平台的账号，管理账号状态和密码。</p></div><div class="page-actions"><button id="refresh" type="button" disabled>刷新列表</button><button id="new-account" class="primary" type="button" disabled>＋ 添加账号</button></div></div>
+      <div class="page-heading"><div><h1>账号管理</h1><p class="page-summary">添加供上位机登录平台的账号，分配上位机角色，管理账号状态和密码。</p></div><div class="page-actions"><button id="refresh" type="button" disabled>刷新列表</button><button id="new-account" class="primary" type="button" disabled>＋ 添加账号</button></div></div>
       <div id="message" class="status-banner" role="status" aria-live="polite">正在确认管理员身份…</div>
       <div class="account-workbench">
         <section class="panel" aria-labelledby="list-title">
@@ -88,10 +88,12 @@
               <div class="form-grid">
                 <label for="account-username">用户名<input id="account-username" name="account-username" required maxlength="64" pattern="[A-Za-z0-9_.\-]{3,64}" autocomplete="off" placeholder="例如：station01"></label>
                 <label for="display-name">显示名<input id="display-name" name="display-name" maxlength="128" placeholder="留空时使用用户名"></label>
+                <label for="account-role">上位机角色<select id="account-role" name="role" required><option value="operator">运维人员</option><option value="admin">管理员</option></select></label>
                 <label id="create-password-label" for="create-password">密码<input id="create-password" name="create-password" type="password" autocomplete="new-password"></label>
                 <label id="create-confirm-label" for="create-confirm">确认密码<input id="create-confirm" name="create-confirm" type="password" autocomplete="new-password"></label>
                 <label id="enabled-label" class="check-label wide" for="account-enabled"><input id="account-enabled" name="enabled" type="checkbox">启用账号</label>
               </div>
+              <p class="hint">这里分配的是上位机角色；“管理员”不授予平台 Web 管理权限。当前阶段仅分配角色，具体功能权限后续配置。</p>
               <p id="create-hint" class="hint">用户名为 3～64 位英文字母、数字或 _ . -，创建后不可修改。密码为 8～128 字节；显示名最多 128 字节。</p>
               <div class="actions"><button id="save-account" class="primary" type="submit">保存修改</button><button id="discard" type="button">放弃修改并重新读取</button></div>
               <dl id="account-facts" class="account-facts" hidden>
@@ -138,7 +140,7 @@ function createAccountClient({fetchImpl, confirmAction = () => false, onChange =
     }
     return data;
   }
-  const setDraft = record => { clearPasswords(); draft = record ? {revision:record.revision, display_name:record.display_name, enabled:record.enabled} : {username:'', display_name:'', password:'', confirm:''}; dirty = false; conflict = false; };
+  const setDraft = record => { clearPasswords(); draft = record ? {revision:record.revision, display_name:record.display_name, enabled:record.enabled, role:record.role} : {username:'', display_name:'', role:'operator', password:'', confirm:''}; dirty = false; conflict = false; };
   const replaceAccount = record => { accounts = accounts.some(a => a.id === record.id) ? accounts.map(a => a.id === record.id ? record : a) : [record, ...accounts]; };
   const mayLeave = () => (!dirty && !passwordDraft.password && !passwordDraft.confirm) || confirmAction('有未保存的修改，确定放弃并切换账号吗？');
   const bytes = value => new TextEncoder().encode(value).length;
@@ -180,9 +182,9 @@ function createAccountClient({fetchImpl, confirmAction = () => false, onChange =
     },
     edit(patch) {
       if (busy || stopped || !draft) return;
-      const allowed = creating ? ['username','display_name','password','confirm'] : ['display_name','enabled'];
+      const allowed = creating ? ['username','display_name','role','password','confirm'] : ['display_name','enabled','role'];
       for (const field of allowed) if (Object.hasOwn(patch, field)) draft[field] = patch[field];
-      dirty = creating || draft.display_name !== selected.display_name || draft.enabled !== selected.enabled;
+      dirty = creating || draft.display_name !== selected.display_name || draft.enabled !== selected.enabled || draft.role !== selected.role;
       error = ''; notice = ''; emit();
     },
     editPassword(patch) {
@@ -202,9 +204,10 @@ function createAccountClient({fetchImpl, confirmAction = () => false, onChange =
       let validation = bytes(name) > 128 ? '显示名最多 128 字节。' : '';
       if (isNew && !/^[A-Za-z0-9_.-]{3,64}$/.test(draft.username.trim())) validation = '用户名须为 3～64 位英文字母、数字或 _ . -。';
       if (isNew && !validation) validation = passwordError(draft.password || '', draft.confirm || '');
+      if (!['admin','operator'].includes(draft.role)) validation = '请选择有效的上位机角色。';
       if (validation) { error = validation; notice = ''; emit(); return; }
       if (!isNew && selected.enabled && !draft.enabled && !confirmAction('确定禁用这个账号吗？禁用后将断开已有连接，并阻止再次登录。')) return;
-      const payload = isNew ? {username:draft.username.trim(), password:draft.password, display_name:name} : {revision:draft.revision, display_name:name, enabled:draft.enabled};
+      const payload = isNew ? {username:draft.username.trim(), password:draft.password, display_name:name, role:draft.role} : {revision:draft.revision, display_name:name, enabled:draft.enabled, role:draft.role};
       await run(async () => {
         const record = await request(isNew ? '/api/v1/accounts' : `/api/v1/accounts/${encodeURIComponent(selected.id)}`, isNew ? 'POST' : 'PUT', payload);
         if (stopped) return; selected = record; creating = false; replaceAccount(record); setDraft(record); notice = isNew ? '账号已添加，可用于上位机登录。' : '账号已保存。';
@@ -226,6 +229,7 @@ function createAccountClient({fetchImpl, confirmAction = () => false, onChange =
 const $ = id => document.getElementById(id);
 let latest, renderedDraft = '';
 const client = createAccountClient({fetchImpl:(...args) => fetch(...args), confirmAction:message => window.confirm(message), onChange:render, onUnauthorized:() => window.location.replace('/login')});
+const roleName = role => role === 'admin' ? '管理员' : role === 'operator' ? '运维人员' : '未知角色';
 const formatTime = value => value === null || value === undefined ? '尚无记录' : new Date(value).toLocaleString('zh-CN', {hour12:false});
 function renderList(state) {
   const term = $('search').value.trim().toLowerCase(), filter = $('enabled-filter').value;
@@ -235,7 +239,7 @@ function renderList(state) {
     const item = document.createElement('li'), button = document.createElement('button'), name = document.createElement('strong'), info = document.createElement('span');
     button.type = 'button'; button.className = 'account-card'; button.disabled = state.busy || state.stopped;
     button.setAttribute('aria-pressed', String(state.selected?.id === account.id && !state.creating));
-    name.textContent = account.display_name; info.textContent = `${account.username} · ${account.enabled ? '已启用' : '已禁用'} · ${account.online_connections} 个在线连接`;
+    name.textContent = account.display_name; info.textContent = `${account.username} · ${roleName(account.role)} · ${account.enabled ? '已启用' : '已禁用'} · ${account.online_connections} 个在线连接`;
     button.append(name, info); button.addEventListener('click', () => client.select(account.id)); item.append(button); return item;
   }));
   $('list-empty').hidden = matches.length > 0;
@@ -258,7 +262,7 @@ function render(state) {
   if (draftKey !== renderedDraft) {
     renderedDraft = draftKey;
     $('account-username').value = state.creating ? state.draft?.username || '' : record?.username || '';
-    $('display-name').value = state.draft?.display_name || ''; $('account-enabled').checked = state.draft?.enabled ?? true;
+    $('display-name').value = state.draft?.display_name || ''; $('account-role').value = state.draft?.role || 'operator'; $('account-enabled').checked = state.draft?.enabled ?? true;
   }
   $('create-password').value = state.creating ? state.draft?.password || '' : '';
   $('create-confirm').value = state.creating ? state.draft?.confirm || '' : '';
@@ -281,6 +285,7 @@ $('new-account').addEventListener('click', () => { client.newAccount(); if (late
 $('refresh').addEventListener('click', () => client.refresh());
 $('search').addEventListener('input', () => renderList(latest)); $('enabled-filter').addEventListener('change', () => renderList(latest));
 for (const [id, field] of [['account-username','username'],['display-name','display_name'],['create-password','password'],['create-confirm','confirm']]) $(id).addEventListener('input', () => client.edit({[field]:$(id).value}));
+$('account-role').addEventListener('change', () => client.edit({role:$('account-role').value}));
 $('account-enabled').addEventListener('change', () => client.edit({enabled:$('account-enabled').checked}));
 for (const [id, field] of [['reset-password','password'],['reset-confirm','confirm']]) $(id).addEventListener('input', () => client.editPassword({[field]:$(id).value}));
 $('account-form').addEventListener('submit', event => { event.preventDefault(); client.save(); });

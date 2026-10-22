@@ -178,6 +178,8 @@ struct UpdateRequest {
     revision: i64,
     display_name: String,
     enabled: bool,
+    #[serde(default)]
+    role: Option<String>,
 }
 
 async fn update(
@@ -201,6 +203,7 @@ async fn update(
             AccountUpdate {
                 display_name: input.display_name,
                 enabled: input.enabled,
+                role: input.role,
             },
         )
         .await
@@ -210,7 +213,7 @@ async fn update(
                 state.clients.revoke_account(&account.id).await;
                 state.http.sessions.disconnect_account(&account.id).await;
             }
-            tracing::info!(actor=%state.http.auth.username(),account_id=%account.id,enabled=account.enabled,"管理员已更新上位机登录账号");
+            tracing::info!(actor=%state.http.auth.username(),account_id=%account.id,enabled=account.enabled,role=%account.role,"平台管理员已更新上位机登录账号及角色");
             Json(view(&state, account).await).into_response()
         }
         Err(error) => error.into_response(),

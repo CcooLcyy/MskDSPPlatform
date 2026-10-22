@@ -11,11 +11,10 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 const MAX_ACCOUNTS: i64 = 10_000;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 // 未知账号也执行相同类型的密码验证，避免通过快速失败枚举账号。
 const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$zXP+U5DsQuiMPtr8V8OuAQ$qhq/Ws7G6jkYExvvfYr/k4qqo1+/TOlpBo6DcKRl5ME";
-const COLUMNS: &str =
-    "id,username,display_name,enabled,revision,auth_version,created_at,updated_at,last_login_at";
+const COLUMNS: &str = "id,username,display_name,enabled,revision,auth_version,created_at,updated_at,last_login_at,role";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AccountError {
@@ -38,6 +37,7 @@ pub struct AccountRecord {
     pub id: String,
     pub username: String,
     pub display_name: String,
+    pub role: String,
     pub enabled: bool,
     pub revision: i64,
     #[serde(skip_serializing)]
@@ -54,6 +54,8 @@ pub struct NewAccount {
     pub password: String,
     #[serde(default)]
     pub display_name: String,
+    #[serde(default = "default_role")]
+    pub role: String,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +63,8 @@ pub struct NewAccount {
 pub struct AccountUpdate {
     pub display_name: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Clone)]
@@ -82,7 +86,7 @@ impl AccountStore {
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 std::fs::create_dir_all(parent).map_err(storage_error)?;
             }
-            let connection = Connection::open(path).map_err(storage_error)?;
+            let mut connection = Connection::open(path).map_err(storage_error)?;
             connection
                 .busy_timeout(Duration::from_secs(5))
                 .map_err(storage_error)?;
@@ -122,12 +126,29 @@ impl AccountStore {
                            auth_version INTEGER NOT NULL CHECK(auth_version > 0),
                            created_at INTEGER NOT NULL,
                            updated_at INTEGER NOT NULL,
-                           last_login_at INTEGER
+                           last_login_at INTEGER,
+                           role TEXT NOT NULL DEFAULT 'operator' CHECK(role IN ('admin','operator'))
                          );
-                         PRAGMA user_version=1;
+                         PRAGMA user_version=2;
                          COMMIT;",
                         )
                         .map_err(storage_error)?;
+                }
+                1 => {
+                    let transaction = connection
+                        .transaction_with_behavior(TransactionBehavior::Immediate)
+                        .map_err(storage_error)?;
+                    transaction.prepare("SELECT id,username,display_name,enabled,revision,auth_version,created_at,updated_at,last_login_at,password_hash FROM accounts LIMIT 0")
+                        .map_err(storage_error)?;
+                    transaction.execute_batch(
+                        "ALTER TABLE accounts ADD COLUMN role TEXT NOT NULL DEFAULT 'operator' CHECK(role IN ('admin','operator'));
+                         PRAGMA user_version=2;",
+                    ).map_err(storage_error)?;
+                    // 验证完整旧结构后再提交，异常旧库不会留下部分迁移。
+                    transaction.prepare(&format!("SELECT {COLUMNS},password_hash FROM accounts LIMIT 0"))
+                        .map_err(storage_error)?;
+                    transaction.commit().map_err(storage_error)?;
+                    info!("上位机账号数据库已迁移，已有账号角色设为运维人员");
                 }
                 SCHEMA_VERSION => {}
                 _ => {
@@ -175,6 +196,7 @@ impl AccountStore {
         let username = normalize_username(&new.username)?;
         validate_password(&new.password)?;
         let display_name = normalize_display_name(&new.display_name, &username)?;
+        validate_role(&new.role)?;
         self.blocking(move |connection| {
             let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(storage_error)?;
             let duplicate: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM accounts WHERE username=?1)", [&username], |r| r.get(0)).map_err(storage_error)?;
@@ -184,10 +206,10 @@ impl AccountStore {
             let password_hash = crate::auth::hash_password(&new.password).map_err(storage_error)?;
             let id = Uuid::new_v4().to_string();
             let now = chrono::Utc::now().timestamp_millis();
-            transaction.execute("INSERT INTO accounts (id,username,display_name,password_hash,enabled,revision,auth_version,created_at,updated_at) VALUES (?1,?2,?3,?4,1,1,1,?5,?5)", params![id, username, display_name, password_hash, now]).map_err(storage_error)?;
+            transaction.execute("INSERT INTO accounts (id,username,display_name,password_hash,enabled,revision,auth_version,created_at,updated_at,role) VALUES (?1,?2,?3,?4,1,1,1,?5,?5,?6)", params![id, username, display_name, password_hash, now, new.role]).map_err(storage_error)?;
             let record = get_record(&transaction, &id)?;
             transaction.commit().map_err(storage_error)?;
-            info!(account_id = %id, "已创建上位机账号");
+            info!(account_id = %id, role = %record.role, "已创建上位机账号");
             Ok(record)
         }).await
     }
@@ -226,10 +248,12 @@ impl AccountStore {
             let old = get_record(&transaction, &id)?;
             if old.revision != revision { return Err(AccountError::Conflict); }
             let display_name = normalize_display_name(&update.display_name, &old.username)?;
-            transaction.execute("UPDATE accounts SET display_name=?1,enabled=?2,revision=revision+1,auth_version=auth_version+?3,updated_at=?4 WHERE id=?5 AND revision=?6", params![display_name, update.enabled, i64::from(old.enabled != update.enabled), chrono::Utc::now().timestamp_millis(), id, revision]).map_err(storage_error)?;
+            let role = update.role.as_deref().unwrap_or(&old.role);
+            validate_role(role)?;
+            transaction.execute("UPDATE accounts SET display_name=?1,enabled=?2,revision=revision+1,auth_version=auth_version+?3,updated_at=?4,role=?7 WHERE id=?5 AND revision=?6", params![display_name, update.enabled, i64::from(old.enabled != update.enabled), chrono::Utc::now().timestamp_millis(), id, revision, role]).map_err(storage_error)?;
             let record = get_record(&transaction, &id)?;
             transaction.commit().map_err(storage_error)?;
-            info!(account_id = %id, enabled = record.enabled, "已更新上位机账号");
+            info!(account_id = %id, enabled = record.enabled, old_role = %old.role, role = %record.role, "已更新上位机账号及角色");
             Ok(record)
         }).await
     }
@@ -267,7 +291,7 @@ impl AccountStore {
                 .query_row(
                     &format!("SELECT {COLUMNS},password_hash FROM accounts WHERE username=?1"),
                     [&username],
-                    |row| Ok((row_record(row)?, row.get::<_, String>(9)?)),
+                    |row| Ok((row_record(row)?, row.get::<_, String>(10)?)),
                 )
                 .optional()
                 .map_err(storage_error)?;
@@ -340,6 +364,20 @@ fn normalize_username(value: &str) -> Result<String, AccountError> {
     Ok(normalized)
 }
 
+fn default_role() -> String {
+    "operator".into()
+}
+
+fn validate_role(role: &str) -> Result<(), AccountError> {
+    if matches!(role, "admin" | "operator") {
+        Ok(())
+    } else {
+        Err(AccountError::Invalid(
+            "账号角色必须为管理员或运维人员".into(),
+        ))
+    }
+}
+
 fn normalize_display_name(value: &str, username: &str) -> Result<String, AccountError> {
     if value.chars().any(char::is_control) {
         return Err(AccountError::Invalid("显示名称不能包含控制字符".into()));
@@ -372,6 +410,7 @@ fn row_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRecord> {
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
         last_login_at: row.get(8)?,
+        role: row.get(9)?,
     })
 }
 

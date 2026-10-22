@@ -101,6 +101,167 @@ async fn create(app: &Router, cookie: &str) -> serde_json::Value {
     json(response).await
 }
 
+#[tokio::test]
+async fn web_admin_assigns_roles_without_revoking_sessions_and_client_admin_cannot_manage() {
+    let (_directory, accounts, clients, app, cookie, _sessions) = fixture().await;
+    let account = create(&app, &cookie).await;
+    assert_eq!(account["role"], "operator");
+    let id = account["id"].as_str().unwrap();
+    let path = format!("/api/v1/accounts/{id}");
+    let signed = clients
+        .login("field.user", "initial-password")
+        .await
+        .unwrap();
+    let update = json!({"revision":1,"display_name":"现场管理员","enabled":true,"role":"admin"});
+    for (action, origin) in [("", ""), ("account", "https://evil.example")] {
+        assert_eq!(
+            request(
+                &app,
+                "PUT",
+                &path,
+                &cookie,
+                "",
+                action,
+                origin,
+                update.clone()
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    let response = request(
+        &app,
+        "PUT",
+        &path,
+        &cookie,
+        "",
+        "account",
+        "",
+        update.clone(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let admin = json(response).await;
+    assert_eq!(admin["role"], "admin");
+    assert_eq!(admin["revision"], 2);
+    assert_eq!(
+        clients
+            .authenticate(&signed.access_token)
+            .await
+            .unwrap()
+            .account
+            .role,
+        "admin"
+    );
+    assert_eq!(
+        request(&app, "PUT", &path, &cookie, "", "account", "", update)
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let detail = json(request(&app, "GET", &path, &cookie, "", "", "", json!(null)).await).await;
+    assert_eq!(detail["role"], "admin");
+    let list = json(
+        request(
+            &app,
+            "GET",
+            "/api/v1/accounts",
+            &cookie,
+            "",
+            "",
+            "",
+            json!(null),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(list[0]["role"], "admin");
+    // 上位机管理员仍然不是平台 Web 管理员，不能使用自身会话改角色。
+    for cookie in [
+        String::new(),
+        format!("mskdsp_admin_session={}", signed.access_token),
+    ] {
+        assert_eq!(
+            request(
+                &app,
+                "PUT",
+                &path,
+                &cookie,
+                &signed.access_token,
+                "account",
+                "",
+                json!({"revision":2,"display_name":"越权","enabled":true,"role":"operator"})
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    for role in ["", "superadmin", "ADMIN"] {
+        assert_eq!(
+            request(
+                &app,
+                "PUT",
+                &path,
+                &cookie,
+                "",
+                "account",
+                "",
+                json!({"revision":2,"display_name":"非法更新","enabled":false,"role":role})
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let current = accounts.get(id).await.unwrap();
+        assert_eq!(current.revision, 2);
+        assert!(current.enabled);
+        assert_eq!(current.role, "admin");
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                "/api/v1/accounts",
+                &cookie,
+                "",
+                "account",
+                "",
+                json!({"username":"invalid-role","password":"valid-password","role":role})
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let response = request(
+        &app,
+        "PUT",
+        &path,
+        &cookie,
+        "",
+        "account",
+        "",
+        json!({"revision":2,"display_name":"兼容旧管理端","enabled":true}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json(response).await["role"], "admin");
+    let response = request(
+        &app,
+        "POST",
+        "/api/v1/accounts",
+        &cookie,
+        "",
+        "account",
+        "",
+        json!({"username":"second-admin","password":"valid-password","role":"admin"}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(json(response).await["role"], "admin");
+}
+
 // 客户端只能使用 gRPC；旧 HTTP 路径对匿名、管理员和普通会话均返回 404，也不撤销有效会话。
 #[tokio::test]
 async fn client_http_auth_routes_are_absent_and_do_not_create_or_revoke_sessions() {
@@ -431,7 +592,7 @@ async fn invalid_input_reserved_name_and_duplicate_username() {
             "",
             "account",
             "",
-            json!({"username":"field2","password":"valid-password","role":"admin"})
+            json!({"username":"field2","password":"valid-password","unknown_role":"admin"})
         )
         .await
         .status(),

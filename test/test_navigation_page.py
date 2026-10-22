@@ -53,7 +53,7 @@ class NavigationPageTests(unittest.TestCase):
 HARNESS = r"""
 const assert=require('node:assert/strict'),vm=require('node:vm'),context=vm.createContext({TextEncoder});
 vm.runInContext(SCRIPT+'\nthis.createAccountClient=createAccountClient;',context);
-const record=(fields={})=>({id:'account-1',username:'station01',display_name:'现场账号',enabled:true,revision:1,created_at:100,updated_at:100,last_login_at:null,online_connections:0,...fields});
+const record=(fields={})=>({id:'account-1',username:'station01',display_name:'现场账号',role:'operator',enabled:true,revision:1,created_at:100,updated_at:100,last_login_at:null,online_connections:0,...fields});
 const response=(status,body)=>({status,ok:status>=200&&status<300,json:async()=>body});
 function open(){
  const state={records:[],rejectAt:'',role:'admin',conflict:false,allow:true,hold:false,finish:null,logoutStatus:204,failStatus:0,failMessage:'请求失败',networkFail:false},calls=[],confirms=[],redirects=[];
@@ -68,7 +68,7 @@ function open(){
   if(options.method==='GET')return response(200,path==='/api/v1/accounts'?state.records:state.records.find(a=>a.id===path.split('/').at(-1)));
   if(state.hold)await new Promise(resolve=>{state.finish=resolve;});
   if(state.conflict)return response(409,{error:'冲突'});
-  if(path==='/api/v1/accounts'){const account=record({username:payload.username,display_name:payload.display_name});state.records.push(account);return response(201,account);}
+  if(path==='/api/v1/accounts'){const account=record({username:payload.username,display_name:payload.display_name,role:payload.role});state.records.push(account);return response(201,account);}
   const id=path.split('/')[4],index=state.records.findIndex(a=>a.id===id);let account=state.records[index];
   if(payload.revision!==account.revision)return response(409,{error:'冲突'});
   account=options.method==='PUT'?{...account,...payload,revision:account.revision+1}:{...account,revision:account.revision+1};
@@ -99,11 +99,23 @@ class AccountPageTests(unittest.TestCase):
         result = subprocess.run([self.node], input=source, capture_output=True, text=True, encoding='utf-8', timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_role_assignment_defaults_validation_and_conflict_draft(self):
+        self.run_scenario(r"""
+const p=open();await p.client.refresh();p.client.newAccount();assert.equal(p.client.snapshot().draft.role,'operator');
+p.client.edit({username:'station01',display_name:'现场',password:'safe-pass-123',confirm:'safe-pass-123',role:'admin'});await p.client.save();
+assert.equal(JSON.parse(p.calls.at(-1).options.body).role,'admin');assert.equal(p.client.snapshot().selected.role,'admin');
+p.client.edit({role:'operator'});assert.equal(p.client.snapshot().dirty,true);p.client.edit({role:'admin'});assert.equal(p.client.snapshot().dirty,false);
+let count=p.calls.length;p.client.edit({role:'superadmin'});await p.client.save();assert.equal(p.calls.length,count);assert(p.client.snapshot().error.includes('角色'));
+p.client.edit({role:'operator'});p.state.records[0]={...p.state.records[0],revision:2};await p.client.save();assert.equal(p.client.snapshot().conflict,true);assert.equal(p.client.snapshot().draft.role,'operator');
+await p.client.refresh();assert.equal(p.client.snapshot().draft.role,'operator');await p.client.discard();assert.equal(p.client.snapshot().draft.role,'admin');
+p.client.edit({role:'operator'});await p.client.save();assert.equal(JSON.parse(p.calls.at(-1).options.body).role,'operator');assert.equal(p.client.snapshot().selected.role,'operator');
+        """)
+
     def test_create_cookie_action_headers_update_and_password_cleanup(self):
         self.run_scenario(r"""
 const p=await registered(),s=p.client.snapshot();assert.equal(s.username,'root');assert.equal(s.selected.username,'station01');assert.equal(s.selected.display_name,'现场账号');assert.equal(s.dirty,false);assert.equal(s.draft.password,undefined);assert.equal(s.draft.confirm,undefined);assert.equal(s.passwordDraft.password,'');
-assert.equal(p.calls[0].path,'/api/v1/auth/me');const c=p.calls.find(c=>c.options.method==='POST');assert.equal(c.path,'/api/v1/accounts');assert.equal(c.options.headers['X-MskDSP-Action'],'account');assert.equal(c.options.headers['Content-Type'],'application/json');assert.equal(c.options.credentials,'same-origin');assert.equal(c.options.cache,'no-store');assert.deepEqual(JSON.parse(c.options.body),{username:'station01',password:'safe-pass-123',display_name:'现场账号'});
-p.client.edit({username:'cannot-change',display_name:'新显示名'});await p.client.save();const u=p.calls.find(c=>c.options.method==='PUT');assert.deepEqual(JSON.parse(u.options.body),{revision:1,display_name:'新显示名',enabled:true});assert.equal(p.client.snapshot().selected.username,'station01');
+assert.equal(p.calls[0].path,'/api/v1/auth/me');const c=p.calls.find(c=>c.options.method==='POST');assert.equal(c.path,'/api/v1/accounts');assert.equal(c.options.headers['X-MskDSP-Action'],'account');assert.equal(c.options.headers['Content-Type'],'application/json');assert.equal(c.options.credentials,'same-origin');assert.equal(c.options.cache,'no-store');assert.deepEqual(JSON.parse(c.options.body),{username:'station01',password:'safe-pass-123',display_name:'现场账号',role:'operator'});
+p.client.edit({username:'cannot-change',display_name:'新显示名'});await p.client.save();const u=p.calls.find(c=>c.options.method==='PUT');assert.deepEqual(JSON.parse(u.options.body),{revision:1,display_name:'新显示名',enabled:true,role:'operator'});assert.equal(p.client.snapshot().selected.username,'station01');
         """)
 
     def test_refresh_preserves_drafts_conflicts_require_reload(self):
