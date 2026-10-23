@@ -669,6 +669,81 @@ async fn admin_tunnel_still_closes_when_session_expires() {
     );
 }
 
+// 删除账号使已有隧道和旧会话失效，同名重建不能看到或访问原账号的授权设备。
+#[tokio::test]
+async fn deleted_account_loses_tunnel_and_recreated_username_does_not_inherit_grants() {
+    let mut f = Fixture::start().await;
+    let (_control_tx, mut control) = f.online().await;
+    let (_upper_tx, mut upper) = f.open().await;
+    let (_device_tx, mut device, _) = f.attach(&mut control).await;
+    upper.message().await.unwrap();
+    device.message().await.unwrap();
+    f.accounts.delete(&f.account, 1).await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), upper.message())
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    assert_eq!(
+        f.upper
+            .list_devices(request(ListDevicesRequest {}, &f.user))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unauthenticated
+    );
+    let replacement = f
+        .accounts
+        .create(NewAccount {
+            role: "operator".into(),
+            username: "operator".into(),
+            password: "field-password-123".into(),
+            display_name: "重建账号".into(),
+        })
+        .await
+        .unwrap();
+    assert_ne!(replacement.id, f.account);
+    f.user = f
+        .auth
+        .login("operator", "field-password-123")
+        .await
+        .unwrap()
+        .access_token;
+    assert!(
+        f.upper
+            .list_devices(request(ListDevicesRequest {}, &f.user))
+            .await
+            .unwrap()
+            .into_inner()
+            .devices
+            .is_empty()
+    );
+    for service in ["ssh", "ModuleManager"] {
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(frame(tunnel_frame::Payload::Open(TunnelOpen {
+            device_id: "field".into(),
+            service: service.into(),
+        })))
+        .await
+        .unwrap();
+        assert_eq!(
+            f.upper
+                .open_tunnel(request(ReceiverStream::new(rx), &f.user))
+                .await
+                .unwrap_err()
+                .code(),
+            Code::PermissionDenied
+        );
+    }
+    assert!(
+        f.hub.snapshot("field").await.is_some(),
+        "删除账号不应断开设备本身"
+    );
+}
+
 // 账号退出会关闭现有隧道，响应流取消后清理隧道，设备禁用关闭控制流。
 #[tokio::test]
 async fn revocation_and_cancellation_release_sessions() {

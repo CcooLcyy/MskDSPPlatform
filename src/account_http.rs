@@ -38,7 +38,10 @@ pub fn router(http: HttpState, accounts: AccountStore, clients: ClientAuth) -> R
         .merge(
             Router::new()
                 .route("/api/v1/accounts", get(list).post(create))
-                .route("/api/v1/accounts/{id}", get(detail).put(update))
+                .route(
+                    "/api/v1/accounts/{id}",
+                    get(detail).put(update).delete(delete),
+                )
                 .route("/api/v1/accounts/{id}/password", post(reset_password))
                 .route_layer(middleware::from_fn_with_state(state.clone(), require_admin)),
         )
@@ -215,6 +218,36 @@ async fn update(
             }
             tracing::info!(actor=%state.http.auth.username(),account_id=%account.id,enabled=account.enabled,role=%account.role,"平台管理员已更新上位机登录账号及角色");
             Json(view(&state, account).await).into_response()
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteRequest {
+    revision: i64,
+}
+
+async fn delete(
+    State(state): State<AccountState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    value: Result<Json<DeleteRequest>, JsonRejection>,
+) -> Response {
+    if let Err(error) = action(&headers, "account") {
+        return error.into_response();
+    }
+    let input = match body(value) {
+        Ok(value) => value,
+        Err(error) => return error.into_response(),
+    };
+    match state.accounts.delete(&id, input.revision).await {
+        Ok(()) => {
+            state.clients.revoke_account(&id).await;
+            state.http.sessions.disconnect_account(&id).await;
+            tracing::info!(actor=%state.http.auth.username(),account_id=%id,"平台管理员已永久删除上位机登录账号并断开连接");
+            StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => error.into_response(),
     }

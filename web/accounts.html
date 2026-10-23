@@ -95,7 +95,8 @@
               </div>
               <p class="hint">这里分配的是上位机角色；管理员自动拥有全部设备的访问和控制权限，运维人员仅可访问明确授权的设备。“管理员”不授予平台 Web 管理权限。</p>
               <p id="create-hint" class="hint">用户名为 3～64 位英文字母、数字或 _ . -，创建后不可修改。密码为 8～128 字节；显示名最多 128 字节。</p>
-              <div class="actions"><button id="save-account" class="primary" type="submit">保存修改</button><button id="discard" type="button">放弃修改并重新读取</button></div>
+              <div class="actions"><button id="save-account" class="primary" type="submit">保存修改</button><button id="discard" type="button">放弃修改并重新读取</button><button id="delete-account" class="danger" type="button" hidden>删除账号</button></div>
+              <p id="delete-hint" class="hint" hidden>删除账号不可恢复，并将断开已有连接。有未保存修改时，请先保存或放弃修改。</p>
               <dl id="account-facts" class="account-facts" hidden>
                 <div><dt>在线连接数</dt><dd id="account-connections">—</dd></div><div><dt>最后登录</dt><dd id="account-last-login">—</dd></div>
                 <div><dt>创建时间</dt><dd id="account-created">—</dd></div><div><dt>更新时间</dt><dd id="account-updated">—</dd></div>
@@ -213,6 +214,19 @@ function createAccountClient({fetchImpl, confirmAction = () => false, onChange =
         if (stopped) return; selected = record; creating = false; replaceAccount(record); setDraft(record); notice = isNew ? '账号已添加，可用于上位机登录。' : '账号已保存。';
       });
     },
+    async deleteAccount() {
+      if (busy || stopped || !selected || creating || dirty || conflict || passwordDraft.password || passwordDraft.confirm) return;
+      const account = selected;
+      if (!confirmAction(`确定永久删除账号“${account.display_name}”（${account.username}）吗？此操作不可恢复，将断开已有连接并使全部登录会话失效。`)) return;
+      await run(async () => {
+        await request(`/api/v1/accounts/${encodeURIComponent(account.id)}`, 'DELETE', {revision:draft.revision});
+        if (stopped) return;
+        accounts = accounts.filter(item => item.id !== account.id); selected = null; creating = false;
+        clearPasswords(); draft = null; dirty = false; conflict = false; notice = '账号已永久删除。';
+        try { const result = await request('/api/v1/accounts'); if (!stopped) accounts = result; }
+        catch (problem) { if (!stopped) error = `账号已删除，列表刷新失败：${problem.message}`; }
+      });
+    },
     async resetPassword() {
       if (busy || stopped || !selected || creating || dirty || conflict) return;
       const validation = passwordError(passwordDraft.password, passwordDraft.confirm);
@@ -273,6 +287,9 @@ function render(state) {
   $('enabled-label').hidden = state.creating;
   $('save-account').textContent = state.creating ? '添加账号' : '保存修改';
   $('save-account').disabled = state.conflict || (!state.creating && !state.dirty);
+  $('delete-account').hidden = !record || state.creating;
+  $('delete-hint').hidden = !record || state.creating;
+  $('delete-account').disabled = state.busy || state.stopped || state.dirty || state.conflict || Boolean(state.passwordDraft.password || state.passwordDraft.confirm);
   $('account-facts').hidden = !record || state.creating;
   $('password-form').hidden = !record || state.creating;
   $('password-fields').disabled = state.busy || state.stopped || state.dirty || state.conflict;
@@ -291,6 +308,7 @@ for (const [id, field] of [['reset-password','password'],['reset-confirm','confi
 $('account-form').addEventListener('submit', event => { event.preventDefault(); client.save(); });
 $('password-form').addEventListener('submit', event => { event.preventDefault(); client.resetPassword(); });
 $('discard').addEventListener('click', () => client.discard());
+$('delete-account').addEventListener('click', () => client.deleteAccount());
 $('logout').addEventListener('click', () => client.logout());
 window.addEventListener('pagehide', () => client.clearPasswords());
 window.addEventListener('beforeunload', event => { if (latest?.dirty || latest?.passwordDraft.password || latest?.passwordDraft.confirm) { event.preventDefault(); event.returnValue = ''; } });

@@ -9,6 +9,97 @@ async fn fixture() -> (tempfile::TempDir, AccountStore) {
 }
 
 #[tokio::test]
+async fn deletion_is_revision_guarded_persistent_and_removes_owned_sessions() {
+    let (directory, store) = fixture().await;
+    let created = store.create(account("delete-user")).await.unwrap();
+    let other = store.create(account("keep-user")).await.unwrap();
+    for (record, token) in [(&created, "a".repeat(64)), (&other, "b".repeat(64))] {
+        store
+            .create_client_session(&record.id, record.auth_version, token, 3600)
+            .await
+            .unwrap();
+    }
+    assert!(matches!(
+        store.delete(&created.id, 99).await,
+        Err(AccountError::Conflict)
+    ));
+    store
+        .authenticate_client_session("a".repeat(64))
+        .await
+        .unwrap();
+    store.delete(&created.id, created.revision).await.unwrap();
+    assert!(matches!(
+        store.delete(&created.id, created.revision).await,
+        Err(AccountError::NotFound)
+    ));
+    assert!(matches!(
+        store.authenticate_client_session("a".repeat(64)).await,
+        Err(AccountError::Unauthorized)
+    ));
+    store
+        .authenticate_client_session("b".repeat(64))
+        .await
+        .unwrap();
+    let path = directory.path().join("accounts/accounts.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM client_sessions_v1 WHERE account_id=?1",
+                [&created.id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    drop(store);
+    let reopened = AccountStore::open(path).await.unwrap();
+    assert!(matches!(
+        reopened.get(&created.id).await,
+        Err(AccountError::NotFound)
+    ));
+    let replacement = reopened.create(account("delete-user")).await.unwrap();
+    assert_ne!(replacement.id, created.id, "同名重建必须使用新账号身份");
+}
+
+#[tokio::test]
+async fn deletion_rolls_back_account_and_sessions_when_storage_fails() {
+    let (directory, store) = fixture().await;
+    let created = store.create(account("delete-user")).await.unwrap();
+    store
+        .create_client_session(&created.id, created.auth_version, "a".repeat(64), 3600)
+        .await
+        .unwrap();
+    let connection = Connection::open(directory.path().join("accounts/accounts.sqlite3")).unwrap();
+    connection.execute_batch("CREATE TRIGGER reject_account_delete BEFORE DELETE ON accounts BEGIN SELECT RAISE(ABORT, '测试删除失败'); END;").unwrap();
+    assert!(matches!(
+        store.delete(&created.id, created.revision).await,
+        Err(AccountError::Storage)
+    ));
+    assert_eq!(
+        store.get(&created.id).await.unwrap().revision,
+        created.revision
+    );
+    store
+        .authenticate_client_session("a".repeat(64))
+        .await
+        .unwrap();
+    connection.execute_batch("DROP TRIGGER reject_account_delete; CREATE TRIGGER reject_session_delete BEFORE DELETE ON client_sessions_v1 BEGIN SELECT RAISE(ABORT, '测试会话删除失败'); END;").unwrap();
+    assert!(matches!(
+        store.delete(&created.id, created.revision).await,
+        Err(AccountError::Storage)
+    ));
+    assert_eq!(
+        store.get(&created.id).await.unwrap().revision,
+        created.revision
+    );
+    store
+        .authenticate_client_session("a".repeat(64))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn role_defaults_to_operator_and_explicit_admin_persists() {
     let (directory, store) = fixture().await;
     let operator = store.create(account("field-operator")).await.unwrap();

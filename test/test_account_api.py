@@ -2,6 +2,7 @@
 from contextlib import closing
 import json
 import sqlite3
+import time
 import unittest
 
 import test_modbus_api as platform_fixture
@@ -14,6 +15,50 @@ class AccountApiTests(unittest.TestCase):
     stop = platform_fixture.TemplateApiTests.stop
     request = platform_fixture.TemplateApiTests.request
     startup_failure = platform_fixture.TemplateApiTests.startup_failure
+
+    # 永久删除同时清理持久会话，重启后同名重建使用新身份且不继承旧设备授权。
+    def test_delete_account_sessions_restart_and_recreate(self):
+        action = {"X-MskDSP-Action": "account"}
+        device_action = {"X-MskDSP-Action": "device"}
+        credentials = {"username": "delete.user", "password": "delete-password-123"}
+        status, raw, _ = self.request("POST", "/api/v1/accounts", credentials, action)
+        self.assertEqual(status, 201, raw)
+        account = json.loads(raw)
+        path = "/api/v1/accounts/" + account["id"]
+        status, raw, _ = self.request("POST", "/api/v1/devices", {"display_name": "删除账号回归设备"}, device_action)
+        self.assertEqual(status, 201, raw)
+        device_path = "/api/v1/devices/" + json.loads(raw)["device_id"]
+        grants = [{"account_id": account["id"], "allow_grpc": True, "allow_ssh": True}]
+        self.assertEqual(self.request("PUT", device_path + "/grants", grants, device_action)[0], 204)
+        database = self.folder / "data/accounts/accounts.sqlite3"
+        with closing(sqlite3.connect(database)) as db:
+            now = int(time.time() * 1000)
+            db.execute("INSERT INTO client_sessions_v1 VALUES (?, ?, ?, ?, ?)",
+                       ["a" * 64, account["id"], 1, now, now + 60000])
+            db.commit()
+        for headers, expected in ((dict(action, Cookie=""), 401),
+                                  ({"X-MskDSP-Action": "wrong"}, 403),
+                                  (dict(action, Origin="https://other.example"), 403)):
+            self.assertEqual(self.request("DELETE", path, {"revision": 1}, headers)[0], expected)
+        self.assertEqual(self.request("DELETE", path, {"revision": 2}, action)[0], 409)
+        self.assertEqual(self.request("GET", path)[0], 200)
+        status, raw, _ = self.request("DELETE", path, {"revision": 1}, action)
+        self.assertEqual(status, 204, raw)
+        self.assertEqual(self.request("GET", path)[0], 404)
+        self.assertEqual(self.request("DELETE", path, {"revision": 1}, action)[0], 404)
+        with closing(sqlite3.connect(database)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM accounts WHERE id=?", [account["id"]]).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM client_sessions_v1 WHERE account_id=?", [account["id"]]).fetchone()[0], 0)
+        self.stop()
+        self.start()
+        self.assertEqual(self.request("GET", path)[0], 404)
+        status, raw, _ = self.request("POST", "/api/v1/accounts", credentials, action)
+        self.assertEqual(status, 201, raw)
+        replacement = json.loads(raw)
+        self.assertNotEqual(replacement["id"], account["id"])
+        status, raw, _ = self.request("GET", device_path + "/grants")
+        self.assertEqual(status, 200, raw)
+        self.assertNotIn(replacement["id"], [grant["account_id"] for grant in json.loads(raw)])
 
     def test_role_assignment_conflict_validation_and_restart(self):
         action = {"X-MskDSP-Action": "account"}

@@ -102,6 +102,132 @@ async fn create(app: &Router, cookie: &str) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn delete_requires_web_admin_origin_action_and_current_revision() {
+    let (_directory, accounts, clients, app, cookie, sessions) = fixture().await;
+    let account = create(&app, &cookie).await;
+    let id = account["id"].as_str().unwrap();
+    let path = format!("/api/v1/accounts/{id}");
+    let signed = clients
+        .login("field.user", "initial-password")
+        .await
+        .unwrap();
+    let cancellation = sessions
+        .register(crate::state::AgentSession {
+            connection_id: "测试连接".into(),
+            agent_id: "测试客户端".into(),
+            account_id: id.into(),
+        })
+        .await
+        .unwrap();
+    for (admin, bearer, action, origin, expected) in [
+        ("", "", "account", "", StatusCode::UNAUTHORIZED),
+        (
+            "",
+            signed.access_token.as_str(),
+            "account",
+            "",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (cookie.as_str(), "", "", "", StatusCode::FORBIDDEN),
+        (
+            cookie.as_str(),
+            "",
+            "account",
+            "https://other.example",
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        assert_eq!(
+            request(
+                &app,
+                "DELETE",
+                &path,
+                admin,
+                bearer,
+                action,
+                origin,
+                json!({"revision":1})
+            )
+            .await
+            .status(),
+            expected
+        );
+        accounts.get(id).await.unwrap();
+    }
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &path,
+            &cookie,
+            "",
+            "account",
+            "",
+            json!({"revision":99})
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    clients.authenticate(&signed.access_token).await.unwrap();
+    assert!(!cancellation.is_cancelled(), "冲突不得断开有效连接");
+    for value in [json!({}), json!({"revision":1,"extra":true})] {
+        assert_eq!(
+            request(&app, "DELETE", &path, &cookie, "", "account", "", value)
+                .await
+                .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &path,
+            &cookie,
+            "",
+            "account",
+            "http://platform.example",
+            json!({"revision":1})
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(matches!(
+        accounts.get(id).await,
+        Err(AccountError::NotFound)
+    ));
+    assert!(cancellation.is_cancelled(), "删除成功后必须断开已有连接");
+    assert_eq!(sessions.count_for_account(id).await, 0);
+    assert!(matches!(
+        clients.authenticate(&signed.access_token).await,
+        Err(crate::client_auth::ClientAuthError::Unauthorized)
+    ));
+    assert_eq!(
+        request(&app, "GET", &path, &cookie, "", "", "", json!(null))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &path,
+            &cookie,
+            "",
+            "account",
+            "",
+            json!({"revision":1})
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
 async fn web_admin_assigns_roles_without_revoking_sessions_and_client_admin_cannot_manage() {
     let (_directory, accounts, clients, app, cookie, _sessions) = fixture().await;
     let account = create(&app, &cookie).await;

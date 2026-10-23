@@ -259,6 +259,33 @@ impl AccountStore {
         }).await
     }
 
+    /// 账号与持久登录会话必须一起提交，避免删除失败后遗留部分状态。
+    pub async fn delete(&self, id: &str, revision: i64) -> Result<(), AccountError> {
+        let id = id.to_owned();
+        self.blocking(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage_error)?;
+            let account = get_record(&transaction, &id)?;
+            if account.revision != revision {
+                return Err(AccountError::Conflict);
+            }
+            transaction
+                .execute("DELETE FROM client_sessions_v1 WHERE account_id=?1", [&id])
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM accounts WHERE id=?1 AND revision=?2",
+                    params![id, revision],
+                )
+                .map_err(storage_error)?;
+            transaction.commit().map_err(storage_error)?;
+            info!(account_id = %id, "已永久删除上位机账号及其持久登录会话");
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn reset_password(
         &self,
         id: &str,
