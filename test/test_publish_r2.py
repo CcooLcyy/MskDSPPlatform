@@ -64,7 +64,21 @@ class PublishingTests(unittest.TestCase):
         (source / "deploy/config.toml").write_text("[server]\n", encoding="utf-8")
         (source / "deploy/run.sh").write_text("docker run example\n", encoding="utf-8")
         (source / "deploy/updater.json").write_text(json.dumps({"manifest_url": BASE + "/mskdsp-platform/stable/latest.json"}), encoding="utf-8")
+        (source / "script").mkdir()
+        for name in ("grpc_network_host.py", "install_grpc_network.py"):
+            (source / "script" / name).write_text(f"# 网络部署测试脚本：{name}\n", encoding="utf-8")
         return source
+
+    def assert_network_scripts(self, bundle, source):
+        checksums = {}
+        for line in (bundle / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+            checksum, name = line.split("  ", 1)
+            checksums[name] = checksum
+        for name in ("grpc_network_host.py", "install_grpc_network.py"):
+            relative = "deploy/network/" + name
+            expected = (source / "script" / name).read_bytes()
+            self.assertEqual((bundle / relative).read_bytes(), expected, relative)
+            self.assertEqual(checksums[relative], hashlib.sha256(expected).hexdigest(), relative)
 
     def test_image_is_validated_before_binary_identity_execution(self):
         def identity(_):
@@ -110,6 +124,7 @@ class PublishingTests(unittest.TestCase):
         for line in sums.splitlines():
             sha, name = line.split("  ", 1)
             self.assertEqual(sha, release.digest(combined / name))
+        self.assert_network_scripts(combined, source)
         self.assertEqual(json.loads((combined / "latest.json").read_text(encoding="utf-8"))["image_archive"]["sha256"],
                          manifest["platforms"]["linux-amd64"]["sha256"])
 
@@ -123,6 +138,22 @@ class PublishingTests(unittest.TestCase):
             self.prepare(bundle_output=combined, bundle_source=source)
         self.assertFalse(self.output.exists())
         self.assertFalse(combined.exists())
+
+    # 两个网络部署程序均为必需交付文件，缺少任意一个都不能悄悄跳过。
+    def test_combined_prepare_rejects_missing_network_script(self):
+        source = self.bundle_source()
+        for name in ("grpc_network_host.py", "install_grpc_network.py"):
+            with self.subTest(script=name):
+                script = source / "script" / name
+                content = script.read_bytes()
+                script.unlink()
+                try:
+                    with self.assertRaises(FileNotFoundError) as error:
+                        self.prepare(output=self.root / ("r2-" + name),
+                                     bundle_output=self.root / ("bundle-" + name), bundle_source=source)
+                    self.assertEqual(Path(error.exception.filename), script)
+                finally:
+                    script.write_bytes(content)
 
     # 工作流使用的命令行参数同时生成 R2 资产和离线交付包。
     def test_prepare_cli_generates_both_deliveries(self):
@@ -138,6 +169,7 @@ class PublishingTests(unittest.TestCase):
         self.assertTrue((self.output / "release.json").is_file())
         self.assertTrue((combined / "image.tar.gz").is_file())
         self.assertEqual((combined / "image.tar.gz").read_bytes(), self.image.read_bytes())
+        self.assert_network_scripts(combined, source)
 
     # 程序归档只含一个普通可执行文件，镜像归档及清单中的摘要和长度准确。
     def test_prepare_tar_and_manifest(self):

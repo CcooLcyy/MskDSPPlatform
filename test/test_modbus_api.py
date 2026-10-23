@@ -112,11 +112,16 @@ class TemplateApiTests(unittest.TestCase):
             except (OSError, http.client.HTTPException) as error:
                 last_probe = type(error).__name__
             time.sleep(min(0.1, max(0, deadline - time.monotonic())))
-        # 健康探测就绪后只登录一次，保留业务请求原有超时，不掩盖认证错误。
+        # 启动登录只发送一次，使用健康探测后剩余的总预算；业务请求仍保留五秒超时。
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            self.startup_failure("平台测试登录超时", started, "登录前启动预算已耗尽")
         try:
-            status, _, headers = self.request("POST", "/api/v1/auth/login", {"username": "root", "password": "test-password-123"}, {"X-MskDSP-Action": "auth"})
+            status, _, headers = self.request("POST", "/api/v1/auth/login", {"username": "root", "password": "test-password-123"}, {"X-MskDSP-Action": "auth"}, timeout=remaining)
         except (OSError, http.client.HTTPException) as error:
             self.startup_failure("平台测试登录请求失败", started, type(error).__name__)
+        if time.monotonic() >= deadline:
+            self.startup_failure("平台测试登录超时", started, f"HTTP {status}")
         if status != 200 or "set-cookie" not in headers:
             self.startup_failure("平台测试登录失败", started, f"HTTP {status}")
         self.cookie = headers["set-cookie"].split(";", 1)[0]

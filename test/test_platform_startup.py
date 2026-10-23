@@ -111,7 +111,60 @@ class PlatformStartupTests(unittest.TestCase):
         ]) as request:
             self.runner.start()
         self.assertEqual(request.call_count, 3)
-        self.assertNotIn("timeout", request.call_args.kwargs)
+        self.assertGreater(request.call_args.kwargs["timeout"], 5)
+        self.assertLessEqual(request.call_args.kwargs["timeout"], api.STARTUP_TIMEOUT)
+
+    # 登录超过五秒仍可在剩余启动预算内完成，健康探测耗时也计入总预算。
+    def test_slow_login_uses_remaining_startup_budget(self):
+        def respond(method, path, *args, **kwargs):
+            if path == "/healthz":
+                self.advance(2)
+            else:
+                self.assertEqual(kwargs["timeout"], api.STARTUP_TIMEOUT - 2)
+                self.advance(6)
+            return self.ready(method, path, *args, **kwargs)
+
+        with mock.patch.object(self.runner, "request", side_effect=respond) as request:
+            self.runner.start()
+        self.assertEqual(self.now, 8)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(self.runner.cookie, "session=new")
+
+    # 登录响应越过总期限即失败，不能保存迟到的会话凭据或重试登录。
+    def test_login_success_after_startup_deadline_is_rejected(self):
+        def respond(method, path, *args, **kwargs):
+            if path != "/healthz":
+                self.advance(api.STARTUP_TIMEOUT + 1)
+            return self.ready(method, path, *args, **kwargs)
+
+        with mock.patch.object(self.runner, "request", side_effect=respond) as request:
+            with self.assertRaisesRegex(AssertionError, "平台测试登录超时"):
+                self.runner.start()
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(self.runner.cookie, "")
+
+    # 登录网络超时立即报告，不重复发送有副作用的登录请求或泄露请求详情。
+    def test_login_timeout_is_not_retried(self):
+        with mock.patch.object(self.runner, "request", side_effect=[
+            (200, b"ok", {}), TimeoutError("不应输出登录详情"),
+        ]) as request:
+            with self.assertRaises(AssertionError) as failure:
+                self.runner.start()
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("平台测试登录请求失败", str(failure.exception))
+        self.assertIn("TimeoutError", str(failure.exception))
+        self.assertNotIn("不应输出登录详情", str(failure.exception))
+        self.assertEqual(self.runner.cookie, "")
+
+    # 仅启动登录使用剩余预算，后续业务请求仍保留原有五秒超时。
+    def test_business_request_keeps_five_second_timeout(self):
+        with mock.patch.object(api.http.client, "HTTPConnection") as connection:
+            response = connection.return_value.getresponse.return_value
+            response.status = 200
+            response.read.return_value = b"{}"
+            response.getheaders.return_value = []
+            self.runner.request("GET", "/api/v1/devices")
+        connection.assert_called_once_with("127.0.0.1", self.runner.http_port, timeout=5)
 
     # 同一测试的多次启动分别保存日志，重启不会覆盖上一次输出。
     def test_restarts_preserve_separate_logs(self):
