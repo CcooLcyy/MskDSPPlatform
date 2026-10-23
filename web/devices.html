@@ -32,9 +32,54 @@
     });
   });
 })();
-  </script><meta name="color-scheme" content="light dark"><style>
-#message { overflow-wrap: anywhere; }
-#devices { display: flex; flex-wrap: wrap; gap: 8px; }
+  </script><meta name="color-scheme" content="light dark"><link rel="stylesheet" href="/assets/platform.css"><style>
+#message, #create-error { overflow-wrap: anywhere; }
+#message:empty { display: none; }
+.page-content { padding-top: 32px; }
+.page-heading { align-items: center; margin-bottom: 24px; }
+.panel { margin-bottom: 20px; overflow: hidden; }
+.panel-body { padding: 24px; }
+.panel-body > p { color: var(--muted); }
+.device-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 20px 24px; }
+.device-toolbar h2 { margin-right: 8px; }
+.device-total { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 10px; }
+.device-filters { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.device-filters input { width: 280px; }
+.device-filters select { width: 130px; }
+.table-scroll { overflow-x: auto; }
+.device-table { width: 100%; border-collapse: collapse; text-align: left; }
+.device-table th { padding: 12px 24px; color: var(--muted); background: var(--subtle); border-block: 1px solid var(--border); font-size: 12px; font-weight: 500; }
+.device-table td { padding: 18px 24px; border-bottom: 1px solid var(--border); }
+.device-table tr:last-child td { border-bottom: 0; }
+.device-table tbody tr:hover { background: var(--subtle); }
+.device-table tbody tr.is-selected { background: var(--selected); }
+.device-name { min-width: 180px; max-width: 480px; overflow-wrap: anywhere; font-weight: 600; }
+.device-id { display: flex; align-items: center; gap: 8px; }
+.device-id code { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.copy-device-id { padding: 3px 7px; font-size: 12px; font-weight: 400; }
+.device-status { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.device-status::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.device-status.online { color: var(--success); }
+.device-status.disabled { color: var(--warning); }
+.manage-device { color: var(--link); white-space: nowrap; }
+.device-list-footer { padding: 12px 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.editor-heading { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 24px; }
+.editor-heading > div { flex: 1; min-width: 0; }
+#selected-title, #selected-id { overflow-wrap: anywhere; }
+#selected-id { margin: 5px 0 0; font: 12px/1.6 monospace; color: var(--muted); }
+.edit-device-form { grid-template-columns: minmax(180px, 400px) auto auto; align-items: end; justify-content: start; padding-bottom: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
+.edit-device-form .check-label { align-self: center; margin-top: 22px; font-size: 14px; }
+.edit-device-form .check-label input { margin: 0; }
+.editor-actions { justify-content: space-between; margin-top: 24px; }
+.create-dialog { width: min(480px, calc(100% - 32px)); max-height: calc(100dvh - 32px); padding: 28px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); overflow-y: auto; }
+.create-dialog::backdrop { background: rgb(0 0 0 / .55); }
+.dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.dialog-heading h2 { font-size: 19px; }
+.dialog-description { margin: 12px 0 24px; color: var(--muted); font-size: 13px; }
+.dialog-actions { justify-content: flex-end; margin-top: 24px; }
+.create-dialog .hint { padding: 12px; background: var(--subtle); border-radius: 6px; margin-top: 16px; }
+#create-error { color: var(--danger); margin: 12px 0 0; font-size: 13px; }
+#create-error:empty { display: none; }
 #credential, #credential-id { font-family: monospace; }
 .credential-fields { display: grid; gap: 12px; margin-bottom: 16px; }
 .credential-row { display: flex; gap: 8px; margin-top: 7px; }
@@ -42,21 +87,83 @@
 .credential-row button { flex-shrink: 0; }
 #grants > div { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 #grants > div > span { flex: 1; min-width: 180px; }
-.panel { margin-bottom: 18px; padding: 18px; }
-@media (max-width: 600px) { .panel { padding: 14px; } }
-</style><title>MskDSP · 设备管理</title><link rel="stylesheet" href="/assets/platform.css"></head><body><div class="app-shell"><header class="app-topbar"><a class="app-brand" href="/modbus-templates"><span class="brand-mark" aria-hidden="true">M</span><span class="brand-name">MskDSP</span></a><nav class="app-nav" aria-label="平台功能"><a class="nav-item" href="/modbus-templates">点表工作台</a><a class="nav-item" href="/software">软件管理</a><a class="nav-item" href="/accounts">账号管理</a><a class="nav-item" href="/devices" aria-current="page">设备管理</a><a class="nav-item" href="/update">平台维护</a></nav><div class="account-actions"><label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><span id="username"></span><button id="logout" type="button">退出登录</button></div></header><main class="page-content"><div class="page-heading"><div><h1>设备管理</h1><p class="page-summary">管理现场下位机、独立接入凭据和账号访问权限。</p></div><button id="refresh" type="button">刷新列表</button></div><p id="message" class="status-banner" role="status" aria-live="polite">正在确认管理员身份…</p><section class="panel"><h2>添加设备</h2><p>填写设备名称后，平台将自动生成设备 ID 和接入令牌，并为现有账号默认开启模块访问和 SSH。</p><form id="create-form" class="form-grid"><label>设备名称<input name="display_name" required maxlength="128"></label><button type="submit">创建设备</button></form></section><section id="credential-panel" class="panel" hidden>
+@media (max-width: 760px) {
+  .page-content { padding-top: 24px; }
+  .device-toolbar, .panel-body { padding: 18px; }
+  .device-filters { width: 100%; margin: 0; }
+  .device-filters input { flex: 1; width: 100%; }
+  .device-filters select { width: 112px; }
+  .device-table th, .device-table td { padding: 14px 18px; }
+  .edit-device-form { grid-template-columns: 1fr; }
+  .edit-device-form .check-label { margin-top: 0; }
+  .edit-device-form button { justify-self: start; }
+  .credential-row { flex-wrap: wrap; }
+  .credential-row input { flex-basis: 180px; }
+}
+@media (max-width: 600px) {
+  .device-table thead { display: none; }
+  .device-table tbody { display: block; }
+  .device-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .device-table tbody tr:last-child { border-bottom: 0; }
+  .device-table td { padding: 8px 18px; border: 0; }
+  .device-table .device-name { min-width: 0; grid-column: 1; grid-row: 1; }
+  .device-table td:nth-child(2) { grid-column: 1; grid-row: 2; }
+  .device-table td:nth-child(3) { grid-column: 2; grid-row: 1; align-self: start; }
+  .device-table td:nth-child(4) { grid-column: 2; grid-row: 2; align-self: center; }
+  .device-id { flex-wrap: wrap; gap: 4px; }
+  .device-id code { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+}
+</style><title>MskDSP · 设备管理</title></head><body><div class="app-shell"><header class="app-topbar"><a class="app-brand" href="/modbus-templates"><span class="brand-mark" aria-hidden="true">M</span><span class="brand-name">MskDSP</span></a><nav class="app-nav" aria-label="平台功能"><a class="nav-item" href="/modbus-templates">点表工作台</a><a class="nav-item" href="/software">软件管理</a><a class="nav-item" href="/accounts">账号管理</a><a class="nav-item" href="/devices" aria-current="page">设备管理</a><a class="nav-item" href="/update">平台维护</a></nav><div class="account-actions"><label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><span id="username"></span><button id="logout" type="button">退出登录</button></div></header><main class="page-content">
+<div class="page-heading">
+  <div><h1>设备管理</h1><p class="page-summary">管理现场下位机及其账号访问权限。</p></div>
+  <div class="page-actions"><button id="refresh" type="button">刷新列表</button><button id="open-create" class="primary" type="button">＋ 添加设备</button></div>
+</div>
+<p id="message" class="status-banner" role="status" aria-live="polite">正在加载设备…</p>
+<section class="panel" aria-labelledby="devices-title">
+  <div class="device-toolbar">
+    <h2 id="devices-title">现场设备<span id="device-total" class="device-total"></span></h2>
+    <div class="device-filters">
+      <input id="device-search" type="search" placeholder="搜索设备名称或 ID" aria-label="搜索设备名称或 ID">
+      <select id="device-status" aria-label="筛选设备状态"><option value="all">全部状态</option><option value="online">在线</option><option value="offline">离线</option><option value="disabled">已禁用</option></select>
+    </div>
+  </div>
+  <div class="table-scroll"><table class="device-table" aria-label="现场设备列表">
+    <thead><tr><th scope="col">设备名称</th><th scope="col">设备 ID</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead>
+    <tbody id="devices"></tbody>
+  </table></div>
+  <div id="device-empty" class="empty-state" hidden><strong id="empty-title">暂无现场设备</strong><span id="empty-hint">点击右上角「添加设备」，接入第一台下位机。</span></div>
+  <div id="device-count" class="device-list-footer" role="status" aria-live="polite"></div>
+</section>
+<dialog id="create-dialog" class="create-dialog" aria-labelledby="create-title" aria-describedby="create-description">
+  <div class="dialog-heading"><h2 id="create-title">添加设备</h2><button id="close-create" class="quiet" type="button" aria-label="关闭添加设备">✕</button></div>
+  <p id="create-description" class="dialog-description">填写设备名称，平台将自动生成设备 ID 和接入令牌。</p>
+  <form id="create-form">
+    <label for="create-name">设备名称</label><input id="create-name" name="display_name" placeholder="例如：研发测试（DSP）" required maxlength="128" autofocus>
+    <p class="hint">创建后，将为现有账号默认开启模块访问和 SSH。接入令牌仅显示一次，请及时复制保存。</p>
+    <p id="create-error" role="alert"></p>
+    <div class="actions dialog-actions"><button id="cancel-create" type="button">取消</button><button class="primary" type="submit">创建设备</button></div>
+  </form>
+</dialog>
+<section id="credential-panel" class="panel panel-body" hidden>
 <h2>设备接入配置</h2><p>请将设备 ID 和令牌填入下位机的平台接入配置。令牌仅显示这一次，请及时复制保存；轮换后旧凭据和现有连接立即失效。</p>
 <div class="credential-fields">
 <div><label for="credential-name">设备名称</label><div class="credential-row"><input id="credential-name" readonly><button id="copy-name" type="button">复制名称</button></div></div>
 <div><label for="credential-id">设备 ID</label><div class="credential-row"><input id="credential-id" readonly autocomplete="off"><button id="copy-id" type="button">复制 ID</button></div></div>
 <div><label for="credential">设备令牌</label><div class="credential-row"><input id="credential" type="password" readonly autocomplete="off"><button id="copy-token" type="button">复制令牌</button></div></div>
 </div><div class="actions"><button id="reveal" type="button">显示 / 隐藏令牌</button><button id="copy-config" type="button">复制接入配置</button><button id="dismiss" type="button">已保存，清除显示</button></div>
-</section><section class="panel"><h2>现场设备</h2><div id="devices"></div></section><section id="editor" class="panel" hidden><h2 id="selected-title"></h2><form id="edit-form" class="form-grid"><label>设备名称<input id="display-name" required maxlength="128"></label><label><input id="enabled" type="checkbox">启用设备</label><button type="submit">保存设备</button></form><h3>账号权限</h3><p>模块访问包含该设备开放模块的配置与控制操作；SSH 登录仍需设备系统账号认证。</p><div id="grants"></div><div class="actions"><button id="save-grants" type="button">保存权限</button><button id="rotate" type="button">轮换接入令牌</button><button id="delete" type="button">删除设备</button></div></section></main></div>
+</section>
+<section id="editor" class="panel panel-body" hidden>
+  <div class="editor-heading"><div><h2 id="selected-title"></h2><p id="selected-id"></p></div><button id="close-editor" class="quiet" type="button">收起设置</button></div>
+  <form id="edit-form" class="form-grid edit-device-form"><label>设备名称<input id="display-name" required maxlength="128"></label><label class="check-label"><input id="enabled" type="checkbox">启用设备</label><button class="primary" type="submit">保存设备</button></form>
+  <h3>账号权限</h3><p class="hint">模块访问包含该设备开放模块的配置与控制操作；SSH 登录仍需设备系统账号认证。</p>
+  <div id="grants"></div>
+  <div class="actions editor-actions"><button id="save-grants" class="primary" type="button">保存权限</button><div class="actions"><button id="rotate" type="button">轮换接入令牌</button><button id="delete" class="danger" type="button">删除设备</button></div></div>
+</section></main></div>
 <script type="module">
 const $=id=>document.getElementById(id);let devices=[],accounts=[],selected=null,busy=false;
-function message(text){$('message').textContent=text;}
+function message(text,error=false){$('message').textContent=text;$('message').className=error?'status-banner error':'status-banner';}
 function clearCredential(){for(const id of ['credential-name','credential-id','credential'])$(id).value='';$('credential').type='password';$('credential-panel').hidden=true;}
-function showCredential(device){clearCredential();$('credential-name').value=device.display_name;$('credential-id').value=device.device_id;$('credential').value=device.token;$('credential-panel').hidden=false;}
+function showCredential(device){clearCredential();$('credential-name').value=device.display_name;$('credential-id').value=device.device_id;$('credential').value=device.token;$('credential-panel').hidden=false;$('credential-panel').scrollIntoView({behavior:'auto',block:'nearest'});}
 async function copyText(value){
   if(!value)throw new Error('接入配置已清除，请重新创建或轮换令牌。');
   try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(value);return;}}catch{/* HTTP 页面或剪贴板授权受限时使用兼容复制。 */}
@@ -67,12 +174,54 @@ async function copyText(value){
   finally{field.value='';field.remove();previous?.focus();}
 }
 async function api(path,method='GET',value){const response=await fetch(path,{method,credentials:'same-origin',cache:'no-store',headers:method==='GET'?{}:{'Content-Type':'application/json','X-MskDSP-Action':'device'},...(value===undefined?{}:{body:JSON.stringify(value)})});if(response.status===401){clearCredential();location.assign('/login');throw new Error('管理员登录已失效');}if(!response.ok){let error;try{error=await response.json();}catch{}throw new Error(error?.error||'设备操作失败');}return response.status===204?null:response.json();}
-async function operation(fn){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){message(e.message||'无法连接平台');}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
-function render(){const root=$('devices');root.replaceChildren();if(!devices.length){root.textContent='尚无设备，请先添加现场下位机。';return;}for(const device of devices){const button=document.createElement('button');button.type='button';button.textContent=`${device.display_name}（${device.device_id}） · ${!device.enabled?'已禁用':device.online?'在线':'离线'}`;button.style.margin='6px';button.addEventListener('click',()=>operation(()=>select(device)));root.append(button);}}
+async function operation(fn){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){const text=e.message||'无法连接平台';message(text,true);if($('create-dialog').open)$('create-error').textContent=text;}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+function deviceStatus(device){return !device.enabled?'disabled':device.online?'online':'offline';}
+function render(){
+  const root=$('devices'),query=$('device-search').value.trim().toLocaleLowerCase(),status=$('device-status').value;
+  const visible=devices.filter(device=>(!query||`${device.display_name} ${device.device_id}`.toLocaleLowerCase().includes(query))&&(status==='all'||deviceStatus(device)===status));
+  const online=devices.filter(device=>deviceStatus(device)==='online').length;
+  $('device-total').textContent=`${devices.length} 台 · ${online} 台在线`;
+  $('device-count').textContent=`显示 ${visible.length} / ${devices.length} 台设备`;
+  $('device-empty').hidden=visible.length>0;
+  $('empty-title').textContent=devices.length?'没有匹配的设备':'暂无现场设备';
+  $('empty-hint').textContent=devices.length?'试试其他名称、设备 ID 或状态。':'点击右上角「添加设备」，接入第一台下位机。';
+  root.replaceChildren();
+  for(const device of visible){
+    const row=document.createElement('tr');row.className=selected?.device_id===device.device_id?'is-selected':'';
+    const name=document.createElement('td');name.className='device-name';name.textContent=device.display_name;
+    const idCell=document.createElement('td'),idGroup=document.createElement('div'),code=document.createElement('code'),copy=document.createElement('button');
+    idGroup.className='device-id';code.textContent=device.device_id.length>28?`${device.device_id.slice(0,18)}…${device.device_id.slice(-6)}`:device.device_id;code.title=device.device_id;
+    copy.type='button';copy.className='quiet copy-device-id';copy.textContent='复制';copy.disabled=busy;copy.setAttribute('aria-label',`复制 ${device.display_name} 的设备 ID`);
+    copy.addEventListener('click',()=>operation(async()=>{await copyText(device.device_id);message('设备 ID 已复制。');}));
+    idGroup.append(code,copy);idCell.append(idGroup);
+    const statusCell=document.createElement('td'),badge=document.createElement('span'),state=deviceStatus(device);
+    badge.className=`device-status ${state}`;badge.textContent={online:'在线',offline:'离线',disabled:'已禁用'}[state];statusCell.append(badge);
+    const action=document.createElement('td'),manage=document.createElement('button');manage.type='button';manage.className='quiet manage-device';manage.disabled=busy;manage.textContent=selected?.device_id===device.device_id?'正在管理':'管理';manage.setAttribute('aria-label',`管理 ${device.display_name}`);
+    manage.addEventListener('click',()=>operation(async()=>{await select(device);$('editor').scrollIntoView({behavior:'auto',block:'nearest'});}));
+    action.append(manage);row.append(name,idCell,statusCell,action);root.append(row);
+  }
+}
 async function reload(){devices=await api('/api/v1/devices');render();}
-async function select(device,keepCredential=false){if(!keepCredential)clearCredential();selected=device;$('selected-title').textContent=`${device.display_name} · ${device.device_id}`;$('display-name').value=device.display_name;$('enabled').checked=device.enabled;$('editor').hidden=false;const current=await api(`/api/v1/devices/${encodeURIComponent(device.device_id)}/grants`),root=$('grants');root.replaceChildren();for(const account of accounts){const grant=current.find(g=>g.account_id===account.id),row=document.createElement('div');row.dataset.account=account.id;row.style.margin='10px 0';const name=document.createElement('span');name.textContent=`${account.display_name}（${account.username}）${account.enabled?'':' · 已停用'}　`;row.append(name);for(const[key,text]of[['allow_grpc','模块访问'],['allow_ssh','SSH']]){const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.name=key;input.checked=!!grant?.[key];label.append(input,document.createTextNode(text+'　'));row.append(label);}root.append(row);}}
-$('create-form').addEventListener('submit',e=>{e.preventDefault();operation(async()=>{clearCredential();const form=new FormData(e.target),created=await api('/api/v1/devices','POST',{display_name:form.get('display_name')});e.target.reset();showCredential(created);await reload();await select({device_id:created.device_id,display_name:created.display_name,enabled:created.enabled},true);message('设备已创建，已为现有账号默认开启模块访问和 SSH，请复制设备 ID 和令牌。');});});
-$('edit-form').addEventListener('submit',e=>{e.preventDefault();operation(async()=>{if(!selected)return;if(!$('enabled').checked&&!confirm('禁用会断开设备及全部远程会话，继续？'))return;const updated=await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}`,'PUT',{display_name:$('display-name').value,enabled:$('enabled').checked});await reload();selected=updated;message('设备设置已保存。');});});
+async function select(device,keepCredential=false){if(!keepCredential)clearCredential();const current=await api(`/api/v1/devices/${encodeURIComponent(device.device_id)}/grants`);selected=device;$('selected-title').textContent=device.display_name;$('selected-id').textContent=device.device_id;render();$('display-name').value=device.display_name;$('enabled').checked=device.enabled;$('editor').hidden=false;const root=$('grants');root.replaceChildren();for(const account of accounts){const grant=current.find(g=>g.account_id===account.id),row=document.createElement('div');row.dataset.account=account.id;row.style.margin='10px 0';const name=document.createElement('span');name.textContent=`${account.display_name}（${account.username}）${account.enabled?'':' · 已停用'}　`;row.append(name);for(const[key,text]of[['allow_grpc','模块访问'],['allow_ssh','SSH']]){const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.name=key;input.checked=!!grant?.[key];label.append(input,document.createTextNode(text+'　'));row.append(label);}root.append(row);}}
+$('open-create').addEventListener('click',()=>{if(busy)return;$('create-form').reset();$('create-error').textContent='';$('create-dialog').showModal();});
+for(const id of ['cancel-create','close-create'])$(id).addEventListener('click',()=>{if(!busy)$('create-dialog').close();});
+$('create-dialog').addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+$('device-search').addEventListener('input',render);
+$('device-status').addEventListener('change',render);
+$('close-editor').addEventListener('click',()=>{if(busy)return;selected=null;clearCredential();$('editor').hidden=true;render();});
+$('create-form').addEventListener('submit',e=>{e.preventDefault();operation(async()=>{
+  const form=new FormData(e.target),name=String(form.get('display_name')||'').trim();
+  $('create-error').textContent='';
+  if(!name)throw new Error('请填写设备名称。');
+  clearCredential();
+  const created=await api('/api/v1/devices','POST',{display_name:name});
+  e.target.reset();$('create-dialog').close();showCredential(created);
+  $('device-search').value='';$('device-status').value='all';
+  // 先显示一次性凭据，后续刷新失败时也能继续复制保存。
+  await reload();await select({device_id:created.device_id,display_name:created.display_name,enabled:created.enabled},true);
+  message('设备已创建，请复制设备 ID 和令牌。');
+});});
+$('edit-form').addEventListener('submit',e=>{e.preventDefault();operation(async()=>{if(!selected)return;if(!$('enabled').checked&&!confirm('禁用会断开设备及全部远程会话，继续？'))return;const updated=await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}`,'PUT',{display_name:$('display-name').value,enabled:$('enabled').checked});selected=updated;$('selected-title').textContent=updated.display_name;await reload();message('设备设置已保存。');});});
 $('save-grants').addEventListener('click',()=>operation(async()=>{if(!selected)return;const grants=[...$('grants').children].map(row=>({account_id:row.dataset.account,allow_grpc:row.querySelector('[name=allow_grpc]').checked,allow_ssh:row.querySelector('[name=allow_ssh]').checked})).filter(g=>g.allow_grpc||g.allow_ssh);await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}/grants`,'PUT',grants);message('设备权限已保存，撤销的访问将在一秒内终止。');}));
 $('rotate').addEventListener('click',()=>operation(async()=>{if(!selected||!confirm('轮换令牌会断开设备及全部远程会话，旧令牌立即失效，继续？'))return;clearCredential();const result=await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}/token`,'POST');showCredential(result);await reload();message('令牌已轮换，请复制并更新现场设备的接入配置。');}));
 $('delete').addEventListener('click',()=>operation(async()=>{if(!selected||!confirm('删除设备会撤销所有权限并断开远程会话，继续？'))return;await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}`,'DELETE');selected=null;$('editor').hidden=true;clearCredential();await reload();message('设备已删除。');}));
@@ -80,5 +229,5 @@ $('refresh').addEventListener('click',()=>operation(async()=>{await reload();mes
 for(const[button,field,label]of[['copy-name','credential-name','设备名称'],['copy-id','credential-id','设备 ID'],['copy-token','credential','设备令牌']])$(button).addEventListener('click',()=>operation(async()=>{await copyText($(field).value);message(`${label}已复制。`);}));
 $('copy-config').addEventListener('click',()=>operation(async()=>{if(!$('credential').value)throw new Error('接入配置已清除，请重新创建或轮换令牌。');await copyText(`设备名称：${$('credential-name').value}\n设备 ID：${$('credential-id').value}\n设备令牌：${$('credential').value}`);message('设备接入配置已复制，请妥善交给配置人员。');}));
 $('logout').addEventListener('click',()=>operation(async()=>{clearCredential();const result=await fetch('/api/v1/auth/logout',{method:'POST',credentials:'same-origin',headers:{'X-MskDSP-Action':'auth'}});if(!result.ok)throw new Error('退出暂时失败');location.assign('/login');}));
-operation(async()=>{const me=await api('/api/v1/auth/me');if(me.role!=='admin'){location.assign('/login');return;}$('username').textContent=me.username;accounts=await api('/api/v1/accounts');await reload();message('请选择设备管理设置与账号权限。');});
+operation(async()=>{const me=await api('/api/v1/auth/me');if(me.role!=='admin'){location.assign('/login');return;}$('username').textContent=me.username;accounts=await api('/api/v1/accounts');await reload();message('');});
 </script></body></html>
