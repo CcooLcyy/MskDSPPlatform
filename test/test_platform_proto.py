@@ -27,6 +27,7 @@ class PlatformProtoTests(unittest.TestCase):
                 self.assertTrue(options["env"]["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic "))
                 protocol.parent.mkdir(parents=True)
                 protocol.write_text('syntax = "proto3";', encoding="utf-8")
+                protocol.with_name("templates.proto").write_text('syntax = "proto3";', encoding="utf-8")
 
             with patch.dict(os.environ, {"PLATFORM_PROTO_READ_TOKEN": "secret-value"}), patch.object(module.subprocess, "run", side_effect=run):
                 module.initialize(root)
@@ -39,6 +40,18 @@ class PlatformProtoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.object(module.subprocess, "run"):
             with self.assertRaisesRegex(RuntimeError, "缺少软件仓库协议"):
                 module.initialize(Path(directory))
+
+    def test_software_only_checkout_rejects_missing_template_catalog_protocol(self):
+        spec = importlib.util.spec_from_file_location("init_platform_proto", ROOT / "script/init_platform_proto.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory, patch.object(module.subprocess, "run"):
+            root = Path(directory)
+            software = root / "platform-proto/platform/v1/software.proto"
+            software.parent.mkdir(parents=True)
+            software.write_text('syntax = "proto3";', encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "点表目录协议"):
+                module.initialize(root)
 
 
 if __name__ == "__main__":

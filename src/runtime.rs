@@ -109,7 +109,9 @@ impl PlatformRuntime {
             .with_context(|| format!("绑定 HTTP 地址失败: {}", self.config.server.http_addr))?;
         let grpc_addr = self.config.server.grpc_addr;
         let grpc_service =
-            AgentGrpcService::new(self.sessions.clone(), protocol_version, client_auth);
+            AgentGrpcService::new(self.sessions.clone(), protocol_version, client_auth.clone());
+        let template_catalog =
+            crate::template_grpc::TemplateCatalogService::new(templates.clone(), client_auth);
         let software_publisher = crate::software::grpc::PublishGrpcService::new(
             software.clone(),
             self.config.software.publisher_token_sha256.clone(),
@@ -132,6 +134,7 @@ impl PlatformRuntime {
         let grpc_service = async move {
             Server::builder()
                 .add_service(AgentServiceServer::new(grpc_service))
+                .add_service(template_catalog.server())
                 .add_service(crate::remote::proto::device_access_service_server::DeviceAccessServiceServer::new(remote.clone()).max_decoding_message_size(128 * 1024))
                 .add_service(crate::remote::proto::remote_access_service_server::RemoteAccessServiceServer::new(remote).max_decoding_message_size(128 * 1024))
                 .add_service(

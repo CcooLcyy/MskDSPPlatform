@@ -11,6 +11,7 @@ mod modbus_templates;
 mod runtime;
 mod software;
 mod state;
+mod template_grpc;
 mod template_http;
 
 use anyhow::Result;

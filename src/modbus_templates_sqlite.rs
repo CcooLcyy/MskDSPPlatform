@@ -79,7 +79,7 @@ pub(super) fn open_initialized(root: &Path) -> Result<Connection, StoreError> {
     let version: u32 = transaction
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(storage)?;
-    if version > 2 {
+    if version > 3 {
         return Err(storage("点表数据库版本不受支持"));
     }
     if version == 0 {
@@ -138,6 +138,27 @@ pub(super) fn open_initialized(root: &Path) -> Result<Connection, StoreError> {
         let indexes: u32 = transaction.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name='trash' AND name IN ('trash_deleted','trash_expires')", [], |row| row.get(0)).map_err(storage)?;
         if indexes != 2 {
             return Err(storage("点表回收站索引缺失，请恢复数据库"));
+        }
+    }
+    if version < 3 {
+        transaction.execute_batch(
+            "CREATE TABLE template_history (
+                id TEXT NOT NULL, revision TEXT NOT NULL CHECK(length(revision)=20 AND revision<>'00000000000000000000'),
+                created_at TEXT NOT NULL CHECK(length(created_at)=20),
+                updated_at TEXT NOT NULL CHECK(length(updated_at)=20 AND updated_at>=created_at),
+                template_json TEXT NOT NULL, PRIMARY KEY(id,revision)
+            );
+            INSERT INTO template_history SELECT id,revision,created_at,updated_at,template_json FROM templates;
+            INSERT INTO template_history SELECT id,revision,created_at,updated_at,template_json FROM trash;
+            CREATE TRIGGER history_no_update BEFORE UPDATE ON template_history BEGIN SELECT RAISE(ABORT,'immutable template history'); END;
+            CREATE TRIGGER history_no_delete BEFORE DELETE ON template_history BEGIN SELECT RAISE(ABORT,'immutable template history'); END;
+            PRAGMA user_version=3;"
+        ).map_err(storage)?;
+    } else {
+        transaction.prepare("SELECT id,revision,created_at,updated_at,template_json FROM template_history LIMIT 0").map_err(storage)?;
+        let guards: u32 = transaction.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='template_history' AND name IN ('history_no_update','history_no_delete')", [], |row| row.get(0)).map_err(storage)?;
+        if guards != 2 {
+            return Err(storage("点表历史保护触发器缺失，请恢复数据库"));
         }
     }
     let state: Option<String> = transaction
@@ -417,6 +438,12 @@ fn insert(database: &Connection, record: &Value) -> Result<(), StoreError> {
             template["address_base"].as_f64().unwrap() as u64, template["points"].as_array().unwrap().len() as u64,
             serde_json::to_string(template).map_err(storage)?]
     ).map_err(storage)?;
+    snapshot(database, record)?;
+    Ok(())
+}
+
+fn snapshot(database: &Connection, record: &Value) -> Result<(), StoreError> {
+    database.execute("INSERT INTO template_history(id,revision,created_at,updated_at,template_json) VALUES (?1,?2,?3,?4,?5)", params![record["id"].as_str().unwrap(), number(record["revision"].as_u64().unwrap()), number(record["created_at"].as_u64().unwrap()), number(record["updated_at"].as_u64().unwrap()), serde_json::to_string(&record["template"]).map_err(storage)?]).map_err(storage)?;
     Ok(())
 }
 
@@ -448,6 +475,23 @@ pub(super) fn list(database: &mut Connection) -> Result<Vec<Value>, StoreError> 
 
 pub(super) fn get(database: &Connection, id: &str) -> Result<Value, StoreError> {
     get_stored(database, id, false)
+}
+
+pub(super) fn get_revision(
+    database: &Connection,
+    id: &str,
+    revision: u64,
+) -> Result<Value, StoreError> {
+    let row = database.query_row("SELECT created_at,updated_at,template_json FROM template_history WHERE id=?1 AND revision=?2", params![id,number(revision)], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).optional().map_err(storage)?.ok_or(StoreError::NotFound)?;
+    if row.2.len() > MAX_TEMPLATE_BYTES {
+        return Err(storage("数据库点表内容超过大小上限"));
+    }
+    let template: Value = serde_json::from_str(&row.2).map_err(storage)?;
+    validate_template(&template)
+        .map_err(|error| storage(format!("数据库历史点表内容损坏：{error}")))?;
+    Ok(
+        json!({"id":id,"revision":revision,"created_at":parse_number(row.0)?,"updated_at":parse_number(row.1)?,"template":template}),
+    )
 }
 
 fn get_stored(database: &Connection, id: &str, trash: bool) -> Result<Value, StoreError> {
@@ -572,6 +616,7 @@ fn delete_with_time(
         .checked_add(TRASH_RETENTION_MILLIS)
         .ok_or_else(|| storage("回收站到期时间超出支持范围"))?;
     transaction.execute("INSERT INTO trash SELECT id,?2,created_at,updated_at,name,manufacturer,models_json,protocol_version,address_base,point_count,template_json,?3,?4 FROM templates WHERE id=?1", params![id, number(next), number(deleted_at), number(expires_at)]).map_err(storage)?;
+    snapshot(&transaction, &get_stored(&transaction, id, true)?)?;
     transaction
         .execute(
             "DELETE FROM templates WHERE id=?1 AND revision=?2",
@@ -721,9 +766,9 @@ fn restore_with_time(
                 params![id, number(revision)],
             )
             .map_err(storage)?;
-        Ok(
-            json!({"id":id,"revision":next,"created_at":old["created_at"],"updated_at":timestamp,"template":old["template"]}),
-        )
+        let restored = json!({"id":id,"revision":next,"created_at":old["created_at"],"updated_at":timestamp,"template":old["template"]});
+        snapshot(&savepoint, &restored)?;
+        Ok(restored)
     })();
     match &result {
         Ok(_) => savepoint.commit().map_err(storage)?,

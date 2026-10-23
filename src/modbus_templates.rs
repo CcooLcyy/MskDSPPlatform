@@ -418,6 +418,16 @@ impl TemplateStore {
         self.run(move |database| sqlite::get(database, &id)).await
     }
 
+    pub async fn get_revision(&self, id: &str, revision: u64) -> Result<Value, StoreError> {
+        valid_platform_id(id)?;
+        if revision == 0 {
+            return Err(invalid("模板版本必须为正整数"));
+        }
+        let id = id.to_owned();
+        self.run(move |database| sqlite::get_revision(database, &id, revision))
+            .await
+    }
+
     pub async fn create(&self, template: Value) -> Result<Value, StoreError> {
         validate_template(&template)?;
         self.run(move |database| sqlite::create(database, template))
@@ -1136,6 +1146,7 @@ mod tests {
             let database =
                 rusqlite::Connection::open(directory.0.join("templates.sqlite3")).unwrap();
             database.execute("DROP TABLE trash", []).unwrap();
+            database.execute("DROP TABLE template_history", []).unwrap();
             database.pragma_update(None, "user_version", 1).unwrap();
         }
         let reopened = directory.store();
@@ -1148,7 +1159,7 @@ mod tests {
             let version: u32 = database
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 2);
+            assert_eq!(version, 3);
             database.execute("DROP TABLE trash", []).unwrap();
         }
         assert!(reopened.initialize().await.is_err());
@@ -1600,5 +1611,143 @@ mod tests {
             .unwrap()
             .unwrap();
         second.await.unwrap().unwrap();
+    }
+}
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn sample() -> Value {
+        json!({"schema_version":1,"id":"demo","name":"demo","manufacturer":"","models":[],"protocol_version":"","address_base":0,"notes":[],"sources":[],"points":[{"id":"p1","tag":"V","group":"","unit":"V","function_code":3,"address":0,"data_type":"UINT16","reg_count":1,"scale":"1","offset":"0","deadband":"0","word_order":"HL","byte_order":"AB","bit_index":null,"source_page":0,"description":""}]})
+    }
+
+    #[tokio::test]
+    async fn history_retains_each_revision_after_restart_delete_and_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TemplateStore::new(dir.path().into()).unwrap();
+        let first = store.create(sample()).await.unwrap();
+        let id = first["id"].as_str().unwrap();
+        let mut changed = sample();
+        changed["points"][0]["address"] = json!(5);
+        let second = store.update(id, 1, changed).await.unwrap();
+        store.delete(id, 2).await.unwrap();
+        assert!(store.list().await.unwrap().is_empty());
+        assert!(matches!(store.get(id).await, Err(StoreError::NotFound)));
+        let restarted = TemplateStore::new(dir.path().into()).unwrap();
+        assert_eq!(restarted.get_revision(id, 1).await.unwrap(), first);
+        assert_eq!(restarted.get_revision(id, 2).await.unwrap(), second);
+        assert_eq!(
+            restarted.get_revision(id, 3).await.unwrap()["template"],
+            second["template"]
+        );
+        let id_owned = id.to_owned();
+        restarted.run(move |db| {
+            db.execute("UPDATE trash SET expires_at='00000000000000000001', deleted_at='00000000000000000000' WHERE id=?1", [&id_owned]).unwrap();
+            Ok(())
+        }).await.unwrap();
+        restarted.purge_expired().await.unwrap();
+        assert_eq!(restarted.get_revision(id, 1).await.unwrap(), first);
+    }
+
+    #[tokio::test]
+    async fn history_failure_rolls_back_current_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TemplateStore::new(dir.path().into()).unwrap();
+        let first = store.create(sample()).await.unwrap();
+        let id = first["id"].as_str().unwrap();
+        store.run(|db| {
+            db.execute_batch("CREATE TRIGGER fail_history BEFORE INSERT ON template_history BEGIN SELECT RAISE(ABORT,'injected history failure'); END;").unwrap();
+            Ok(())
+        }).await.unwrap();
+        assert!(store.update(id, 1, sample()).await.is_err());
+        assert!(store.delete(id, 1).await.is_err());
+        assert!(store.create(sample()).await.is_err());
+        assert_eq!(store.get(id).await.unwrap(), first);
+        assert!(matches!(
+            store.get_revision(id, 2).await,
+            Err(StoreError::NotFound)
+        ));
+        assert_eq!(store.list().await.unwrap().len(), 1);
+        store
+            .run(|db| {
+                db.execute_batch("DROP TRIGGER fail_history;").unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        store.delete(id, 1).await.unwrap();
+        store.run(|db| {
+            db.execute_batch("CREATE TRIGGER fail_history BEFORE INSERT ON template_history BEGIN SELECT RAISE(ABORT,'injected history failure'); END;").unwrap();
+            Ok(())
+        }).await.unwrap();
+        assert!(store.restore(id, 2).await.is_err());
+        assert!(matches!(store.get(id).await, Err(StoreError::NotFound)));
+        assert_eq!(store.list_trash().await.unwrap()[0]["revision"], 2);
+        assert!(matches!(
+            store.get_revision(id, 3).await,
+            Err(StoreError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn migration_snapshots_current_and_trash_and_history_is_immutable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TemplateStore::new(dir.path().into()).unwrap();
+        let first = store.create(sample()).await.unwrap();
+        let deleted = store.create(sample()).await.unwrap();
+        let deleted_id = deleted["id"].as_str().unwrap();
+        store.delete(deleted_id, 1).await.unwrap();
+        {
+            let db = rusqlite::Connection::open(dir.path().join("templates.sqlite3")).unwrap();
+            db.execute_batch("DROP TABLE template_history; PRAGMA user_version=2;")
+                .unwrap();
+        }
+        let restarted = TemplateStore::new(dir.path().into()).unwrap();
+        restarted.initialize().await.unwrap();
+        assert_eq!(
+            restarted
+                .get_revision(first["id"].as_str().unwrap(), 1)
+                .await
+                .unwrap(),
+            first
+        );
+        assert_eq!(
+            restarted.get_revision(deleted_id, 2).await.unwrap()["template"],
+            deleted["template"]
+        );
+        restarted
+            .run(|db| {
+                assert!(db.execute("DELETE FROM template_history", []).is_err());
+                assert!(
+                    db.execute(
+                        "UPDATE template_history SET revision='00000000000000000009'",
+                        []
+                    )
+                    .is_err()
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod history_corruption_tests {
+    use super::*;
+    #[tokio::test]
+    async fn missing_history_table_or_guard_is_rejected_without_silent_recreation() {
+        for mutation in [
+            "DROP TABLE template_history",
+            "DROP TRIGGER history_no_delete",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = TemplateStore::new(dir.path().into()).unwrap();
+            store.initialize().await.unwrap();
+            let db = rusqlite::Connection::open(dir.path().join("templates.sqlite3")).unwrap();
+            db.execute_batch(mutation).unwrap();
+            drop(db);
+            assert!(store.initialize().await.is_err());
+        }
     }
 }

@@ -289,7 +289,7 @@ fn client_status(error: ClientAuthError, authenticated: bool) -> Status {
     }
 }
 
-fn bearer_token(metadata: &tonic::metadata::MetadataMap) -> Result<String, Status> {
+pub(crate) fn bearer_token(metadata: &tonic::metadata::MetadataMap) -> Result<String, Status> {
     let mut values = metadata.get_all("authorization").iter();
     let value = values
         .next()

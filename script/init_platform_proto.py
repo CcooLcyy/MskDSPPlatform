@@ -24,6 +24,8 @@ def initialize(root):
                    cwd=root, env=environment, check=True)
     if not (root / "platform-proto/platform/v1/software.proto").is_file():
         raise RuntimeError("平台协议子模块缺少软件仓库协议，请核对父仓库固定的协议提交")
+    if not (root / "platform-proto/platform/v1/templates.proto").is_file():
+        raise RuntimeError("平台协议子模块缺少点表目录协议，请核对父仓库固定的协议提交")
 
 
 if __name__ == "__main__":
