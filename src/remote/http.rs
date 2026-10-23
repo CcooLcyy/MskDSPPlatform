@@ -142,22 +142,10 @@ async fn create(
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
-    // 读取创建时的账号快照，设备及两项默认授权由存储层一起提交。
-    let grants: Vec<_> = match state.accounts.list().await {
-        Ok(accounts) => accounts
-            .into_iter()
-            .map(|account| Grant {
-                account_id: account.id,
-                allow_grpc: true,
-                allow_ssh: true,
-            })
-            .collect(),
-        Err(e) => return e.into_response(),
-    };
-    let default_grant_count = grants.len();
-    match state.store.create(input, grants).await {
+    // 普通账号必须逐台明确授权，管理员通过角色自动获得设备访问权限。
+    match state.store.create(input, vec![]).await {
         Ok(created) => {
-            tracing::info!(actor=%state.http.auth.username(),device_id=%created.device.device_id,default_grant_count,"管理员已创建设备并默认开启现有账号的模块访问和 SSH");
+            tracing::info!(actor=%state.http.auth.username(),device_id=%created.device.device_id,"管理员已创建设备，普通账号授权默认为空");
             (StatusCode::CREATED, Json(created)).into_response()
         }
         Err(e) => e.into_response(),

@@ -121,22 +121,76 @@ fn validate_grants(grants: &[Grant]) -> Result<(), StoreError> {
 }
 impl DeviceStore {
     pub async fn open(path: PathBuf) -> Result<Self, StoreError> {
-        tokio::task::spawn_blocking(move||{
-        match std::fs::symlink_metadata(&path) {Ok(meta) if meta.is_file()&&!meta.file_type().is_symlink()=>{},Ok(_)=>return Err(StoreError::Storage),Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},Err(e)=>return Err(storage(e))}
-        if let Some(parent)=path.parent(){std::fs::create_dir_all(parent).map_err(storage)?;}
-        let db=Connection::open(path).map_err(storage)?;db.busy_timeout(Duration::from_secs(5)).map_err(storage)?;
-        let check:String=db.query_row("PRAGMA quick_check",[],|r|r.get(0)).map_err(storage)?;if check!="ok"{return Err(StoreError::Storage)}
-        let version:i64=db.pragma_query_value(None,"user_version",|r|r.get(0)).map_err(storage)?;
-        if version==0 {
-            let count:i64=db.query_row("SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",[],|r|r.get(0)).map_err(storage)?;
-            if count!=0{return Err(StoreError::Storage)}
-            db.execute_batch("BEGIN IMMEDIATE; CREATE TABLE devices(id TEXT PRIMARY KEY NOT NULL,display_name TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL); CREATE TABLE grants(device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,account_id TEXT NOT NULL,allow_grpc INTEGER NOT NULL CHECK(allow_grpc IN (0,1)),allow_ssh INTEGER NOT NULL CHECK(allow_ssh IN (0,1)),PRIMARY KEY(device_id,account_id)); PRAGMA user_version=1; COMMIT;").map_err(storage)?;
-        }else if version!=1{return Err(StoreError::Storage)}
-        db.prepare("SELECT id,display_name,enabled,token_hash,created_at FROM devices LIMIT 0").map_err(storage)?;
-        db.prepare("SELECT device_id,account_id,allow_grpc,allow_ssh FROM grants LIMIT 0").map_err(storage)?;
-        db.pragma_update(None,"foreign_keys","ON").map_err(storage)?;db.pragma_update(None,"journal_mode","WAL").map_err(storage)?;
-        Ok(Self(Arc::new(Mutex::new(db))))
-    }).await.map_err(storage)?
+        tokio::task::spawn_blocking(move || {
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {}
+                Ok(_) => return Err(StoreError::Storage),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(storage(e)),
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(storage)?;
+            }
+            let mut db = Connection::open(path).map_err(storage)?;
+            db.busy_timeout(Duration::from_secs(5)).map_err(storage)?;
+            let check: String = db
+                .query_row("PRAGMA quick_check", [], |r| r.get(0))
+                .map_err(storage)?;
+            if check != "ok" {
+                return Err(StoreError::Storage);
+            }
+            let version: i64 = db
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .map_err(storage)?;
+            match version {
+                0 => {
+                    let count: i64 = db
+                        .query_row(
+                            "SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+                            [],
+                            |r| r.get(0),
+                        )
+                        .map_err(storage)?;
+                    if count != 0 {
+                        return Err(StoreError::Storage);
+                    }
+                    let tx = db.transaction().map_err(storage)?;
+                    tx.execute_batch(
+                        "CREATE TABLE devices(id TEXT PRIMARY KEY NOT NULL,display_name TEXT NOT NULL,enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),token_hash TEXT NOT NULL UNIQUE,created_at INTEGER NOT NULL);
+                         CREATE TABLE grants(device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,account_id TEXT NOT NULL,allow_grpc INTEGER NOT NULL CHECK(allow_grpc IN (0,1)),allow_ssh INTEGER NOT NULL CHECK(allow_ssh IN (0,1)),confirmed INTEGER NOT NULL CHECK(confirmed IN (0,1)),PRIMARY KEY(device_id,account_id));
+                         PRAGMA user_version=2;",
+                    )
+                    .map_err(storage)?;
+                    tx.commit().map_err(storage)?;
+                }
+                1 => {
+                    let tx = db.transaction().map_err(storage)?;
+                    // 先校验旧表，失败时事务回滚，不能留下部分升级。
+                    tx.prepare("SELECT id,display_name,enabled,token_hash,created_at FROM devices LIMIT 0").map_err(storage)?;
+                    tx.prepare("SELECT device_id,account_id,allow_grpc,allow_ssh FROM grants LIMIT 0").map_err(storage)?;
+                    let pending: i64 = tx
+                        .query_row("SELECT count(*) FROM grants", [], |r| r.get(0))
+                        .map_err(storage)?;
+                    // 旧记录没有分配来源，保留待确认，不直接沿用历史默认授权。
+                    tx.execute_batch(
+                        "ALTER TABLE grants ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0 CHECK(confirmed IN (0,1));
+                         PRAGMA user_version=2;",
+                    )
+                    .map_err(storage)?;
+                    tx.commit().map_err(storage)?;
+                    tracing::warn!(pending_grant_count=pending,"设备授权已升级，历史授权已保留待管理员重新确认");
+                }
+                2 => {}
+                _ => return Err(StoreError::Storage),
+            }
+            db.prepare("SELECT id,display_name,enabled,token_hash,created_at FROM devices LIMIT 0").map_err(storage)?;
+            db.prepare("SELECT device_id,account_id,allow_grpc,allow_ssh,confirmed FROM grants LIMIT 0").map_err(storage)?;
+            db.pragma_update(None, "foreign_keys", "ON").map_err(storage)?;
+            db.pragma_update(None, "journal_mode", "WAL").map_err(storage)?;
+            Ok(Self(Arc::new(Mutex::new(db))))
+        })
+        .await
+        .map_err(storage)?
     }
     async fn run<T: Send + 'static>(
         &self,
@@ -169,7 +223,7 @@ impl DeviceStore {
             if get(&tx,&input.device_id).is_ok(){return Err(StoreError::Conflict)}
             tx.execute("INSERT INTO devices(id,display_name,enabled,token_hash,created_at)VALUES(?1,?2,1,?3,?4)",params![input.device_id,display,hashed,chrono::Utc::now().timestamp_millis()]).map_err(storage)?;
             for grant in grants {
-                tx.execute("INSERT INTO grants(device_id,account_id,allow_grpc,allow_ssh)VALUES(?1,?2,?3,?4)",params![input.device_id,grant.account_id,grant.allow_grpc,grant.allow_ssh]).map_err(storage)?;
+                tx.execute("INSERT INTO grants(device_id,account_id,allow_grpc,allow_ssh,confirmed)VALUES(?1,?2,?3,?4,1)",params![input.device_id,grant.account_id,grant.allow_grpc,grant.allow_ssh]).map_err(storage)?;
             }
             let device=get(&tx,&input.device_id)?;tx.commit().map_err(storage)?;tracing::info!(device_id=%device.device_id,"已创建设备身份");Ok(CreatedDevice{device,token})}).await
     }
@@ -232,19 +286,19 @@ impl DeviceStore {
     }
     pub async fn grants(&self, id: &str) -> Result<Vec<Grant>, StoreError> {
         let id = id.to_owned();
-        self.run(move|db|{get(db,&id)?;let mut q=db.prepare("SELECT account_id,allow_grpc,allow_ssh FROM grants WHERE device_id=?1 ORDER BY account_id").map_err(storage)?;q.query_map([id],|r|Ok(Grant{account_id:r.get(0)?,allow_grpc:r.get(1)?,allow_ssh:r.get(2)?})).map_err(storage)?.collect::<Result<Vec<_>,_>>().map_err(storage)}).await
+        self.run(move|db|{get(db,&id)?;let mut q=db.prepare("SELECT account_id,allow_grpc,allow_ssh FROM grants WHERE device_id=?1 AND confirmed=1 ORDER BY account_id").map_err(storage)?;q.query_map([id],|r|Ok(Grant{account_id:r.get(0)?,allow_grpc:r.get(1)?,allow_ssh:r.get(2)?})).map_err(storage)?.collect::<Result<Vec<_>,_>>().map_err(storage)}).await
     }
     pub async fn set_grants(&self, id: &str, grants: Vec<Grant>) -> Result<(), StoreError> {
         validate_grants(&grants)?;
         let id = id.to_owned();
-        self.run(move|db|{let tx=db.transaction().map_err(storage)?;get(&tx,&id)?;tx.execute("DELETE FROM grants WHERE device_id=?1",[&id]).map_err(storage)?;for grant in grants{tx.execute("INSERT INTO grants(device_id,account_id,allow_grpc,allow_ssh)VALUES(?1,?2,?3,?4)",params![id,grant.account_id,grant.allow_grpc,grant.allow_ssh]).map_err(storage)?;}tx.commit().map_err(storage)?;Ok(())}).await
+        self.run(move|db|{let tx=db.transaction().map_err(storage)?;get(&tx,&id)?;tx.execute("DELETE FROM grants WHERE device_id=?1",[&id]).map_err(storage)?;for grant in grants{tx.execute("INSERT INTO grants(device_id,account_id,allow_grpc,allow_ssh,confirmed)VALUES(?1,?2,?3,?4,1)",params![id,grant.account_id,grant.allow_grpc,grant.allow_ssh]).map_err(storage)?;}tx.commit().map_err(storage)?;Ok(())}).await
     }
     pub async fn for_account(
         &self,
         account: &str,
     ) -> Result<Vec<(DeviceRecord, Grant)>, StoreError> {
         let account = account.to_owned();
-        self.run(move|db|{let mut q=db.prepare("SELECT d.id,d.display_name,d.enabled,d.created_at,g.allow_grpc,g.allow_ssh FROM devices d JOIN grants g ON d.id=g.device_id WHERE g.account_id=?1 AND d.enabled=1 AND (g.allow_grpc=1 OR g.allow_ssh=1) ORDER BY d.display_name,d.id").map_err(storage)?;q.query_map([&account],|r|Ok((row(r)?,Grant{account_id:account.clone(),allow_grpc:r.get(4)?,allow_ssh:r.get(5)?}))).map_err(storage)?.collect::<Result<Vec<_>,_>>().map_err(storage)}).await
+        self.run(move|db|{let mut q=db.prepare("SELECT d.id,d.display_name,d.enabled,d.created_at,g.allow_grpc,g.allow_ssh FROM devices d JOIN grants g ON d.id=g.device_id WHERE g.account_id=?1 AND g.confirmed=1 AND d.enabled=1 AND (g.allow_grpc=1 OR g.allow_ssh=1) ORDER BY d.display_name,d.id").map_err(storage)?;q.query_map([&account],|r|Ok((row(r)?,Grant{account_id:account.clone(),allow_grpc:r.get(4)?,allow_ssh:r.get(5)?}))).map_err(storage)?.collect::<Result<Vec<_>,_>>().map_err(storage)}).await
     }
     pub async fn authorize(
         &self,
@@ -255,6 +309,6 @@ impl DeviceStore {
         let id = id.to_owned();
         let account = account.to_owned();
         let ssh = service == "ssh";
-        self.run(move|db|{let allowed:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM devices d JOIN grants g ON d.id=g.device_id WHERE d.id=?1 AND d.enabled=1 AND g.account_id=?2 AND ((?3=1 AND g.allow_ssh=1) OR (?3=0 AND g.allow_grpc=1)))",params![id,account,ssh],|r|r.get(0)).map_err(storage)?;if allowed{Ok(())}else{Err(StoreError::Denied)}}).await
+        self.run(move|db|{let allowed:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM devices d JOIN grants g ON d.id=g.device_id WHERE d.id=?1 AND d.enabled=1 AND g.account_id=?2 AND g.confirmed=1 AND ((?3=1 AND g.allow_ssh=1) OR (?3=0 AND g.allow_grpc=1)))",params![id,account,ssh],|r|r.get(0)).map_err(storage)?;if allowed{Ok(())}else{Err(StoreError::Denied)}}).await
     }
 }

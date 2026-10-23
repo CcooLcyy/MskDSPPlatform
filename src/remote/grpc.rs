@@ -4,9 +4,12 @@ use super::{
     proto::*,
     relay::{self, send},
     response::ResponseStream,
-    store::{DeviceStore, StoreError, valid_service},
+    store::{DeviceStore, Grant, StoreError, valid_service},
 };
-use crate::client_auth::{ClientAuth, ClientAuthError};
+use crate::{
+    accounts::AccountRecord,
+    client_auth::{ClientAuth, ClientAuthError},
+};
 use std::{
     pin::Pin,
     time::{Duration, Instant},
@@ -206,11 +209,32 @@ impl remote_access_service_server::RemoteAccessService for RemoteService {
     ) -> Result<Response<ListDevicesResponse>, Status> {
         let token = bearer(&request).map_err(Status::unauthenticated)?;
         let user = self.clients.authenticate(&token).await.map_err(client)?;
-        let records = self
-            .store
-            .for_account(&user.account.id)
-            .await
-            .map_err(storage)?;
+        let records = match user.account.role.as_str() {
+            "admin" => self
+                .store
+                .list()
+                .await
+                .map_err(storage)?
+                .into_iter()
+                .filter(|device| device.enabled)
+                .map(|device| {
+                    (
+                        device,
+                        Grant {
+                            account_id: user.account.id.clone(),
+                            allow_grpc: true,
+                            allow_ssh: true,
+                        },
+                    )
+                })
+                .collect(),
+            "operator" => self
+                .store
+                .for_account(&user.account.id)
+                .await
+                .map_err(storage)?,
+            _ => return Err(Status::permission_denied("上位机账号角色无效")),
+        };
         let mut devices = Vec::with_capacity(records.len());
         for (record, grant) in records {
             let live = self.hub.snapshot(&record.device_id).await;
@@ -256,10 +280,11 @@ impl remote_access_service_server::RemoteAccessService for RemoteService {
         if !valid_service(&open.service) {
             return Err(Status::invalid_argument("服务名称必须为逻辑标识"));
         }
-        self.store
-            .authorize(&open.device_id, &user.account.id, &open.service)
-            .await
-            .map_err(storage)?;
+        // 首帧等待期间可能发生降级、退出或停用，查询设备状态前重新鉴权。
+        let account = self
+            .authorized(&open, &user.account.id, &token, None)
+            .await?;
+        tracing::info!(account_id=%account.id,role=%account.role,device_id=%open.device_id,service=%open.service,"上位机设备访问授权已通过");
         let id = Uuid::new_v4().to_string();
         let ticket = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let (attach_tx, attach_rx) = oneshot::channel();
@@ -448,24 +473,51 @@ impl RemoteService {
         account: &str,
         token: &str,
         device_token: Option<&str>,
-    ) -> Result<(), Status> {
-        self.clients.authenticate(token).await.map_err(|e| {
+    ) -> Result<AccountRecord, Status> {
+        let user = self.clients.authenticate(token).await.map_err(|e| {
             if matches!(e, ClientAuthError::Storage) {
                 client(e)
             } else {
                 Status::permission_denied("上位机会话授权已失效")
             }
         })?;
-        self.store
-            .authorize(&open.device_id, account, &open.service)
-            .await
-            .map_err(storage)?;
+        if user.account.id != account {
+            return Err(Status::permission_denied("上位机会话身份已变化"));
+        }
+        // 每次从有效会话读取最新角色，降级后立即恢复逐台授权检查。
+        self.authorize_device(open, &user.account).await?;
         if let Some(token) = device_token {
             let device = self.store.authenticate(token).await.map_err(storage)?;
             if device.device_id != open.device_id {
                 return Err(Status::permission_denied("设备凭据已失效"));
             }
         }
-        Ok(())
+        Ok(user.account)
+    }
+
+    async fn authorize_device(
+        &self,
+        open: &TunnelOpen,
+        account: &AccountRecord,
+    ) -> Result<(), Status> {
+        let result = match account.role.as_str() {
+            "admin" => self.store.get(&open.device_id).await.and_then(|device| {
+                if device.enabled {
+                    Ok(())
+                } else {
+                    Err(StoreError::Denied)
+                }
+            }),
+            "operator" => {
+                self.store
+                    .authorize(&open.device_id, &account.id, &open.service)
+                    .await
+            }
+            _ => Err(StoreError::Denied),
+        };
+        result.map_err(|error| {
+            tracing::warn!(account_id=%account.id,role=%account.role,device_id=%open.device_id,service=%open.service,"上位机设备访问授权被拒绝");
+            storage(error)
+        })
     }
 }

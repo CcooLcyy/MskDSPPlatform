@@ -67,9 +67,9 @@ async fn admin_app(store: DeviceStore, accounts: AccountStore) -> (Router, Strin
     (app, cookie)
 }
 
-// 创建时为全部已有账号持久化两项权限；停用账号仍不能登录，旧授权与后建账号不受影响。
+// 创建设备不自动授权已有账号；旧设备明确授权、禁用状态和后建账号不受影响。
 #[tokio::test]
-async fn device_creation_grants_existing_accounts_without_changing_other_permissions() {
+async fn device_creation_keeps_existing_accounts_ungranted_without_changing_other_permissions() {
     let dir = tempfile::tempdir().unwrap();
     let device_db = dir.path().join("devices.sqlite3");
     let store = DeviceStore::open(device_db.clone()).await.unwrap();
@@ -142,15 +142,7 @@ async fn device_creation_grants_existing_accounts_without_changing_other_permiss
     let created = json_body(created).await;
     let id = created["device_id"].as_str().unwrap();
     let grants_path = format!("/api/v1/devices/{id}/grants");
-    let mut expected = existing_accounts
-        .iter()
-        .map(|account| Grant {
-            account_id: account.id.clone(),
-            allow_grpc: true,
-            allow_ssh: true,
-        })
-        .collect::<Vec<_>>();
-    expected.sort_by(|left, right| left.account_id.cmp(&right.account_id));
+    let expected: Vec<Grant> = vec![];
     let response = call(&app, "GET", &grants_path, &cookie, "", json!(null)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(json_body(response).await, json!(expected));
@@ -159,11 +151,12 @@ async fn device_creation_grants_existing_accounts_without_changing_other_permiss
     let reopened = DeviceStore::open(device_db).await.unwrap();
     assert_eq!(json!(reopened.grants(id).await.unwrap()), json!(expected));
     for account in &existing_accounts {
-        reopened
-            .authorize(id, &account.id, "DataCenter")
-            .await
-            .unwrap();
-        reopened.authorize(id, &account.id, "ssh").await.unwrap();
+        for service in ["DataCenter", "ssh"] {
+            assert!(matches!(
+                reopened.authorize(id, &account.id, service).await,
+                Err(StoreError::Denied)
+            ));
+        }
     }
     assert!(
         accounts

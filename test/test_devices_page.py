@@ -41,6 +41,10 @@ class Element {
   select() { chosen = this; }
   setSelectionRange() { chosen = this; }
   setAttribute() {}
+  querySelector(selector) {
+    const name = /^\[name=([^\]]+)\]$/.exec(selector)?.[1];
+    return descendants(this).find(child => child.name === name) || null;
+  }
   remove() { document.body.children = document.body.children.filter(child => child !== this); }
 }
 const element = id => {
@@ -65,13 +69,13 @@ const document = {
   },
 };
 const navigator = {clipboard: {writeText: async value => {copied.push(value);}}};
-let records = [];
+let records = [], accountRecords = [], grantRecords = [];
 const created = {device_id: 'device-1234567890abcdef1234567890abcdef', display_name: '一号网关<img onerror=alert(1)>', token: 'first-token', enabled: true};
 const response = (body, status = 200) => ({ok: status < 400, status, json: async () => body});
 const fetch = async (url, options) => {
   calls.push({url, options});
   if (url === '/api/v1/auth/me') return response({username: 'admin', role: 'admin'});
-  if (url === '/api/v1/accounts') return response([]);
+  if (url === '/api/v1/accounts') return response(accountRecords.map(account => ({...account})));
   if (url === '/api/v1/devices' && options.method === 'POST') {
     if (holdCreate) await new Promise(resolve => {finishCreate = resolve;});
     if (failCreate) return response({error: '设备名称已存在'}, 409);
@@ -79,7 +83,10 @@ const fetch = async (url, options) => {
     return response(created, 201);
   }
   if (url === '/api/v1/devices') return failReload ? response({error: '刷新失败'}, 503) : response(records);
-  if (url.endsWith('/grants')) return response([]);
+  if (url.endsWith('/grants')) {
+    if (options.method === 'PUT') { grantRecords = JSON.parse(options.body); return response(null, 204); }
+    return response(grantRecords);
+  }
   if (url.endsWith('/token')) return response({...created, token: 'rotated-token'});
   throw Error(`未预期请求 ${url}`);
 };

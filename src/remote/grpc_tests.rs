@@ -17,6 +17,7 @@ use tonic::{
 struct Fixture {
     _dir: tempfile::TempDir,
     store: DeviceStore,
+    accounts: AccountStore,
     auth: ClientAuth,
     hub: Hub,
     device: DeviceAccessServiceClient<Channel>,
@@ -77,7 +78,7 @@ impl Fixture {
             )
             .await
             .unwrap();
-        let auth = ClientAuth::new(accounts, 3600);
+        let auth = ClientAuth::new(accounts.clone(), 3600);
         let user = auth
             .login("operator", "field-password-123")
             .await
@@ -103,6 +104,7 @@ impl Fixture {
         Self {
             _dir: dir,
             store,
+            accounts,
             auth,
             hub,
             device: DeviceAccessServiceClient::connect(address.clone())
@@ -115,6 +117,21 @@ impl Fixture {
             stop: Some(stop),
             task,
         }
+    }
+    async fn role(&self, role: &str) {
+        let account = self.accounts.get(&self.account).await.unwrap();
+        self.accounts
+            .update(
+                &account.id,
+                account.revision,
+                crate::accounts::AccountUpdate {
+                    display_name: account.display_name,
+                    enabled: true,
+                    role: Some(role.into()),
+                },
+            )
+            .await
+            .unwrap();
     }
     async fn online(&mut self) -> (mpsc::Sender<DeviceMessage>, Streaming<PlatformMessage>) {
         let (tx, rx) = mpsc::channel(8);
@@ -140,10 +157,16 @@ impl Fixture {
         (tx, output)
     }
     async fn open(&mut self) -> (mpsc::Sender<TunnelFrame>, Streaming<TunnelFrame>) {
+        self.open_service("ssh").await
+    }
+    async fn open_service(
+        &mut self,
+        service: &str,
+    ) -> (mpsc::Sender<TunnelFrame>, Streaming<TunnelFrame>) {
         let (tx, rx) = mpsc::channel(8);
         tx.send(frame(tunnel_frame::Payload::Open(TunnelOpen {
             device_id: "field".into(),
-            service: "ssh".into(),
+            service: service.into(),
         })))
         .await
         .unwrap();
@@ -256,6 +279,16 @@ async fn binary_relay_preserves_half_close_and_rejects_reused_ticket() {
 #[tokio::test]
 async fn device_listing_offline_and_service_permissions() {
     let mut f = Fixture::start().await;
+    f.store
+        .create(
+            NewDevice {
+                device_id: "unassigned".into(),
+                display_name: "其他账号的设备".into(),
+            },
+            vec![],
+        )
+        .await
+        .unwrap();
     let mut list = f
         .upper
         .list_devices(request(ListDevicesRequest {}, &f.user))
@@ -263,6 +296,7 @@ async fn device_listing_offline_and_service_permissions() {
         .unwrap()
         .into_inner();
     assert_eq!(list.devices.len(), 1);
+    assert_eq!(list.devices[0].device_id, "field");
     assert!(!list.devices.remove(0).online);
     let (tx, rx) = mpsc::channel(1);
     tx.send(frame(tunnel_frame::Payload::Open(TunnelOpen {
@@ -297,6 +331,16 @@ async fn device_listing_offline_and_service_permissions() {
         )
         .await
         .unwrap();
+    let filtered = f
+        .upper
+        .list_devices(request(ListDevicesRequest {}, &f.user))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(filtered.devices.len(), 1);
+    assert!(filtered.devices[0].allow_grpc);
+    assert!(!filtered.devices[0].allow_ssh);
+    assert_eq!(filtered.devices[0].services, ["ModuleManager"]);
     let (tx, rx) = mpsc::channel(1);
     tx.send(frame(tunnel_frame::Payload::Open(TunnelOpen {
         device_id: "field".into(),
@@ -310,6 +354,319 @@ async fn device_listing_offline_and_service_permissions() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Code::PermissionDenied);
+}
+
+// 未授权账号看不到设备，即使用户名为 admin、知道设备编号也不能打开任何服务。
+#[tokio::test]
+async fn ungranted_operator_cannot_see_or_open_known_devices_even_when_named_admin() {
+    let mut f = Fixture::start().await;
+    let named_admin = f
+        .accounts
+        .create(NewAccount {
+            role: "operator".into(),
+            username: "admin".into(),
+            password: "field-password-123".into(),
+            display_name: "普通账号".into(),
+        })
+        .await
+        .unwrap();
+    f.user = f
+        .auth
+        .login(&named_admin.username, "field-password-123")
+        .await
+        .unwrap()
+        .access_token;
+    let (_device_tx, _control) = f.online().await;
+    assert!(
+        f.upper
+            .list_devices(request(ListDevicesRequest {}, &f.user))
+            .await
+            .unwrap()
+            .into_inner()
+            .devices
+            .is_empty()
+    );
+    for service in ["ssh", "ModuleManager"] {
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(frame(tunnel_frame::Payload::Open(TunnelOpen {
+            device_id: "field".into(),
+            service: service.into(),
+        })))
+        .await
+        .unwrap();
+        assert_eq!(
+            f.upper
+                .open_tunnel(request(ReceiverStream::new(rx), &f.user))
+                .await
+                .unwrap_err()
+                .code(),
+            Code::PermissionDenied
+        );
+    }
+}
+
+// 当前会话升为管理员后立即覆盖全部及后建设备，不依赖授权行，禁用设备仍不可见。
+#[tokio::test]
+async fn admin_role_sees_all_enabled_devices_and_opens_services_without_grants() {
+    let mut f = Fixture::start().await;
+    f.store.set_grants("field", vec![]).await.unwrap();
+    assert!(
+        f.upper
+            .list_devices(request(ListDevicesRequest {}, &f.user))
+            .await
+            .unwrap()
+            .into_inner()
+            .devices
+            .is_empty()
+    );
+    f.role("admin").await;
+    for id in ["later", "disabled"] {
+        f.store
+            .create(
+                NewDevice {
+                    device_id: id.into(),
+                    display_name: id.into(),
+                },
+                vec![],
+            )
+            .await
+            .unwrap();
+    }
+    f.store
+        .update(
+            "disabled",
+            DeviceUpdate {
+                display_name: "停用设备".into(),
+                enabled: false,
+            },
+        )
+        .await
+        .unwrap();
+    let (_device_tx, mut control) = f.online().await;
+    let list = f
+        .upper
+        .list_devices(request(ListDevicesRequest {}, &f.user))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut ids: Vec<_> = list.devices.iter().map(|d| d.device_id.as_str()).collect();
+    ids.sort();
+    assert_eq!(ids, ["field", "later"]);
+    assert!(list.devices.iter().all(|d| d.allow_grpc && d.allow_ssh));
+    let field = list
+        .devices
+        .iter()
+        .find(|d| d.device_id == "field")
+        .unwrap();
+    assert_eq!(field.services, ["ModuleManager", "ssh"]);
+    for service in ["ssh", "ModuleManager"] {
+        let (upper_tx, mut upper) = f.open_service(service).await;
+        let (_device_tx, mut device, _) = f.attach(&mut control).await;
+        assert!(matches!(
+            upper.message().await.unwrap().unwrap().payload,
+            Some(tunnel_frame::Payload::Ready(_))
+        ));
+        device.message().await.unwrap();
+        upper_tx
+            .send(frame(tunnel_frame::Payload::Data(vec![1, 0, 255])))
+            .await
+            .unwrap();
+        assert_eq!(
+            device.message().await.unwrap().unwrap().payload,
+            Some(tunnel_frame::Payload::Data(vec![1, 0, 255]))
+        );
+    }
+    assert!(f.store.grants("field").await.unwrap().is_empty());
+    let (tx, rx) = mpsc::channel(1);
+    tx.send(frame(tunnel_frame::Payload::Open(TunnelOpen {
+        device_id: "disabled".into(),
+        service: "ssh".into(),
+    })))
+    .await
+    .unwrap();
+    assert_eq!(
+        f.upper
+            .open_tunnel(request(ReceiverStream::new(rx), &f.user))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+}
+
+// 首次读取请求体说明服务已完成初始认证，可确定性复现首帧等待期间的撤权。
+struct PausedRequestBody {
+    read_started: Option<oneshot::Sender<()>>,
+    frames: mpsc::Receiver<axum::body::Bytes>,
+}
+impl tokio_stream::Stream for PausedRequestBody {
+    type Item = Result<axum::body::Bytes, std::convert::Infallible>;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if let Some(started) = self.read_started.take() {
+            let _ = started.send(());
+        }
+        self.frames.poll_recv(cx).map(|frame| frame.map(Ok))
+    }
+}
+
+// 首帧等待期间降级、退出或停用都必须在查询在线状态、通知下位机之前重新拒绝。
+#[tokio::test]
+async fn authorization_changes_during_first_frame_wait_are_checked_before_device_access() {
+    use prost::Message;
+    use remote_access_service_server::RemoteAccessService;
+    use tonic::codec::{Codec, ProstCodec};
+
+    for online in [false, true] {
+        for change in ["demote", "logout", "disable"] {
+            let mut f = Fixture::start().await;
+            f.role("admin").await;
+            f.store.set_grants("field", vec![]).await.unwrap();
+            let mut device_control = if online { Some(f.online().await) } else { None };
+            let (started, read_started) = oneshot::channel();
+            let (frames, rx) = mpsc::channel(1);
+            let body = axum::body::Body::from_stream(PausedRequestBody {
+                read_started: Some(started),
+                frames: rx,
+            });
+            let mut codec = ProstCodec::<TunnelFrame, TunnelFrame>::default();
+            let input = Streaming::new_request(codec.decoder(), body, None, None);
+            let service = RemoteService::new(f.store.clone(), f.auth.clone(), f.hub.clone());
+            let token = f.user.clone();
+            let pending = tokio::spawn(async move {
+                RemoteAccessService::open_tunnel(&service, request(input, &token)).await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(3), read_started)
+                .await
+                .unwrap()
+                .unwrap();
+            match change {
+                "demote" => f.role("operator").await,
+                "logout" => f.auth.logout(&f.user).await.unwrap(),
+                "disable" => {
+                    let account = f.accounts.get(&f.account).await.unwrap();
+                    f.accounts
+                        .update(
+                            &account.id,
+                            account.revision,
+                            crate::accounts::AccountUpdate {
+                                display_name: account.display_name,
+                                enabled: false,
+                                role: None,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let open = frame(tunnel_frame::Payload::Open(TunnelOpen {
+                device_id: "field".into(),
+                service: "ssh".into(),
+            }))
+            .encode_to_vec();
+            let mut wire = vec![0];
+            wire.extend_from_slice(&(open.len() as u32).to_be_bytes());
+            wire.extend_from_slice(&open);
+            frames.send(wire.into()).await.unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(3), pending)
+                .await
+                .unwrap()
+                .unwrap();
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("首帧等待期间 {change} 后不应建立隧道，online={online}"),
+            };
+            assert_eq!(
+                error.code(),
+                Code::PermissionDenied,
+                "change={change}, online={online}"
+            );
+            assert!(f.hub.0.lock().await.tunnels.is_empty());
+            if let Some((_, control)) = &mut device_control {
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(50), control.message())
+                        .await
+                        .is_err(),
+                    "撤权后的请求不能通知下位机"
+                );
+            }
+        }
+    }
+}
+
+// 管理员降级后的现有隧道按最新角色及明确授权判断：有授权继续，无授权终止。
+#[tokio::test]
+async fn admin_demotion_preserves_explicit_grant_and_closes_ungranted_tunnels() {
+    let mut f = Fixture::start().await;
+    f.role("admin").await;
+    let (_device_tx, mut control) = f.online().await;
+    let (upper_tx, mut upper) = f.open().await;
+    let (_device_tx, mut device, _) = f.attach(&mut control).await;
+    upper.message().await.unwrap();
+    device.message().await.unwrap();
+    f.role("operator").await;
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    upper_tx
+        .send(frame(tunnel_frame::Payload::Data(vec![5])))
+        .await
+        .unwrap();
+    assert_eq!(
+        device.message().await.unwrap().unwrap().payload,
+        Some(tunnel_frame::Payload::Data(vec![5]))
+    );
+    drop(upper_tx);
+    drop(upper);
+    drop(device);
+
+    f.role("admin").await;
+    f.store.set_grants("field", vec![]).await.unwrap();
+    let (_upper_tx, mut upper) = f.open().await;
+    let (_device_tx, mut device, _) = f.attach(&mut control).await;
+    upper.message().await.unwrap();
+    device.message().await.unwrap();
+    f.role("operator").await;
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), upper.message())
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+    assert!(
+        f.upper
+            .list_devices(request(ListDevicesRequest {}, &f.user))
+            .await
+            .unwrap()
+            .into_inner()
+            .devices
+            .is_empty()
+    );
+}
+
+// 管理员设备权限不能绕过当前登录会话过期，已有隧道必须终止。
+#[tokio::test]
+async fn admin_tunnel_still_closes_when_session_expires() {
+    let mut f = Fixture::start().await;
+    f.role("admin").await;
+    f.store.set_grants("field", vec![]).await.unwrap();
+    let (_device_tx, mut control) = f.online().await;
+    let (_upper_tx, mut upper) = f.open().await;
+    let (_device_tx, mut device, _) = f.attach(&mut control).await;
+    upper.message().await.unwrap();
+    device.message().await.unwrap();
+    assert!(f.auth.expire_session_for_test(&f.user).await);
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), upper.message())
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
 }
 
 // 账号退出会关闭现有隧道，响应流取消后清理隧道，设备禁用关闭控制流。

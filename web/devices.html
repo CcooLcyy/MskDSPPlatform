@@ -139,7 +139,7 @@
   <p id="create-description" class="dialog-description">填写设备名称，平台将自动生成设备 ID 和接入令牌。</p>
   <form id="create-form">
     <label for="create-name">设备名称</label><input id="create-name" name="display_name" placeholder="例如：研发测试（DSP）" required maxlength="128" autofocus>
-    <p class="hint">创建后，将为现有账号默认开启模块访问和 SSH。接入令牌仅显示一次，请及时复制保存。</p>
+    <p class="hint">管理员自动拥有全部设备权限，运维人员默认不可见，需在账号权限中明确分配。接入令牌仅显示一次，请及时复制保存。</p>
     <p id="create-error" role="alert"></p>
     <div class="actions dialog-actions"><button id="cancel-create" type="button">取消</button><button class="primary" type="submit">创建设备</button></div>
   </form>
@@ -155,7 +155,7 @@
 <section id="editor" class="panel panel-body" hidden>
   <div class="editor-heading"><div><h2 id="selected-title"></h2><p id="selected-id"></p></div><button id="close-editor" class="quiet" type="button">收起设置</button></div>
   <form id="edit-form" class="form-grid edit-device-form"><label>设备名称<input id="display-name" required maxlength="128"></label><label class="check-label"><input id="enabled" type="checkbox">启用设备</label><button class="primary" type="submit">保存设备</button></form>
-  <h3>账号权限</h3><p class="hint">模块访问包含该设备开放模块的配置与控制操作；SSH 登录仍需设备系统账号认证。</p>
+  <h3>账号权限</h3><p class="hint">上位机管理员自动拥有全部设备的模块访问和 SSH 权限；运维人员仅可访问明确授权的设备。模块访问包含配置与控制操作；SSH 登录仍需设备系统账号认证。旧版历史授权需重新保存确认。</p>
   <div id="grants"></div>
   <div class="actions editor-actions"><button id="save-grants" class="primary" type="button">保存权限</button><div class="actions"><button id="rotate" type="button">轮换接入令牌</button><button id="delete" class="danger" type="button">删除设备</button></div></div>
 </section></main></div>
@@ -202,7 +202,28 @@ function render(){
   }
 }
 async function reload(){devices=await api('/api/v1/devices');render();}
-async function select(device,keepCredential=false){if(!keepCredential)clearCredential();const current=await api(`/api/v1/devices/${encodeURIComponent(device.device_id)}/grants`);selected=device;$('selected-title').textContent=device.display_name;$('selected-id').textContent=device.device_id;render();$('display-name').value=device.display_name;$('enabled').checked=device.enabled;$('editor').hidden=false;const root=$('grants');root.replaceChildren();for(const account of accounts){const grant=current.find(g=>g.account_id===account.id),row=document.createElement('div');row.dataset.account=account.id;row.style.margin='10px 0';const name=document.createElement('span');name.textContent=`${account.display_name}（${account.username}）${account.enabled?'':' · 已停用'}　`;row.append(name);for(const[key,text]of[['allow_grpc','模块访问'],['allow_ssh','SSH']]){const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.name=key;input.checked=!!grant?.[key];label.append(input,document.createTextNode(text+'　'));row.append(label);}root.append(row);}}
+async function select(device,keepCredential=false){
+  if(!keepCredential)clearCredential();
+  const latestAccounts=await api('/api/v1/accounts');
+  const current=await api(`/api/v1/devices/${encodeURIComponent(device.device_id)}/grants`);
+  accounts=latestAccounts;selected=device;$('selected-title').textContent=device.display_name;$('selected-id').textContent=device.device_id;render();
+  $('display-name').value=device.display_name;$('enabled').checked=device.enabled;$('editor').hidden=false;
+  const root=$('grants');root.replaceChildren();
+  for(const account of accounts){
+    const grant=current.find(g=>g.account_id===account.id),row=document.createElement('div');
+    row.dataset.account=account.id;row.dataset.role=account.role;row.style.margin='10px 0';
+    const name=document.createElement('span');name.textContent=`${account.display_name}（${account.username}）${account.enabled?'':' · 已停用'}　`;row.append(name);
+    if(account.role==='admin'){
+      const automatic=document.createElement('span');automatic.textContent='管理员 · 自动拥有全部权限（模块访问、SSH）';row.append(automatic);
+    }else{
+      for(const[key,text]of[['allow_grpc','模块访问'],['allow_ssh','SSH']]){
+        const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.name=key;input.checked=!!grant?.[key];
+        label.append(input,document.createTextNode(text+'　'));row.append(label);
+      }
+    }
+    root.append(row);
+  }
+}
 $('open-create').addEventListener('click',()=>{if(busy)return;$('create-form').reset();$('create-error').textContent='';$('create-dialog').showModal();});
 for(const id of ['cancel-create','close-create'])$(id).addEventListener('click',()=>{if(!busy)$('create-dialog').close();});
 $('create-dialog').addEventListener('cancel',event=>{if(busy)event.preventDefault();});
@@ -222,10 +243,18 @@ $('create-form').addEventListener('submit',e=>{e.preventDefault();operation(asyn
   message('设备已创建，请复制设备 ID 和令牌。');
 });});
 $('edit-form').addEventListener('submit',e=>{e.preventDefault();operation(async()=>{if(!selected)return;if(!$('enabled').checked&&!confirm('禁用会断开设备及全部远程会话，继续？'))return;const updated=await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}`,'PUT',{display_name:$('display-name').value,enabled:$('enabled').checked});selected=updated;$('selected-title').textContent=updated.display_name;await reload();message('设备设置已保存。');});});
-$('save-grants').addEventListener('click',()=>operation(async()=>{if(!selected)return;const grants=[...$('grants').children].map(row=>({account_id:row.dataset.account,allow_grpc:row.querySelector('[name=allow_grpc]').checked,allow_ssh:row.querySelector('[name=allow_ssh]').checked})).filter(g=>g.allow_grpc||g.allow_ssh);await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}/grants`,'PUT',grants);message('设备权限已保存，撤销的访问将在一秒内终止。');}));
+$('save-grants').addEventListener('click',()=>operation(async()=>{
+  if(!selected)return;
+  const latestAccounts=await api('/api/v1/accounts'),rows=[...$('grants').children];
+  if(latestAccounts.length!==rows.length||rows.some(row=>!latestAccounts.some(account=>account.id===row.dataset.account&&account.role===row.dataset.role))){
+    await select(selected,true);message('账号角色已变化，已刷新权限，请确认后重新保存。');return;
+  }
+  const grants=rows.filter(row=>row.dataset.role==='operator').map(row=>({account_id:row.dataset.account,allow_grpc:row.querySelector('[name=allow_grpc]').checked,allow_ssh:row.querySelector('[name=allow_ssh]').checked})).filter(g=>g.allow_grpc||g.allow_ssh);
+  await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}/grants`,'PUT',grants);message('设备权限已保存，撤销的访问将在一秒内终止。');
+}));
 $('rotate').addEventListener('click',()=>operation(async()=>{if(!selected||!confirm('轮换令牌会断开设备及全部远程会话，旧令牌立即失效，继续？'))return;clearCredential();const result=await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}/token`,'POST');showCredential(result);await reload();message('令牌已轮换，请复制并更新现场设备的接入配置。');}));
 $('delete').addEventListener('click',()=>operation(async()=>{if(!selected||!confirm('删除设备会撤销所有权限并断开远程会话，继续？'))return;await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}`,'DELETE');selected=null;$('editor').hidden=true;clearCredential();await reload();message('设备已删除。');}));
-$('refresh').addEventListener('click',()=>operation(async()=>{await reload();message('设备列表已刷新。');}));$('reveal').addEventListener('click',()=>{$('credential').type=$('credential').type==='password'?'text':'password';});$('dismiss').addEventListener('click',clearCredential);window.addEventListener('pagehide',clearCredential);
+$('refresh').addEventListener('click',()=>operation(async()=>{await reload();if(selected){const device=devices.find(device=>device.device_id===selected.device_id);if(device)await select(device,true);else{selected=null;$('editor').hidden=true;clearCredential();}}message('设备列表已刷新。');}));$('reveal').addEventListener('click',()=>{$('credential').type=$('credential').type==='password'?'text':'password';});$('dismiss').addEventListener('click',clearCredential);window.addEventListener('pagehide',clearCredential);
 for(const[button,field,label]of[['copy-name','credential-name','设备名称'],['copy-id','credential-id','设备 ID'],['copy-token','credential','设备令牌']])$(button).addEventListener('click',()=>operation(async()=>{await copyText($(field).value);message(`${label}已复制。`);}));
 $('copy-config').addEventListener('click',()=>operation(async()=>{if(!$('credential').value)throw new Error('接入配置已清除，请重新创建或轮换令牌。');await copyText(`设备名称：${$('credential-name').value}\n设备 ID：${$('credential-id').value}\n设备令牌：${$('credential').value}`);message('设备接入配置已复制，请妥善交给配置人员。');}));
 $('logout').addEventListener('click',()=>operation(async()=>{clearCredential();const result=await fetch('/api/v1/auth/logout',{method:'POST',credentials:'same-origin',headers:{'X-MskDSP-Action':'auth'}});if(!result.ok)throw new Error('退出暂时失败');location.assign('/login');}));
