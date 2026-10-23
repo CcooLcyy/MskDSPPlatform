@@ -53,7 +53,7 @@ LABEL org.opencontainers.image.title="MskDSPPlatform" \
 WORKDIR /var/lib/mskdsp-platform
 COPY --from=builder /build/mskdsp-platform /usr/local/bin/mskdsp-platform
 COPY deploy/config.toml /app/config.toml
-COPY script/runtime.py script/update_common.py script/local_software_source.py /opt/mskdsp-manager/
+COPY script/runtime.py script/update_common.py script/local_software_source.py script/grpc_network.py web/network.html web/update.html /opt/mskdsp-manager/
 COPY deploy/updater.json /app/updater.json
 RUN UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL}" python3 -c 'import json,os; url=os.environ["UPDATE_MANIFEST_URL"]; url and open("/app/updater.json","w").write(json.dumps({"manifest_url":url})+"\n")'
 ENV MSKDSP_PLATFORM_CONFIG=/app/config.toml \

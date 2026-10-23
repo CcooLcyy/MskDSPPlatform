@@ -50,6 +50,9 @@ class GitlabPackageTests(unittest.TestCase):
         for name, text in (("config.toml", "[server]\n"), ("run.sh", "docker run example\n"),
                            ("updater.json", '{"source":"platform","channel":"ci"}')):
             (self.source / "deploy" / name).write_text(text, encoding="utf-8")
+        (self.source / "script").mkdir()
+        for name in ("grpc_network_host.py", "install_grpc_network.py"):
+            (self.source / "script" / name).write_text("# 网络管理部署程序\n", encoding="utf-8")
 
     def image_with(self, layers, *, arch="amd64", labels=None, tags=None, digest_valid=True):
         config = json.dumps({"os": "linux", "architecture": arch, "config": {"Labels": labels or {

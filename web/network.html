@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <script id="theme-script">
+// 在首屏绘制前恢复主题，所有页面使用同一份偏好。
+(() => {
+  const key = 'mskdsp-platform-theme';
+  const valid = value => ['system', 'light', 'dark'].includes(value);
+  const system = window.matchMedia('(prefers-color-scheme: dark)');
+  let preference = 'system';
+  try {
+    const saved = window.localStorage.getItem(key);
+    if (valid(saved)) preference = saved;
+  } catch { /* 存储受限时仍可在当前页面切换主题。 */ }
+  function apply() {
+    document.documentElement.dataset.theme = preference === 'system' ? (system.matches ? 'dark' : 'light') : preference;
+    const select = document.getElementById('theme-select');
+    if (select) select.value = preference;
+  }
+  apply();
+  system.addEventListener('change', apply);
+  window.addEventListener('storage', event => {
+    if (event.key !== key && event.key !== null) return;
+    preference = valid(event.newValue) ? event.newValue : 'system';
+    apply();
+  });
+  document.addEventListener('DOMContentLoaded', () => {
+    const select = document.getElementById('theme-select');
+    apply();
+    select.addEventListener('change', () => {
+      preference = valid(select.value) ? select.value : 'system';
+      try { window.localStorage.setItem(key, preference); }
+      catch { /* 保存失败不影响当前页面的显示。 */ }
+      apply();
+    });
+  });
+})();
+  </script>
+  <title>MskDSPPlatform · gRPC 网络兼容</title>
+  <link rel="stylesheet" href="/assets/platform.css">
+  <style>.network-content{max-width:900px}.network-form{display:grid;gap:18px}.network-form input[type=number]{max-width:220px}.network-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.network-stats dd{margin:4px 0;overflow-wrap:anywhere}#message.error{color:var(--danger)}@media(max-width:600px){.network-stats{grid-template-columns:1fr}}</style>
+</head>
+<body><div class="app-shell">
+    <header class="app-topbar">
+      <a class="app-brand" href="/modbus-templates"><span class="brand-mark" aria-hidden="true">M</span><span class="brand-name">MskDSP</span></a>
+      <nav class="app-nav" aria-label="平台功能">
+        <a class="nav-item" href="/modbus-templates">点表工作台</a>
+        <a class="nav-item" href="/software">软件管理</a>
+        <a class="nav-item" href="/accounts">账号管理</a><a class="nav-item" href="/devices">设备管理</a><a class="nav-item" href="/update" aria-current="page">平台维护</a>
+      </nav>
+        <div class="account-actions"><label class="theme-control" for="theme-select">外观<select id="theme-select" aria-label="页面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><span id="username">正在确认</span><button id="logout" class="quiet" type="button" disabled>退出登录</button></div>
+      </header>
+<div class="app-content"><main class="page-content network-content">
+<div class="page-heading"><div><h1>gRPC 网络兼容</h1><p class="page-summary">管理服务器 gRPC 端口的发送分段限制；设置保存在服务器，重启后自动恢复。</p></div><a href="/update">返回平台维护</a></div>
+<section class="panel"><div class="panel-heading"><h2>端口分段设置</h2><button id="refresh" type="button" disabled>刷新状态</button></div><div class="panel-body">
+<form id="network-form" class="network-form">
+<label><input id="enabled" type="checkbox" disabled> 启用较小 TCP 分段</label>
+<label for="mss">TCP MSS（字节）<input id="mss" type="number" min="536" max="1460" step="1" value="1240" required disabled></label>
+<p class="hint">仅影响此端口上全部外部 gRPC 连接的平台发送方向，不修改下位机。MSS 是 TCP 数据长度；推荐值 1240 并非 IP 包总长度。</p>
+<p class="hint">保存只影响之后新建的 TCP 连接，不主动断开现有连接。远程隧道、设备接入和软件下载等共用此端口的连接均受影响。</p>
+<div class="actions"><button id="recommended" type="button" disabled>填入推荐值 1240</button><button id="save" class="primary" type="submit" disabled>保存设置</button></div>
+</form></div></section>
+<section class="panel"><div class="panel-heading"><h2>服务器状态</h2></div><div class="panel-body"><dl class="network-stats">
+<div><dt>gRPC 端口</dt><dd id="port">—</dd></div><div><dt>已保存设置</dt><dd id="saved">—</dd></div><div><dt>持久化</dt><dd id="persistent">—</dd></div><div><dt>实际应用</dt><dd id="applied">—</dd></div><div><dt>当前规则命中 SYN 数</dt><dd id="matched">—</dd></div><div><dt>配置修订号</dt><dd id="revision">—</dd></div>
+</dl><p class="hint">命中数统计初始连接协商包，重装规则后可重新计数，不代表传输字节数或成功连接数。</p><p id="message" role="status" aria-live="polite">正在读取状态…</p></div></section>
+<noscript>请启用 JavaScript 以管理端口设置。</noscript></main></div></div>
+<script type="module">
+const text = value => typeof value === 'string' ? value : '';
+function validStatus(value) {
+  return value && typeof value.enabled === 'boolean' && Number.isInteger(value.mss) && value.mss >= 536 && value.mss <= 1460 && Number.isSafeInteger(value.revision) && value.revision >= 0 && Number.isInteger(value.port) && value.port > 0 && value.port <= 65535 && typeof value.persistent === 'boolean' && typeof value.applied === 'boolean' && Number.isSafeInteger(value.matched_packets) && value.matched_packets >= 0;
+}
+function createNetworkClient({fetchImpl, onChange, onUnauthorized}) {
+  let status = null, busy = false, message = '', error = false, stopped = false;
+  const snapshot = () => ({status, busy, message, error, stopped});
+  const notify = () => onChange(snapshot());
+  async function request(path, method = 'GET', payload, action = 'network') {
+    const options = {method, cache:'no-store', credentials:'same-origin'};
+    if (payload !== undefined) { options.headers = {'Content-Type':'application/json', 'X-MskDSP-Action':action}; options.body = JSON.stringify(payload); }
+    const controller = new AbortController(); options.signal = controller.signal;
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetchImpl(path, options);
+      if (response.status === 401) { stopped = true; status = null; onUnauthorized(); throw new Error('登录已失效'); }
+      if (response.status === 204) return null;
+      const value = await response.json().catch(() => null);
+      if (!response.ok) { const problem = new Error(text(value?.error) || `请求失败（HTTP ${response.status}）`); problem.code = response.status; throw problem; }
+      return value;
+    } finally { clearTimeout(timer); }
+  }
+  async function perform(operation) {
+    if (busy || stopped) return;
+    busy = true; message = ''; error = false; notify();
+    try { await operation(); } catch (problem) { error = true; message = problem.message; if (problem.code === 503) status = null; } finally { busy = false; notify(); }
+  }
+  async function read() {
+    const next = await request('/api/network/status');
+    if (!validStatus(next)) throw new Error('服务器返回了无法识别的网络状态');
+    status = next; message = text(next.error) || (next.applied && next.persistent ? '设置已持久化并应用。' : '设置尚未完整应用，请检查宿主机服务。'); error = Boolean(next.error) || !next.applied || !next.persistent;
+  }
+  return {
+    snapshot,
+    refresh: () => perform(read),
+    save: (enabled, mss) => perform(async () => {
+      if (!status || typeof enabled !== 'boolean' || !Number.isInteger(mss) || mss < 536 || mss > 1460) throw new Error('MSS 必须为 536 至 1460 的整数');
+      let next;
+      try { next = await request('/api/network/settings', 'POST', {enabled, mss, revision:status.revision}); }
+      catch (problem) { if (problem.code === 409) { await read(); throw new Error('设置已由其他管理员修改，已刷新状态，请核对后重新保存。'); } throw problem; }
+      if (!validStatus(next)) throw new Error('服务器返回了无法识别的网络状态');
+      status = next; error = Boolean(next.error) || !next.applied || !next.persistent;
+      message = text(next.error) || (error ? '设置尚未完整应用，请检查宿主机服务。' : '设置已保存并应用；仅对新建连接生效，现有连接保持。');
+    }),
+    login: () => perform(async () => { const user = await request('/api/v1/auth/me'); if (user?.role !== 'admin' || !text(user.username)) { stopped = true; onUnauthorized(); throw new Error('需要管理员登录'); } return user; }),
+    logout: () => perform(async () => { await request('/api/v1/auth/logout', 'POST', {}, 'auth'); stopped = true; status = null; onUnauthorized(); }),
+  };
+}
+// 页面渲染只使用 textContent；推荐按钮仅填入，不自动保存。
+const $ = id => document.getElementById(id);
+const client = createNetworkClient({fetchImpl:window.fetch.bind(window), onUnauthorized:() => window.location.assign('/login'), onChange:state => {
+  const locked = state.busy || state.stopped || !state.status;
+  for (const id of ['enabled','mss','recommended','save']) $(id).disabled = locked;
+  $('refresh').disabled = state.busy || state.stopped;
+  $('logout').disabled = state.busy || state.stopped;
+  const status = state.status;
+  $('port').textContent = status ? `TCP ${status.port}` : '—';
+  $('saved').textContent = status ? `${status.enabled ? '启用' : '停用'} · MSS ${status.mss}` : '—';
+  $('persistent').textContent = status ? (status.persistent ? '已持久化' : '未持久化') : '—';
+  $('applied').textContent = status ? (status.applied ? '已应用' : '未应用') : '—';
+  $('matched').textContent = status ? String(status.matched_packets) : '—';
+  $('revision').textContent = status ? String(status.revision) : '—';
+  if (status && !state.busy) { $('enabled').checked = status.enabled; $('mss').value = String(status.mss); }
+  $('message').textContent = state.message || (state.busy ? '正在处理…' : ''); $('message').className = state.error ? 'error' : '';
+}});
+$('network-form').addEventListener('submit', event => { event.preventDefault(); client.save($('enabled').checked, Number($('mss').value)); });
+$('refresh').addEventListener('click', () => client.refresh());
+$('recommended').addEventListener('click', () => { $('mss').value = '1240'; $('message').textContent = '已填入推荐值，点击保存后才会应用。'; });
+$('logout').addEventListener('click', () => client.logout());
+await client.login();
+if (!client.snapshot().stopped) { $('username').textContent = '管理员'; await client.refresh(); }
+</script></body></html>

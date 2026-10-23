@@ -126,6 +126,9 @@ class ArchiveTests(unittest.TestCase):
         (source / "deploy/config.toml").write_text("[server]\n", encoding="utf-8")
         (source / "deploy/run.sh").write_text("docker run example\n", encoding="utf-8")
         (source / "deploy/updater.json").write_text('{"manifest_url":"https://example.com/ci/latest.json"}', encoding="utf-8")
+        (source / "script").mkdir()
+        for name in ("grpc_network_host.py", "install_grpc_network.py"):
+            (source / "script" / name).write_text("# 网络管理部署程序\n", encoding="utf-8")
         output = self.root / "bundle"
         with patch.object(release, "inspect_archive", wraps=release.inspect_archive) as inspect, \
              patch.object(release, "sha256_file", wraps=release.sha256_file) as digest:
@@ -140,6 +143,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertIn("latest.json", checksums)
         self.assertIn("image.tar.gz", checksums)
         self.assertTrue((output / "deploy/run.sh").is_file())
+        self.assertTrue((output / "deploy/network/install_grpc_network.py").is_file())
         self.assertFalse((output / "compose.yaml").exists())
 
 

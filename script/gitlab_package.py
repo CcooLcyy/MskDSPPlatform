@@ -180,6 +180,9 @@ def offline_platform(*, metadata: Path, package_dir: Path = Path("package"),
     shutil.copyfile(image, bundle_output / "image.tar.gz")
     for name in ("config.toml", "run.sh"):
         shutil.copyfile(bundle_source / "deploy" / name, bundle_output / "deploy" / name)
+    (bundle_output / "deploy/network").mkdir()
+    for name in ("grpc_network_host.py", "install_grpc_network.py"):
+        shutil.copyfile(bundle_source / "script" / name, bundle_output / "deploy/network" / name)
     (bundle_output / "deploy/updater.json").write_text('{"source":"platform","channel":"ci"}\n', encoding="utf-8")
     (bundle_output / ".env").write_text(f"MSKDSP_PLATFORM_IMAGE={data['image']}\n", encoding="utf-8")
     (bundle_output / "metadata.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

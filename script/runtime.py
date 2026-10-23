@@ -23,6 +23,7 @@ from urllib.request import urlopen
 import uuid
 
 import update_common as common
+import grpc_network
 from local_software_source import LocalSoftwareSource
 
 IDENTITY_FIELDS = ("version", "channel", "commit", "build_time")
@@ -647,8 +648,8 @@ class RuntimeHandler(BaseHTTPRequestHandler):
             raise ValueError("请求内容不完整")
         return raw
 
-    def action_allowed(self):
-        if self.headers.get_all("X-MskDSP-Action", []) != ["update"]:
+    def action_allowed(self, expected="update"):
+        if self.headers.get_all("X-MskDSP-Action", []) != [expected]:
             return False
         origins, hosts = self.headers.get_all("Origin", []), self.headers.get_all("Host", [])
         if len(hosts) != 1 or len(origins) > 1:
@@ -697,6 +698,19 @@ class RuntimeHandler(BaseHTTPRequestHandler):
 
     def handle_request(self):
         parsed = urlsplit(self.path)
+        if parsed.path == "/update":
+            if not self.authenticated():
+                return
+            if parsed.query or parsed.fragment:
+                self.respond(400, {"error": "平台维护页面不接受查询参数"})
+            elif self.command != "GET":
+                self.respond(405, {"error": "页面仅接受 GET"})
+            else:
+                self.serve_page("update.html")
+            return
+        if parsed.path == "/network" or parsed.path.startswith("/api/network/"):
+            self.handle_network(parsed)
+            return
         if parsed.path.startswith("/api/update/"):
             if not self.authenticated():
                 return
@@ -739,6 +753,67 @@ class RuntimeHandler(BaseHTTPRequestHandler):
                     self.respond(400, {"error": str(exc)})
             return
         self.proxy()
+
+    def serve_page(self, name):
+        # 页面随常驻管理进程发布；不依赖 Rust 二进制中较早的内置页面。
+        try:
+            page = Path(__file__).parent / name
+            if not page.exists():
+                page = Path(__file__).resolve().parents[1] / "web" / name
+            raw = page.read_bytes()
+        except OSError:
+            self.respond(503, {"error": "平台管理页面尚未安装"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        self.wfile.write(raw)
+
+    def handle_network(self, parsed):
+        if not self.authenticated():
+            return
+        if parsed.query or parsed.fragment:
+            self.respond(400, {"error": "网络管理接口不接受查询参数"})
+            return
+        if parsed.path == "/network":
+            if self.command != "GET":
+                self.respond(405, {"error": "页面仅接受 GET"})
+                return
+            self.serve_page("network.html")
+            return
+        if parsed.path not in ("/api/network/status", "/api/network/settings"):
+            self.respond(404, {"error": "网络管理接口不存在"})
+            return
+        setting = parsed.path.endswith("/settings")
+        if self.command != ("POST" if setting else "GET"):
+            self.respond(405, {"error": "网络管理请求方法不正确"})
+            return
+        try:
+            value = None
+            if setting:
+                if not self.action_allowed("network"):
+                    self.respond(403, {"error": "缺少操作标记或跨源请求"})
+                    return
+                if self.headers.get_all("Content-Type", []) != ["application/json"]:
+                    self.respond(415, {"error": "网络设置仅接受 application/json"})
+                    return
+                value = grpc_network.validate_settings(grpc_network.strict_json(self.body(4096)))
+                if not self.authenticated():
+                    return
+            control = self.server.manager.runtime_dir / "network-control" / "control.sock"
+            self.respond(200, grpc_network.request(control, value))
+        except OverflowError as exc:
+            self.respond(413, {"error": str(exc)})
+        except (ValueError, RecursionError) as exc:
+            self.respond(400, {"error": str(exc)})
+        except grpc_network.ControlError as exc:
+            self.respond(exc.status, {"error": str(exc)})
 
     def proxy(self):
         connection = http.client.HTTPConnection(self.server.manager.child_http, timeout=10)

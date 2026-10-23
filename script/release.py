@@ -140,6 +140,9 @@ def _write_verified_bundle(metadata: dict, archive: Path, output: Path, source: 
     shutil.copyfile(archive, output / "image.tar.gz")
     shutil.copyfile(source / "deploy/config.toml", output / "deploy/config.toml")
     shutil.copyfile(source / "deploy/run.sh", output / "deploy/run.sh")
+    (output / "deploy/network").mkdir()
+    for name in ("grpc_network_host.py", "install_grpc_network.py"):
+        shutil.copyfile(source / "script" / name, output / "deploy/network" / name)
     updater = {"manifest_url": metadata.get("update_manifest_url") or json.loads((source / "deploy/updater.json").read_text(encoding="utf-8"))["manifest_url"]}
     (output / "deploy/updater.json").write_text(json.dumps(updater, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (output / ".env").write_text(f"MSKDSP_PLATFORM_IMAGE={metadata['image']}\n", encoding="utf-8")
