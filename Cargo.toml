@@ -33,5 +33,6 @@ uuid = { version = "1", features = ["v4"] }
 tonic-build = "0.13"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3"

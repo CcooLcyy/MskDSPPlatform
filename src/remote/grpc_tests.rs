@@ -512,6 +512,39 @@ impl tokio_stream::Stream for PausedRequestBody {
     }
 }
 
+// 测试专用的等待开关不能改变默认入口的十秒首帧期限。
+#[tokio::test]
+async fn default_open_tunnel_first_frame_deadline_is_ten_seconds() {
+    use tonic::codec::{Codec, ProstCodec};
+
+    let f = Fixture::start().await;
+    let service = RemoteService::new(f.store.clone(), f.auth.clone(), f.hub.clone());
+    let (started, read_started) = oneshot::channel();
+    let (_frames, rx) = mpsc::channel(1);
+    let body = axum::body::Body::from_stream(PausedRequestBody {
+        read_started: Some(started),
+        frames: rx,
+    });
+    let mut codec = ProstCodec::<TunnelFrame, TunnelFrame>::default();
+    let mut input = Streaming::new_request(codec.decoder(), body, None, None);
+    // 仅验证入口的首帧读取，虚拟时钟内不执行数据库或认证 I/O。
+    tokio::time::pause();
+    let pending = tokio::spawn(async move { service.first_open_frame(&mut input).await });
+    tokio::time::timeout(std::time::Duration::from_secs(30), read_started)
+        .await
+        .expect("隧道入口未开始读取首帧")
+        .unwrap();
+    tokio::time::advance(std::time::Duration::from_secs(9)).await;
+    assert!(!pending.is_finished(), "首帧期限在十秒之前触发");
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    let error = match pending.await.unwrap() {
+        Err(error) => error,
+        Ok(_) => panic!("缺少首帧时必须返回超时"),
+    };
+    assert_eq!(error.code(), Code::DeadlineExceeded);
+    assert_eq!(error.message(), "首帧等待超时");
+}
+
 // 首帧等待期间降级、退出或停用都必须在查询在线状态、通知下位机之前重新拒绝。
 #[tokio::test]
 async fn authorization_changes_during_first_frame_wait_are_checked_before_device_access() {
@@ -533,48 +566,65 @@ async fn authorization_changes_during_first_frame_wait_are_checked_before_device
             });
             let mut codec = ProstCodec::<TunnelFrame, TunnelFrame>::default();
             let input = Streaming::new_request(codec.decoder(), body, None, None);
-            let service = RemoteService::new(f.store.clone(), f.auth.clone(), f.hub.clone());
+            let mut service = RemoteService::new(f.store.clone(), f.auth.clone(), f.hub.clone());
+            service.wait_for_open_frame_without_deadline = true;
             let token = f.user.clone();
             let pending = tokio::spawn(async move {
                 RemoteAccessService::open_tunnel(&service, request(input, &token)).await
             });
-            tokio::time::timeout(std::time::Duration::from_secs(3), read_started)
+            tokio::time::timeout(std::time::Duration::from_secs(30), read_started)
                 .await
                 .unwrap()
                 .unwrap();
-            match change {
-                "demote" => f.role("operator").await,
-                "logout" => f.auth.logout(&f.user).await.unwrap(),
-                "disable" => {
-                    let account = f.accounts.get(&f.account).await.unwrap();
-                    f.accounts
-                        .update(
-                            &account.id,
-                            account.revision,
-                            crate::accounts::AccountUpdate {
-                                display_name: account.display_name,
-                                enabled: false,
-                                role: None,
-                            },
-                        )
-                        .await
-                        .unwrap();
+            // 明确跨过生产十秒期限，再恢复真实时钟执行 SQLite 撤权。
+            tokio::time::pause();
+            tokio::time::advance(std::time::Duration::from_secs(11)).await;
+            assert!(
+                !pending.is_finished(),
+                "撤权测试专用首帧等待不应在十秒后结束"
+            );
+            tokio::time::resume();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                match change {
+                    "demote" => f.role("operator").await,
+                    "logout" => f.auth.logout(&f.user).await.unwrap(),
+                    "disable" => {
+                        let account = f.accounts.get(&f.account).await.unwrap();
+                        f.accounts
+                            .update(
+                                &account.id,
+                                account.revision,
+                                crate::accounts::AccountUpdate {
+                                    display_name: account.display_name,
+                                    enabled: false,
+                                    role: None,
+                                },
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
-            }
-            let open = frame(tunnel_frame::Payload::Open(TunnelOpen {
-                device_id: "field".into(),
-                service: "ssh".into(),
-            }))
-            .encode_to_vec();
-            let mut wire = vec![0];
-            wire.extend_from_slice(&(open.len() as u32).to_be_bytes());
-            wire.extend_from_slice(&open);
-            frames.send(wire.into()).await.unwrap();
-            let result = tokio::time::timeout(std::time::Duration::from_secs(3), pending)
-                .await
-                .unwrap()
-                .unwrap();
+                let open = frame(tunnel_frame::Payload::Open(TunnelOpen {
+                    device_id: "field".into(),
+                    service: "ssh".into(),
+                }))
+                .encode_to_vec();
+                let mut wire = vec![0];
+                wire.extend_from_slice(&(open.len() as u32).to_be_bytes());
+                wire.extend_from_slice(&open);
+                if let Err(send_error) = frames.send(wire.into()).await {
+                    let outcome = match pending.await {
+                        Ok(Err(status)) => format!("gRPC 状态={status:?}"),
+                        Ok(Ok(_)) => "意外收到成功的隧道响应".to_owned(),
+                        Err(error) => format!("请求任务失败：{error}"),
+                    };
+                    panic!("首帧发送失败：{send_error}；{outcome}；撤权={change}，在线={online}");
+                }
+                pending.await.expect("隧道请求任务失败")
+            })
+            .await
+            .unwrap_or_else(|_| panic!("撤权及首帧响应超过三十秒：撤权={change}，在线={online}"));
             let error = match result {
                 Err(error) => error,
                 Ok(_) => panic!("首帧等待期间 {change} 后不应建立隧道，online={online}"),

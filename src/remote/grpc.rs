@@ -29,6 +29,8 @@ pub struct RemoteService {
     pub store: DeviceStore,
     pub clients: ClientAuth,
     pub hub: Hub,
+    #[cfg(test)]
+    pub(super) wait_for_open_frame_without_deadline: bool,
 }
 impl RemoteService {
     pub fn new(store: DeviceStore, clients: ClientAuth, hub: Hub) -> Self {
@@ -36,7 +38,24 @@ impl RemoteService {
             store,
             clients,
             hub,
+            #[cfg(test)]
+            wait_for_open_frame_without_deadline: false,
         }
+    }
+
+    pub(super) async fn first_open_frame(
+        &self,
+        input: &mut Streaming<TunnelFrame>,
+    ) -> Result<TunnelFrame, Status> {
+        // 撤权回归由测试外层期限约束，避免 SQLite 提交消耗生产首帧等待预算。
+        #[cfg(test)]
+        if self.wait_for_open_frame_without_deadline {
+            return input
+                .message()
+                .await?
+                .ok_or_else(|| Status::invalid_argument("必须提供首帧消息"));
+        }
+        first(input).await
     }
 }
 fn storage(error: StoreError) -> Status {
@@ -273,7 +292,7 @@ impl remote_access_service_server::RemoteAccessService for RemoteService {
         let token = bearer(&request).map_err(Status::unauthenticated)?;
         let user = self.clients.authenticate(&token).await.map_err(client)?;
         let mut inbound = request.into_inner();
-        let open = match first(&mut inbound).await?.payload {
+        let open = match self.first_open_frame(&mut inbound).await?.payload {
             Some(tunnel_frame::Payload::Open(open)) => open,
             _ => return Err(Status::invalid_argument("隧道第一帧必须为 open")),
         };
