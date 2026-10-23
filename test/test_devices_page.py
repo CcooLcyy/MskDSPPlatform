@@ -21,6 +21,8 @@ const vm = require('node:vm');
 const elements = new Map(), windowEvents = {}, calls = [], copied = [];
 let fallbackWorks = true, fallbackCalls = 0, failReload = false, failCreate = false;
 let holdCreate = false, finishCreate = null;
+let failDeviceUpdate = false, holdDeviceUpdate = false, finishDeviceUpdate = null;
+let failGrants = false;
 let active = null, chosen = null;
 class Element {
   constructor(id = '', tagName = '') {
@@ -31,11 +33,11 @@ class Element {
   }
   set innerHTML(value) { throw Error('禁止将动态字段写入 HTML'); }
   addEventListener(type, handler) { this.listeners[type] = handler; }
-  append(...nodes) { this.children.push(...nodes); }
+  append(...nodes) { for (const node of nodes) node.parentNode = this; this.children.push(...nodes); }
   replaceChildren(...nodes) { this.children = nodes; this.textContent = ''; }
   reset() { this.fields = {}; if (this.id === 'create-form') element('create-name').value = ''; }
   showModal() { this.open = true; }
-  close() { this.open = false; }
+  close() { const wasOpen = this.open; this.open = false; if (wasOpen) this.listeners.close?.(); }
   scrollIntoView(options) { this.scrolls.push(options); }
   focus() { active = this; }
   select() { chosen = this; }
@@ -45,7 +47,7 @@ class Element {
     const name = /^\[name=([^\]]+)\]$/.exec(selector)?.[1];
     return descendants(this).find(child => child.name === name) || null;
   }
-  remove() { document.body.children = document.body.children.filter(child => child !== this); }
+  remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this); this.parentNode = null; }
 }
 const element = id => {
   if (!elements.has(id)) elements.set(id, new Element(id));
@@ -64,6 +66,7 @@ const document = {
   get activeElement() { return active; },
   execCommand: command => {
     assert.equal(command, 'copy'); fallbackCalls++;
+    if (element('editor').open) assert.equal(chosen.parentNode, element('editor'), '兼容复制节点必须位于活动模态窗口内');
     if (fallbackWorks) copied.push(chosen.value);
     return fallbackWorks;
   },
@@ -85,9 +88,19 @@ const fetch = async (url, options) => {
   if (url === '/api/v1/devices') return failReload ? response({error: '刷新失败'}, 503) : response(records);
   if (url.endsWith('/grants')) {
     if (options.method === 'PUT') { grantRecords = JSON.parse(options.body); return response(null, 204); }
+    if (failGrants) return response({error: '读取设备权限失败'}, 503);
     return response(grantRecords);
   }
   if (url.endsWith('/token')) return response({...created, token: 'rotated-token'});
+  if (url === `/api/v1/devices/${created.device_id}` && options.method === 'PUT') {
+    if (holdDeviceUpdate) await new Promise(resolve => {finishDeviceUpdate = resolve;});
+    if (failDeviceUpdate) return response({error: '设备保存失败'}, 503);
+    const updated = {...records[0], ...JSON.parse(options.body)};
+    records = [updated]; return response(updated);
+  }
+  if (url === `/api/v1/devices/${created.device_id}` && options.method === 'DELETE') {
+    records = []; return response(null, 204);
+  }
   throw Error(`未预期请求 ${url}`);
 };
 const context = vm.createContext({document, navigator, fetch, confirm: () => true,
@@ -104,10 +117,10 @@ async function settle() {
 }
 async function click(id) {element(id).listeners.click({target: element(id)}); await settle();}
 async function clickRow(index, name) {const button = rowButton(index, name); assert.ok(button); button.listeners.click({target: button}); await settle();}
-function escapeDialog() {
+function escapeDialog(id = 'create-dialog') {
   const event = {defaultPrevented: false, preventDefault() {this.defaultPrevented = true;}};
-  element('create-dialog').listeners.cancel(event);
-  if (!event.defaultPrevented) element('create-dialog').close();
+  element(id).listeners.cancel(event);
+  if (!event.defaultPrevented) element(id).close();
   return event;
 }
 async function create() {
@@ -168,10 +181,14 @@ await click('copy-id'); assert.equal(copied.at(-1), created.device_id);
 navigator.clipboard = {writeText: async () => {throw Error('禁止访问');}};
 await click('copy-token'); assert.equal(copied.at(-1), created.token);
 assert.equal(fallbackCalls, 2); assert.equal(document.body.children.length, 0);
+assert.equal(descendants(element('editor')).filter(child => child.tagName === 'textarea').length, 0);
 fallbackWorks = false; await click('copy-token');
 assert.match(element('message').textContent, /复制失败/);
 assert.equal(document.body.children.length, 0);
 assert.equal(element('credential').value, created.token);
+assert.equal(element('editor').open, true);
+assert.match(element('editor-message').textContent, /复制失败/);
+assert.equal(descendants(element('editor')).filter(child => child.tagName === 'textarea').length, 0);
 ''')
 
     # 轮换显示新凭据，切换设备和离开页面都会清理 ID、名称、令牌及明文状态。
@@ -194,6 +211,9 @@ assert.match(element('message').textContent, /刷新失败/);
 assert.equal(element('credential-panel').hidden, false);
 assert.equal(element('credential-id').value, created.device_id);
 assert.equal(element('credential').value, created.token);
+assert.equal(element('editor').open, true);
+assert.equal(element('settings-fields').hidden, true);
+assert.match(element('editor-message').textContent, /刷新失败/);
 ''')
 
     # 搜索和状态筛选仅处理已有列表，已禁用设备不能误计为在线或离线。
@@ -248,7 +268,7 @@ await clickRow(0, 'manage-device');
 assert.equal(calls.at(-1).url, `/api/v1/devices/${created.device_id}/grants`);
 assert.equal(element('selected-title').textContent, created.display_name, '管理中的设备名称');
 assert.equal(element('selected-id').textContent, created.device_id);
-assert.equal(element('editor').scrolls.length, 1);
+assert.equal(element('editor').open, true);
 await assertCleared();
 ''')
 
@@ -304,4 +324,92 @@ assert.equal(vm.runInContext('busy', context), false);
 assert.equal(element('cancel-create').disabled, false);
 for (const button of document.querySelectorAll('button')) assert.equal(button.disabled, false);
 assert.equal(element('credential').value, created.token);
+''')
+
+    # 管理在模态窗口中打开，关闭和 Escape 都清除选择、权限以及一次性凭据。
+    def test_manage_dialog_open_close_and_escape_cleanup(self):
+        self.run_scenario(r'''
+assert.equal(element('editor').tagName, 'dialog');
+assert.equal(element('editor').open, false);
+await create();
+element('grants').append(new Element('', 'div'));
+assert.equal(element('editor').open, true);
+assert.equal(element('settings-fields').hidden, false);
+assert.equal(element('grants').children.length, 1);
+assert.equal(vm.runInContext('selected.device_id', context), created.device_id);
+await click('reveal');
+await click('close-editor');
+assert.equal(element('editor').open, false);
+assert.equal(vm.runInContext('selected', context), null);
+assert.equal(element('grants').children.length, 0);
+assert.equal(element('settings-fields').hidden, true);
+await assertCleared();
+assert.equal(element('devices').children[0].className, '');
+await clickRow(0, 'manage-device');
+assert.equal(element('editor').open, true);
+assert.equal(element('selected-title').textContent, created.display_name);
+await click('rotate'); await click('reveal');
+assert.equal(escapeDialog('editor').defaultPrevented, false);
+assert.equal(element('editor').open, false);
+assert.equal(vm.runInContext('selected', context), null);
+await assertCleared();
+''')
+
+    # 保存失败在弹窗内反馈并保留草稿，保存成功仍在当前弹窗继续管理。
+    def test_manage_save_errors_and_success_keep_dialog_open(self):
+        self.run_scenario(r'''
+await create(); failDeviceUpdate = true;
+element('display-name').value = '修改后的名称';
+const form = element('edit-form');
+form.listeners.submit({target: form, preventDefault() {}}); await settle();
+assert.equal(element('editor').open, true);
+assert.equal(element('display-name').value, '修改后的名称');
+assert.equal(element('editor-message').textContent, '设备保存失败');
+assert.equal(element('editor-message').className, 'status-banner error');
+assert.equal(element('credential').value, created.token);
+failDeviceUpdate = false;
+form.listeners.submit({target: form, preventDefault() {}}); await settle();
+assert.equal(element('editor').open, true);
+assert.equal(element('selected-title').textContent, '修改后的名称');
+assert.equal(element('editor-message').textContent, '设备设置已保存。');
+await click('save-grants');
+assert.equal(element('editor').open, true);
+assert.match(element('editor-message').textContent, /设备权限已保存/);
+await click('delete');
+assert.equal(element('editor').open, false);
+assert.equal(element('devices').children.length, 0);
+assert.equal(vm.runInContext('selected', context), null);
+await assertCleared();
+''')
+
+    # 保存请求尚未完成时阻止关闭和 Escape，结束后恢复关闭并清理凭据。
+    def test_manage_busy_blocks_close_and_escape(self):
+        self.run_scenario(r'''
+await create(); holdDeviceUpdate = true;
+const form = element('edit-form');
+form.listeners.submit({target: form, preventDefault() {}});
+assert.equal(vm.runInContext('busy', context), true);
+assert.equal(element('close-editor').disabled, true);
+element('close-editor').listeners.click();
+assert.equal(escapeDialog('editor').defaultPrevented, true);
+assert.equal(element('editor').open, true);
+assert.equal(vm.runInContext('selected.device_id', context), created.device_id);
+finishDeviceUpdate(); await settle();
+assert.equal(element('editor').open, true);
+assert.equal(element('close-editor').disabled, false);
+await click('close-editor');
+assert.equal(element('editor').open, false);
+await assertCleared();
+''')
+
+    # 首次读取权限失败时不能打开一个可保存旧权限的空管理窗口。
+    def test_manage_load_failure_does_not_open_dialog(self):
+        self.run_scenario(r'''
+await create(); await click('close-editor'); failGrants = true;
+await clickRow(0, 'manage-device');
+assert.equal(element('editor').open, false);
+assert.equal(vm.runInContext('selected', context), null);
+assert.equal(element('message').textContent, '读取设备权限失败');
+assert.equal(element('grants').children.length, 0);
+await assertCleared();
 ''')
