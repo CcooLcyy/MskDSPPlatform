@@ -43,6 +43,7 @@ class Element {
   select() { chosen = this; }
   setSelectionRange() { chosen = this; }
   setAttribute() {}
+  querySelectorAll(selector) { return descendants(this).filter(child => child.tagName === selector); }
   querySelector(selector) {
     const name = /^\[name=([^\]]+)\]$/.exec(selector)?.[1];
     return descendants(this).find(child => child.name === name) || null;
@@ -95,7 +96,9 @@ const fetch = async (url, options) => {
   if (url === `/api/v1/devices/${created.device_id}` && options.method === 'PUT') {
     if (holdDeviceUpdate) await new Promise(resolve => {finishDeviceUpdate = resolve;});
     if (failDeviceUpdate) return response({error: '设备保存失败'}, 503);
-    const updated = {...records[0], ...JSON.parse(options.body)};
+    const {grants, ...settings} = JSON.parse(options.body);
+    if (grants !== undefined) grantRecords = grants;
+    const updated = {...records[0], ...settings};
     records = [updated]; return response(updated);
   }
   if (url === `/api/v1/devices/${created.device_id}` && options.method === 'DELETE') {
@@ -103,7 +106,8 @@ const fetch = async (url, options) => {
   }
   throw Error(`未预期请求 ${url}`);
 };
-const context = vm.createContext({document, navigator, fetch, confirm: () => true,
+let confirmResult = true;
+const context = vm.createContext({document, navigator, fetch, confirm: () => confirmResult,
   location: {assign() {}}, FormData: class {constructor(form) {this.form = form;} get(key) {return this.form.fields?.[key] ?? (key === 'display_name' ? element('create-name').value : null);}},
   window: {addEventListener: (type, handler) => {windowEvents[type] = handler;}},
 });
@@ -123,6 +127,7 @@ function escapeDialog(id = 'create-dialog') {
   if (!event.defaultPrevented) element(id).close();
   return event;
 }
+async function save() {const form=element('edit-form'); form.listeners.submit({target:form,preventDefault(){}}); await settle();}
 async function create() {
   const form = element('create-form'); form.fields = {display_name: created.display_name};
   form.listeners.submit({target: form, preventDefault() {}}); await settle();
@@ -371,10 +376,7 @@ failDeviceUpdate = false;
 form.listeners.submit({target: form, preventDefault() {}}); await settle();
 assert.equal(element('editor').open, true);
 assert.equal(element('selected-title').textContent, '修改后的名称');
-assert.equal(element('editor-message').textContent, '设备设置已保存。');
-await click('save-grants');
-assert.equal(element('editor').open, true);
-assert.match(element('editor-message').textContent, /设备权限已保存/);
+assert.match(element('editor-message').textContent, /设备设置和权限已保存/);
 await click('delete');
 assert.equal(element('editor').open, false);
 assert.equal(element('devices').children.length, 0);
@@ -394,12 +396,77 @@ element('close-editor').listeners.click();
 assert.equal(escapeDialog('editor').defaultPrevented, true);
 assert.equal(element('editor').open, true);
 assert.equal(vm.runInContext('selected.device_id', context), created.device_id);
+while (!finishDeviceUpdate) await new Promise(resolve => setImmediate(resolve));
 finishDeviceUpdate(); await settle();
 assert.equal(element('editor').open, true);
 assert.equal(element('close-editor').disabled, false);
 await click('close-editor');
 assert.equal(element('editor').open, false);
 await assertCleared();
+''')
+
+
+    def test_unified_save_submits_settings_and_grants_once_and_preserves_failed_draft(self):
+        page = PAGE.read_text(encoding="utf-8")
+        self.assertNotIn('id="save-grants"', page)
+        self.assertIn('id="save-device"', page)
+        self.run_scenario(r'''
+accountRecords = [{id: 'operator', username: 'worker', display_name: '人员', role: 'operator', enabled: true}];
+await create();
+element('display-name').value = '统一修改';
+element('enabled').checked = false;
+element('grants').children[0].querySelector('[name=allow_ssh]').checked = true;
+confirmResult = false; await save();
+assert.equal(calls.filter(call => call.options.method === 'PUT').length, 0);
+confirmResult = true; failDeviceUpdate = true; await save();
+assert.equal(records[0].display_name, created.display_name);
+assert.equal(element('display-name').value, '统一修改');
+assert.equal(element('enabled').checked, false);
+assert.equal(element('grants').children[0].querySelector('[name=allow_ssh]').checked, true);
+assert.equal(element('editor').open, true);
+failDeviceUpdate = false; holdDeviceUpdate = true;
+const form = element('edit-form');
+form.listeners.submit({target: form, preventDefault(){}});
+form.listeners.submit({target: form, preventDefault(){}});
+element('close-editor').listeners.click();
+assert.equal(escapeDialog('editor').defaultPrevented, true);
+while (!finishDeviceUpdate) await new Promise(resolve => setImmediate(resolve));
+assert.equal(calls.filter(call => call.options.method === 'PUT').length, 2);
+finishDeviceUpdate(); await settle();
+const writes=calls.filter(call => call.options.method === 'PUT');
+assert.equal(writes.at(-1).url, `/api/v1/devices/${created.device_id}`);
+assert.deepEqual(JSON.parse(writes.at(-1).options.body), {display_name:'统一修改',enabled:false,grants:[{account_id:'operator',allow_grpc:false,allow_ssh:true}]});
+assert.equal(records[0].display_name,'统一修改');
+assert.equal(records[0].enabled,false);
+assert.deepEqual(grantRecords,[{account_id:'operator',allow_grpc:false,allow_ssh:true}]);
+''')
+
+    def test_save_locks_editor_inputs_and_restores_previous_state_on_success_or_failure(self):
+        self.run_scenario(r'''
+accountRecords = [{id:'worker',username:'worker',display_name:'人员',role:'operator',enabled:true}];
+await create();
+const grpc = element('grants').children[0].querySelector('[name=allow_grpc]');
+const ssh = element('grants').children[0].querySelector('[name=allow_ssh]');
+assert.equal(grpc.disabled, false, '创建中的动态授权输入结束后恢复');
+ssh.disabled = true;
+for (const failure of [false, true]) {
+  holdDeviceUpdate = true; failDeviceUpdate = failure; finishDeviceUpdate = null;
+  const form = element('edit-form');
+  form.listeners.submit({target:form,preventDefault(){}});
+  for (const control of [element('display-name'),element('enabled'),grpc,ssh]) assert.equal(control.disabled,true,'保存期间锁定设备输入');
+  assert.equal(element('create-name').disabled,false,'设备编辑锁不影响创建表单');
+  while (!finishDeviceUpdate) await new Promise(resolve => setImmediate(resolve));
+  finishDeviceUpdate(); await settle();
+  assert.equal(element('display-name').disabled,false);
+  assert.equal(element('enabled').disabled,false);
+  assert.equal(grpc.disabled,false);
+  assert.equal(ssh.disabled,true,'恢复原有禁用状态');
+}
+// 操作过程中 select 新建的授权控件同样要锁定，结束后解除。
+await vm.runInContext(`operation(async()=>{await select(selected,true); if(!$('grants').querySelectorAll('input').every(input=>input.disabled)) throw Error('动态授权未锁定');})`,context);
+await settle();
+assert.ok(!element('editor-message').textContent.includes('动态授权未锁定'));
+for (const control of element('grants').querySelectorAll('input')) assert.equal(control.disabled,false);
 ''')
 
     # 首次读取权限失败时不能打开一个可保存旧权限的空管理窗口。

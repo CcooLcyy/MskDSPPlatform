@@ -358,3 +358,115 @@ async fn invalid_legacy_schema_is_not_partially_migrated() {
         .unwrap();
     assert!(!columns.iter().any(|column| column == "confirmed"));
 }
+
+// 修改设备与替换授权必须全成全败，包括第二条授权写入失败的事务回滚。
+#[tokio::test]
+async fn unified_device_update_rolls_back_validation_and_mid_transaction_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("devices.sqlite3");
+    let store = DeviceStore::open(path.clone()).await.unwrap();
+    let old = Grant {
+        account_id: "original".into(),
+        allow_grpc: true,
+        allow_ssh: false,
+    };
+    store
+        .create(
+            NewDevice {
+                device_id: "device".into(),
+                display_name: "原设备".into(),
+            },
+            vec![old.clone()],
+        )
+        .await
+        .unwrap();
+    let changed = || DeviceUpdate {
+        display_name: "新设备".into(),
+        enabled: false,
+    };
+    let replacement = || {
+        vec![
+            Grant {
+                account_id: "allowed".into(),
+                allow_grpc: false,
+                allow_ssh: true,
+            },
+            Grant {
+                account_id: "rejected".into(),
+                allow_grpc: true,
+                allow_ssh: true,
+            },
+        ]
+    };
+    let assert_original = || async {
+        let device = store.get("device").await.unwrap();
+        assert_eq!(device.display_name, "原设备");
+        assert!(device.enabled);
+        assert_eq!(
+            serde_json::json!(store.grants("device").await.unwrap()),
+            serde_json::json!([old.clone()])
+        );
+    };
+    assert!(matches!(
+        store
+            .update_with_grants("device", changed(), Some(vec![old.clone(), old.clone()]))
+            .await,
+        Err(StoreError::Invalid(_))
+    ));
+    assert_original().await;
+    assert!(matches!(
+        store
+            .update_with_grants(
+                "device",
+                DeviceUpdate {
+                    display_name: " ".into(),
+                    enabled: false
+                },
+                Some(vec![])
+            )
+            .await,
+        Err(StoreError::Invalid(_))
+    ));
+    assert_original().await;
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_grant BEFORE INSERT ON grants WHEN NEW.account_id='rejected' BEGIN SELECT RAISE(ABORT,'授权写入失败'); END;").unwrap();
+    assert!(matches!(
+        store
+            .update_with_grants("device", changed(), Some(replacement()))
+            .await,
+        Err(StoreError::Storage)
+    ));
+    assert_original().await;
+    db.execute_batch("DROP TRIGGER reject_grant;").unwrap();
+    store
+        .update_with_grants("device", changed(), Some(replacement()))
+        .await
+        .unwrap();
+    drop(store);
+    let reopened = DeviceStore::open(path).await.unwrap();
+    assert_eq!(reopened.get("device").await.unwrap().display_name, "新设备");
+    assert!(!reopened.get("device").await.unwrap().enabled);
+    assert_eq!(
+        serde_json::json!(reopened.grants("device").await.unwrap()),
+        serde_json::json!(replacement())
+    );
+    reopened
+        .update(
+            "device",
+            DeviceUpdate {
+                display_name: "旧接口".into(),
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::json!(reopened.grants("device").await.unwrap()),
+        serde_json::json!(replacement())
+    );
+    reopened
+        .update_with_grants("device", changed(), Some(vec![]))
+        .await
+        .unwrap();
+    assert!(reopened.grants("device").await.unwrap().is_empty());
+}

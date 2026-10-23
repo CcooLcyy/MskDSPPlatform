@@ -75,7 +75,7 @@ body:has(dialog[open]) { overflow: hidden; }
 .editor-heading > div { flex: 1; min-width: 0; }
 #selected-title, #selected-id { overflow-wrap: anywhere; }
 #selected-id { margin: 5px 0 0; font: 12px/1.6 monospace; color: var(--muted); }
-.edit-device-form { grid-template-columns: minmax(180px, 400px) auto auto; align-items: end; justify-content: start; padding-bottom: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
+.edit-device-form { grid-template-columns: minmax(180px, 400px) auto; align-items: end; justify-content: start; padding-bottom: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
 .edit-device-form .check-label { align-self: center; margin-top: 22px; font-size: 14px; }
 .edit-device-form .check-label input { margin: 0; }
 .editor-actions { justify-content: space-between; margin-top: 24px; }
@@ -166,14 +166,14 @@ body:has(dialog[open]) { overflow: hidden; }
 </div><div class="actions"><button id="reveal" type="button">显示 / 隐藏令牌</button><button id="copy-config" type="button">复制接入配置</button><button id="dismiss" type="button">已保存，清除显示</button></div>
 </section>
   <div id="settings-fields" hidden>
-  <form id="edit-form" class="form-grid edit-device-form"><label>设备名称<input id="display-name" required maxlength="128"></label><label class="check-label"><input id="enabled" type="checkbox">启用设备</label><button class="primary" type="submit">保存设备</button></form>
+  <form id="edit-form" class="form-grid edit-device-form"><label>设备名称<input id="display-name" required maxlength="128"></label><label class="check-label"><input id="enabled" type="checkbox">启用设备</label></form>
   <h3>账号权限</h3><p class="hint">上位机管理员自动拥有全部设备的模块访问和 SSH 权限；运维人员仅可访问明确授权的设备。模块访问包含配置与控制操作；SSH 登录仍需设备系统账号认证。旧版历史授权需重新保存确认。</p>
   <div id="grants"></div>
-  <div class="actions editor-actions"><button id="save-grants" class="primary" type="button">保存权限</button><div class="actions"><button id="rotate" type="button">轮换接入令牌</button><button id="delete" class="danger" type="button">删除设备</button></div></div>
+  <div class="actions editor-actions"><button id="save-device" class="primary" type="submit" form="edit-form">保存修改</button><div class="actions"><button id="rotate" type="button">轮换接入令牌</button><button id="delete" class="danger" type="button">删除设备</button></div></div>
   </div></div>
 </dialog></main></div>
 <script type="module">
-const $=id=>document.getElementById(id);let devices=[],accounts=[],selected=null,busy=false;
+const $=id=>document.getElementById(id);let devices=[],accounts=[],selected=null,busy=false,busyEditorInputs=null;
 function message(text,error=false){for(const id of ['message',...($('editor').open?['editor-message']:[])]){$(id).textContent=text;$(id).className=error?'status-banner error':'status-banner';}}
 function clearCredential(){for(const id of ['credential-name','credential-id','credential'])$(id).value='';$('credential').type='password';$('credential-panel').hidden=true;}
 function openEditor(device){$('selected-title').textContent=device.display_name;$('selected-id').textContent=device.device_id;if(!$('editor').open){$('editor-message').textContent='';$('editor').showModal();}}
@@ -188,7 +188,24 @@ async function copyText(value){
   finally{field.value='';field.remove();previous?.focus();}
 }
 async function api(path,method='GET',value){const response=await fetch(path,{method,credentials:'same-origin',cache:'no-store',headers:method==='GET'?{}:{'Content-Type':'application/json','X-MskDSP-Action':'device'},...(value===undefined?{}:{body:JSON.stringify(value)})});if(response.status===401){clearCredential();location.assign('/login');throw new Error('管理员登录已失效');}if(!response.ok){let error;try{error=await response.json();}catch{}throw new Error(error?.error||'设备操作失败');}return response.status===204?null:response.json();}
-async function operation(fn){if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){const text=e.message||'无法连接平台';message(text,true);if($('create-dialog').open)$('create-error').textContent=text;}finally{busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+// 保存等待期间锁定草稿，结束时恢复每个控件原本的禁用状态。
+function lockEditorInputs(){
+  if(!busyEditorInputs)return;
+  for(const input of [$('display-name'),$('enabled'),...$('grants').querySelectorAll('input')]){
+    if(!busyEditorInputs.has(input))busyEditorInputs.set(input,input.disabled);
+    input.disabled=true;
+  }
+}
+async function operation(fn){
+  if(busy)return;
+  busy=true;busyEditorInputs=new Map();lockEditorInputs();document.querySelectorAll('button').forEach(b=>b.disabled=true);
+  try{await fn();}
+  catch(e){const text=e.message||'无法连接平台';message(text,true);if($('create-dialog').open)$('create-error').textContent=text;}
+  finally{
+    for(const[input,disabled]of busyEditorInputs)input.disabled=disabled;
+    busyEditorInputs=null;busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);
+  }
+}
 function deviceStatus(device){return !device.enabled?'disabled':device.online?'online':'offline';}
 function render(){
   const root=$('devices'),query=$('device-search').value.trim().toLocaleLowerCase(),status=$('device-status').value;
@@ -237,6 +254,7 @@ async function select(device,keepCredential=false){
     }
     root.append(row);
   }
+  lockEditorInputs();
 }
 $('open-create').addEventListener('click',()=>{if(busy)return;$('create-form').reset();$('create-error').textContent='';$('create-dialog').showModal();});
 for(const id of ['cancel-create','close-create'])$(id).addEventListener('click',()=>{if(!busy)$('create-dialog').close();});
@@ -258,16 +276,20 @@ $('create-form').addEventListener('submit',e=>{e.preventDefault();operation(asyn
   await reload();await select({device_id:created.device_id,display_name:created.display_name,enabled:created.enabled},true);
   message('设备已创建，请复制设备 ID 和令牌。');
 });});
-$('edit-form').addEventListener('submit',e=>{e.preventDefault();operation(async()=>{if(!selected)return;if(!$('enabled').checked&&!confirm('禁用会断开设备及全部远程会话，继续？'))return;const updated=await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}`,'PUT',{display_name:$('display-name').value,enabled:$('enabled').checked});selected=updated;$('selected-title').textContent=updated.display_name;await reload();message('设备设置已保存。');});});
-$('save-grants').addEventListener('click',()=>operation(async()=>{
+$('edit-form').addEventListener('submit',e=>{e.preventDefault();operation(async()=>{
   if(!selected)return;
+  const draft={display_name:$('display-name').value,enabled:$('enabled').checked};
   const latestAccounts=await api('/api/v1/accounts'),rows=[...$('grants').children];
   if(latestAccounts.length!==rows.length||rows.some(row=>!latestAccounts.some(account=>account.id===row.dataset.account&&account.role===row.dataset.role))){
-    await select(selected,true);message('账号角色已变化，已刷新权限，请确认后重新保存。');return;
+    await select(selected,true);$('display-name').value=draft.display_name;$('enabled').checked=draft.enabled;
+    message('账号角色已变化，已刷新权限，请确认后重新保存。');return;
   }
+  if(!draft.enabled&&!confirm('禁用会断开设备及全部远程会话，继续？'))return;
   const grants=rows.filter(row=>row.dataset.role==='operator').map(row=>({account_id:row.dataset.account,allow_grpc:row.querySelector('[name=allow_grpc]').checked,allow_ssh:row.querySelector('[name=allow_ssh]').checked})).filter(g=>g.allow_grpc||g.allow_ssh);
-  await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}/grants`,'PUT',grants);message('设备权限已保存，撤销的访问将在一秒内终止。');
-}));
+  const updated=await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}`,'PUT',{...draft,grants});
+  selected=updated;$('selected-title').textContent=updated.display_name;$('display-name').value=updated.display_name;
+  await reload();message('设备设置和权限已保存，撤销的访问将在一秒内终止。');
+});});
 $('rotate').addEventListener('click',()=>operation(async()=>{if(!selected||!confirm('轮换令牌会断开设备及全部远程会话，旧令牌立即失效，继续？'))return;clearCredential();const result=await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}/token`,'POST');showCredential(result);await reload();message('令牌已轮换，请复制并更新现场设备的接入配置。');}));
 $('delete').addEventListener('click',()=>operation(async()=>{if(!selected||!confirm('删除设备会撤销所有权限并断开远程会话，继续？'))return;await api(`/api/v1/devices/${encodeURIComponent(selected.device_id)}`,'DELETE');selected=null;$('editor').close();clearCredential();await reload();message('设备已删除。');}));
 $('refresh').addEventListener('click',()=>operation(async()=>{await reload();if(selected){const device=devices.find(device=>device.device_id===selected.device_id);if(device)await select(device,true);else{selected=null;$('editor').close();clearCredential();}}message('设备列表已刷新。');}));$('reveal').addEventListener('click',()=>{$('credential').type=$('credential').type==='password'?'text':'password';});$('dismiss').addEventListener('click',()=>{clearCredential();if($('settings-fields').hidden)$('editor').close();});window.addEventListener('pagehide',clearCredential);

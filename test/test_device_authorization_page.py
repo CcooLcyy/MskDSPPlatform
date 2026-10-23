@@ -34,14 +34,14 @@ assert.equal(operatorRow.querySelector('[name=allow_grpc]').checked, false);
 assert.equal(operatorRow.querySelector('[name=allow_ssh]').checked, false);
 operatorRow.querySelector('[name=allow_grpc]').checked = true;
 operatorRow.querySelector('[name=allow_ssh]').checked = true;
-await click('save-grants');
-const saved = calls.findLast(call => call.url.endsWith('/grants') && call.options.method === 'PUT');
-assert.deepEqual(JSON.parse(saved.options.body), [{account_id: 'operator', allow_grpc: true, allow_ssh: true}]);
+await save();
+const saved = calls.findLast(call => call.options.method === 'PUT');
+assert.deepEqual(JSON.parse(saved.options.body).grants, [{account_id: 'operator', allow_grpc: true, allow_ssh: true}]);
 assert.equal(descendants(adminRow).filter(node => node.tagName === 'input').length, 0);
 operatorRow.querySelector('[name=allow_grpc]').checked = false;
 operatorRow.querySelector('[name=allow_ssh]').checked = false;
-await click('save-grants');
-assert.deepEqual(JSON.parse(calls.findLast(call => call.options.method === 'PUT').options.body), []);
+await save();
+assert.deepEqual(JSON.parse(calls.findLast(call => call.options.method === 'PUT').options.body).grants, []);
 ''')
 
     def test_refresh_reloads_current_roles_for_selected_device(self):
@@ -64,15 +64,19 @@ assert.equal(element('credential').value, created.token, '刷新权限不清除�
 accountRecords = [{id: 'account', username: 'worker', display_name: '人员', role: 'operator', enabled: true}];
 await create();
 element('grants').children[0].querySelector('[name=allow_grpc]').checked = true;
+element('display-name').value = '待保存设备名';
+element('enabled').checked = false;
 accountRecords[0].role = 'admin';
-await click('save-grants');
+await save();
 assert.equal(calls.filter(call => call.options.method === 'PUT').length, 0);
 assert.match(element('message').textContent, /账号角色已变化/);
+assert.equal(element('display-name').value, '待保存设备名');
+assert.equal(element('enabled').checked, false);
 assert.equal(element('grants').children[0].querySelector('[name=allow_grpc]'), null);
-await click('save-grants');
-assert.deepEqual(JSON.parse(calls.findLast(call => call.options.method === 'PUT').options.body), []);
+await save();
+assert.deepEqual(JSON.parse(calls.findLast(call => call.options.method === 'PUT').options.body).grants, []);
 accountRecords[0].role = 'operator';
-await click('save-grants');
+await save();
 assert.equal(calls.filter(call => call.options.method === 'PUT').length, 1);
 assert.equal(element('grants').children[0].querySelector('[name=allow_grpc]').checked, false);
 ''')

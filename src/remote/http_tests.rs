@@ -388,3 +388,111 @@ async fn device_management_is_admin_only_and_token_is_not_listed() {
     assert_eq!(legacy.status(), StatusCode::CREATED);
     assert_eq!(json_body(legacy).await["device_id"], "field");
 }
+
+// 统一请求写入设备与授权；非法输入不能部分更新，旧设备与授权 API 保持兼容。
+#[tokio::test]
+async fn unified_device_update_validates_and_preserves_legacy_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("devices.sqlite3");
+    let store = DeviceStore::open(path.clone()).await.unwrap();
+    let accounts = AccountStore::open(dir.path().join("accounts.sqlite3"))
+        .await
+        .unwrap();
+    let account = accounts
+        .create(crate::accounts::NewAccount {
+            role: "operator".into(),
+            username: "worker".into(),
+            password: "field-password-123".into(),
+            display_name: "运维".into(),
+        })
+        .await
+        .unwrap();
+    let original = Grant {
+        account_id: account.id.clone(),
+        allow_grpc: true,
+        allow_ssh: false,
+    };
+    store
+        .create(
+            NewDevice {
+                device_id: "field".into(),
+                display_name: "原设备".into(),
+            },
+            vec![original.clone()],
+        )
+        .await
+        .unwrap();
+    let (app, cookie) = admin_app(store.clone(), accounts).await;
+    let path = "/api/v1/devices/field";
+    for input in [
+        json!({"display_name":"新设备","enabled":false,"grants":[{"account_id":"missing","allow_grpc":true,"allow_ssh":true}]}),
+        json!({"display_name":"新设备","enabled":false,"grants":[original.clone(),original.clone()]}),
+        json!({"display_name":" ","enabled":false,"grants":[]}),
+        json!({"display_name":"新设备","enabled":false,"grants":[{"account_id":account.id,"allow_grpc":"true","allow_ssh":false}]}),
+    ] {
+        let response = call(&app, "PUT", path, &cookie, "device", input).await;
+        assert!(response.status().is_client_error());
+        let device = store.get("field").await.unwrap();
+        assert_eq!(device.display_name, "原设备");
+        assert!(device.enabled);
+        assert_eq!(
+            json!(store.grants("field").await.unwrap()),
+            json!([original.clone()])
+        );
+    }
+    let replacement = json!([{"account_id":account.id,"allow_grpc":false,"allow_ssh":true}]);
+    let response = call(
+        &app,
+        "PUT",
+        path,
+        &cookie,
+        "device",
+        json!({"display_name":"统一保存","enabled":false,"grants":replacement}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = json_body(response).await;
+    assert_eq!(saved["display_name"], "统一保存");
+    assert_eq!(saved["enabled"], false);
+    assert_eq!(json!(store.grants("field").await.unwrap()), replacement);
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            path,
+            &cookie,
+            "device",
+            json!({"display_name":"旧接口","enabled":true})
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(json!(store.grants("field").await.unwrap()), replacement);
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            "/api/v1/devices/field/grants",
+            &cookie,
+            "device",
+            json!([])
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(store.grants("field").await.unwrap().is_empty());
+    let input = json!({"display_name":"不应保存","enabled":false,"grants":[]});
+    assert_eq!(
+        call(&app, "PUT", path, "", "device", input.clone())
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(&app, "PUT", path, &cookie, "", input).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(store.get("field").await.unwrap().display_name, "旧接口");
+}

@@ -60,6 +60,34 @@ class AccountApiTests(unittest.TestCase):
         self.assertEqual(status, 200, raw)
         self.assertNotIn(replacement["id"], [grant["account_id"] for grant in json.loads(raw)])
 
+    # 一个更新请求保存设备与授权，未知账号校验失败不能留下设备名称或启用状态的部分修改。
+    def test_device_settings_and_permissions_save_together(self):
+        action = {"X-MskDSP-Action": "device"}
+        status, raw, _ = self.request("POST", "/api/v1/accounts",
+                                     {"username": "device.user", "password": "device-password-123"},
+                                     {"X-MskDSP-Action": "account"})
+        self.assertEqual(status, 201, raw)
+        account = json.loads(raw)
+        status, raw, _ = self.request("POST", "/api/v1/devices", {"display_name": "原设备"}, action)
+        self.assertEqual(status, 201, raw)
+        path = "/api/v1/devices/" + json.loads(raw)["device_id"]
+        grants = [{"account_id": account["id"], "allow_grpc": True, "allow_ssh": False}]
+        status, raw, _ = self.request("PUT", path, {"display_name": "统一保存", "enabled": True, "grants": grants}, action)
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)["display_name"], "统一保存")
+        self.assertEqual(json.loads(self.request("GET", path + "/grants")[1]), grants)
+        invalid = [{"account_id": "missing-account", "allow_grpc": True, "allow_ssh": True}]
+        status, raw, _ = self.request("PUT", path, {"display_name": "不应写入", "enabled": False, "grants": invalid}, action)
+        self.assertEqual(status, 400, raw)
+        saved = json.loads(self.request("GET", path)[1])
+        self.assertEqual(saved["display_name"], "统一保存")
+        self.assertTrue(saved["enabled"])
+        self.assertEqual(json.loads(self.request("GET", path + "/grants")[1]), grants)
+        self.stop()
+        self.start()
+        self.assertEqual(json.loads(self.request("GET", path)[1])["display_name"], "统一保存")
+        self.assertEqual(json.loads(self.request("GET", path + "/grants")[1]), grants)
+
     def test_role_assignment_conflict_validation_and_restart(self):
         action = {"X-MskDSP-Action": "account"}
         status, raw, _ = self.request("POST", "/api/v1/accounts",

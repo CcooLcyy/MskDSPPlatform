@@ -9,7 +9,7 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 #[derive(Clone)]
 struct DeviceState {
     http: HttpState,
@@ -151,11 +151,19 @@ async fn create(
         Err(e) => e.into_response(),
     }
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceUpdateInput {
+    display_name: String,
+    enabled: bool,
+    #[serde(default)]
+    grants: Option<Vec<Grant>>,
+}
 async fn update(
     State(state): State<DeviceState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    input: Result<Json<DeviceUpdate>, JsonRejection>,
+    input: Result<Json<DeviceUpdateInput>, JsonRejection>,
 ) -> Response {
     if let Err(e) = action(&headers) {
         return e.into_response();
@@ -164,8 +172,26 @@ async fn update(
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
+    if let Some(grants) = &input.grants {
+        if let Err(response) = validate_accounts(&state.accounts, grants).await {
+            return response;
+        }
+    }
     let enabled = input.enabled;
-    match state.store.update(&id, input).await {
+    let settings = DeviceUpdate {
+        display_name: input.display_name,
+        enabled,
+    };
+    let result = match input.grants {
+        Some(grants) => {
+            state
+                .store
+                .update_with_grants(&id, settings, Some(grants))
+                .await
+        }
+        None => state.store.update(&id, settings).await,
+    };
+    match result {
         Ok(device) => {
             if !enabled {
                 state.hub.disconnect(&id).await;
@@ -229,10 +255,8 @@ async fn set_grants(
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
-    for grant in &input {
-        if state.accounts.get(&grant.account_id).await.is_err() {
-            return error(StatusCode::BAD_REQUEST, "授权账号不存在或存储暂不可用");
-        }
+    if let Err(response) = validate_accounts(&state.accounts, &input).await {
+        return response;
     }
     match state.store.set_grants(&id, input).await {
         Ok(()) => {
@@ -241,6 +265,20 @@ async fn set_grants(
         }
         Err(e) => e.into_response(),
     }
+}
+async fn validate_accounts(accounts: &AccountStore, grants: &[Grant]) -> Result<(), Response> {
+    for grant in grants {
+        match accounts.get(&grant.account_id).await {
+            Ok(_) => {}
+            Err(crate::accounts::AccountError::NotFound) => {
+                return Err(error(StatusCode::BAD_REQUEST, "授权账号不存在"));
+            }
+            Err(_) => {
+                return Err(error(StatusCode::SERVICE_UNAVAILABLE, "账号存储暂不可用"));
+            }
+        }
+    }
+    Ok(())
 }
 #[cfg(test)]
 #[path = "http_tests.rs"]

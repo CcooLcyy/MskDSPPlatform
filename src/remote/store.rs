@@ -235,16 +235,42 @@ impl DeviceStore {
         self.run(|db|{let mut q=db.prepare("SELECT id,display_name,enabled,created_at FROM devices ORDER BY created_at DESC,id").map_err(storage)?;q.query_map([],row).map_err(storage)?.collect::<Result<Vec<_>,_>>().map_err(storage)}).await
     }
     pub async fn update(&self, id: &str, input: DeviceUpdate) -> Result<DeviceRecord, StoreError> {
+        self.update_with_grants(id, input, None).await
+    }
+    /// 设备信息及完整授权替换在同一事务提交，任何写入失败均保留原状态。
+    pub async fn update_with_grants(
+        &self,
+        id: &str,
+        input: DeviceUpdate,
+        grants: Option<Vec<Grant>>,
+    ) -> Result<DeviceRecord, StoreError> {
+        if let Some(grants) = &grants {
+            validate_grants(grants)?;
+        }
         let id = id.to_owned();
         let display = name(&input.display_name)?;
         self.run(move |db| {
-            get(db, &id)?;
-            db.execute(
+            let tx = db.transaction().map_err(storage)?;
+            get(&tx, &id)?;
+            tx.execute(
                 "UPDATE devices SET display_name=?1,enabled=?2 WHERE id=?3",
                 params![display, input.enabled, id],
             )
             .map_err(storage)?;
-            get(db, &id)
+            if let Some(grants) = grants {
+                tx.execute("DELETE FROM grants WHERE device_id=?1", [&id])
+                    .map_err(storage)?;
+                for grant in grants {
+                    tx.execute(
+                        "INSERT INTO grants(device_id,account_id,allow_grpc,allow_ssh,confirmed)VALUES(?1,?2,?3,?4,1)",
+                        params![id, grant.account_id, grant.allow_grpc, grant.allow_ssh],
+                    )
+                    .map_err(storage)?;
+                }
+            }
+            let device = get(&tx, &id)?;
+            tx.commit().map_err(storage)?;
+            Ok(device)
         })
         .await
     }
