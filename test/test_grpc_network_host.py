@@ -1,5 +1,6 @@
 import importlib.util
 import http.client
+import io
 import json
 import pathlib
 import socketserver
@@ -7,6 +8,8 @@ import struct
 import tempfile
 import threading
 import unittest
+from email.message import Message
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -165,6 +168,50 @@ class SettingsTests(unittest.TestCase):
                 host.atomic_save(self.path, config(mss=1200))
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual(list(self.path.parent.glob(".grpc-network-*")), [])
+
+    # 客户端在响应头或正文阶段关闭时，已提交设置保持成功且不二次发送 503。
+    def test_committed_update_survives_disconnected_client(self):
+        for exception in (BrokenPipeError, ConnectionResetError):
+            for stage in ("headers", "body"):
+                with self.subTest(exception=exception.__name__, stage=stage):
+                    previous_revision = self.manager.config["revision"]
+                    payload = json.dumps(dict(enabled=True, mss=1200, revision=previous_revision)).encode()
+                    handler = host.Handler.__new__(host.Handler)
+                    handler.path = "/settings"
+                    handler.server = SimpleNamespace(manager=self.manager)
+                    handler.authorized = mock.Mock(return_value=True)
+                    handler.headers = Message()
+                    handler.headers["Content-Length"] = str(len(payload))
+                    handler.headers["Content-Type"] = "application/json"
+                    handler.rfile = io.BytesIO(payload)
+                    handler.wfile = mock.Mock()
+                    handler.send_response = mock.Mock()
+                    handler.send_header = mock.Mock()
+                    handler.end_headers = mock.Mock()
+                    failure = exception("模拟客户端关闭连接")
+                    if stage == "headers":
+                        handler.end_headers.side_effect = failure
+                    else:
+                        handler.wfile.write.side_effect = failure
+                    with mock.patch.object(host.LOG, "warning") as warning:
+                        handler.do_POST()
+                    handler.send_response.assert_called_once_with(200)
+                    warning.assert_called_once()
+                    self.assertEqual(self.manager.config["revision"], previous_revision + 1)
+                    self.assertEqual(json.loads(self.path.read_text()), self.manager.config)
+                    self.assertEqual(self.nft.current, self.manager.config)
+                    self.assertIsNone(self.manager.error)
+
+    # 三阶段日志使用单调时钟分别记录毫秒，不把宿主机环境差异归因于磁盘。
+    def test_update_logs_separate_phase_durations(self):
+        with mock.patch.object(host.time, "monotonic", side_effect=[1, 1.002, 2, 2.003, 3, 3.004]):
+            with self.assertLogs(host.LOG, level="INFO") as logged:
+                self.manager.update(dict(enabled=True, mss=1200, revision=1))
+        durations = [line for line in logged.output if "处理耗时" in line]
+        self.assertEqual(len(durations), 3)
+        for line, stage, milliseconds in zip(durations, ["应用规则", "持久化", "核验状态"], ["2.000", "3.000", "4.000"]):
+            self.assertIn("阶段=" + stage, line)
+            self.assertIn("耗时毫秒=" + milliseconds, line)
 
 
 class RuleTests(unittest.TestCase):

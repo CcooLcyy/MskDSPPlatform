@@ -45,8 +45,8 @@ def validate_status(value):
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, path):
-        super().__init__("localhost", timeout=5)
+    def __init__(self, path, timeout=5):
+        super().__init__("localhost", timeout=timeout)
         self.path = str(path)
 
     def connect(self):
@@ -60,7 +60,7 @@ class UnixHTTPConnection(http.client.HTTPConnection):
 def request(socket_path, settings=None):
     if settings is not None:
         validate_settings(settings)
-    connection = UnixHTTPConnection(socket_path)
+    connection = UnixHTTPConnection(socket_path, timeout=30 if settings is not None else 5)
     try:
         connection.request("POST" if settings is not None else "GET",
                            "/settings" if settings is not None else "/status",
@@ -78,6 +78,10 @@ def request(socket_path, settings=None):
         return validate_status(value)
     except ControlError:
         raise
+    except TimeoutError as exc:
+        message = ("保存请求超时，设置可能已经生效；请刷新状态核对，不要直接重复保存"
+                   if settings is not None else "读取宿主机网络管理状态超时，请稍后刷新")
+        raise ControlError(message) from exc
     except (OSError, ValueError, http.client.HTTPException, RecursionError) as exc:
         raise ControlError("宿主机网络管理服务不可用；请检查是否已安装并启动端口管理服务") from exc
     finally:

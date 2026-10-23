@@ -148,6 +148,20 @@ class UnixClientTests(unittest.TestCase):
                 grpc_network.request("control.sock")
         self.assertEqual(connection.close.call_count, 3)
 
+    def test_write_timeout_is_longer_and_reports_uncertain_outcome(self):
+        connection = mock.Mock()
+        connection.getresponse.side_effect = TimeoutError("slow response")
+        with mock.patch.object(grpc_network, "UnixHTTPConnection", return_value=connection) as constructor:
+            with self.assertRaises(grpc_network.ControlError) as problem:
+                grpc_network.request("control.sock", {"enabled": True, "mss": 1240, "revision": 1})
+            constructor.assert_called_with("control.sock", timeout=30)
+            self.assertIn("可能已经生效", str(problem.exception))
+            self.assertIn("刷新状态核对", str(problem.exception))
+            with self.assertRaises(grpc_network.ControlError):
+                grpc_network.request("control.sock")
+            constructor.assert_called_with("control.sock", timeout=5)
+        self.assertEqual(connection.close.call_count, 2)
+
     def test_absent_service_is_explicitly_unavailable(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(grpc_network.ControlError) as problem:

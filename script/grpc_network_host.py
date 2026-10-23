@@ -16,6 +16,7 @@ import struct
 import subprocess
 import tempfile
 import threading
+import time
 
 
 TABLE = "mskdsp_grpc_mss"
@@ -260,6 +261,7 @@ class Manager:
             previous = dict(self.config)
             next_config = dict(previous, **request)
             next_config["revision"] += 1
+            started = time.monotonic()
             try:
                 self.nft.apply(next_config)
             except Exception as exc:
@@ -271,6 +273,10 @@ class Manager:
                     self.error = "规则应用失败且旧规则恢复未通过，请检查宿主机服务"
                 LOG.exception("平台端口分段规则应用失败")
                 raise Unavailable(self.error) from exc
+            finally:
+                LOG.info("平台端口分段处理耗时，阶段=应用规则，耗时毫秒=%.3f",
+                         (time.monotonic() - started) * 1000)
+            started = time.monotonic()
             try:
                 atomic_save(self.path, next_config)
             except Exception as exc:
@@ -287,12 +293,20 @@ class Manager:
                 self.error = "设置持久化失败" + ("；" + "；".join(errors) if errors else "，已恢复原设置")
                 LOG.exception("平台端口分段设置持久化失败")
                 raise Unavailable(self.error) from exc
+            finally:
+                LOG.info("平台端口分段处理耗时，阶段=持久化，耗时毫秒=%.3f",
+                         (time.monotonic() - started) * 1000)
             self.config = next_config
             self.persistent = True
             self.error = None
             LOG.info("平台端口分段设置已保存，启用=%s，MSS=%s，修订=%s",
                      next_config["enabled"], next_config["mss"], next_config["revision"])
-            return self.status()
+            started = time.monotonic()
+            try:
+                return self.status()
+            finally:
+                LOG.info("平台端口分段处理耗时，阶段=核验状态，耗时毫秒=%.3f",
+                         (time.monotonic() - started) * 1000)
 
     def close(self):
         with self.lock:
@@ -313,12 +327,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def respond(self, code, data):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # 响应发送失败不改变已经提交的设置，也不向断开的连接二次写入错误。
+            self.close_connection = True
+            LOG.warning("客户端已关闭连接，响应未送达；已完成的设置操作保持原结果")
 
     def send_error(self, code, message=None, explain=None):
         self.respond(code, {"error": "请求格式不合法或方法不支持"})

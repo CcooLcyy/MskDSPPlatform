@@ -59,7 +59,7 @@
 <form id="network-form" class="network-form">
 <label><input id="enabled" type="checkbox" disabled> 启用较小 TCP 分段</label>
 <label for="mss">TCP MSS（字节）<input id="mss" type="number" min="536" max="1460" step="1" value="1240" required disabled></label>
-<p class="hint">仅影响此端口上全部外部 gRPC 连接的平台发送方向，不修改下位机。MSS 是 TCP 数据长度；推荐值 1240 并非 IP 包总长度。</p>
+<p class="hint">仅影响经 Docker 转发到此端口的外部 IPv4 gRPC 连接的平台发送方向，不覆盖 IPv6 或本机回环连接，不修改下位机。MSS 是 TCP 数据长度；推荐值 1240 并非 IP 包总长度。</p>
 <p class="hint">保存只影响之后新建的 TCP 连接，不主动断开现有连接。远程隧道、设备接入和软件下载等共用此端口的连接均受影响。</p>
 <div class="actions"><button id="recommended" type="button" disabled>填入推荐值 1240</button><button id="save" class="primary" type="submit" disabled>保存设置</button></div>
 </form></div></section>
@@ -80,7 +80,7 @@ function createNetworkClient({fetchImpl, onChange, onUnauthorized}) {
     const options = {method, cache:'no-store', credentials:'same-origin'};
     if (payload !== undefined) { options.headers = {'Content-Type':'application/json', 'X-MskDSP-Action':action}; options.body = JSON.stringify(payload); }
     const controller = new AbortController(); options.signal = controller.signal;
-    const timer = setTimeout(() => controller.abort(), 10000);
+    const timer = setTimeout(() => controller.abort(), 45000);
     try {
       const response = await fetchImpl(path, options);
       if (response.status === 401) { stopped = true; status = null; onUnauthorized(); throw new Error('登录已失效'); }
@@ -88,6 +88,13 @@ function createNetworkClient({fetchImpl, onChange, onUnauthorized}) {
       const value = await response.json().catch(() => null);
       if (!response.ok) { const problem = new Error(text(value?.error) || `请求失败（HTTP ${response.status}）`); problem.code = response.status; throw problem; }
       return value;
+    } catch (problem) {
+      if (problem.name === 'AbortError') {
+        const timeout = new Error(method === 'POST' && action === 'network' ? '保存请求超时，设置可能已经生效；请刷新状态核对，不要直接重复保存。' : '请求超时，请稍后刷新状态。');
+        timeout.code = 503;
+        throw timeout;
+      }
+      throw problem;
     } finally { clearTimeout(timer); }
   }
   async function perform(operation) {
