@@ -14,6 +14,98 @@ use tonic::{
     Code, Request, Streaming,
     transport::{Channel, Server},
 };
+// 纵密维护只随 SSH 权限开放，模块权限既不能看到服务，也不能建链。
+#[tokio::test]
+async fn vertical_security_listing_and_open_require_ssh_permission() {
+    let mut f = Fixture::start().await;
+    let (_control_tx, mut control) = f
+        .online_services(vec![
+            "ModuleManager".into(),
+            "ssh".into(),
+            "vertical-security".into(),
+        ])
+        .await;
+    for (grpc, ssh, expected) in [
+        (true, false, vec!["ModuleManager"]),
+        (false, true, vec!["ssh", "vertical-security"]),
+    ] {
+        f.store
+            .set_grants(
+                "field",
+                vec![Grant {
+                    account_id: f.account.clone(),
+                    allow_grpc: grpc,
+                    allow_ssh: ssh,
+                }],
+            )
+            .await
+            .unwrap();
+        let list = f
+            .upper
+            .list_devices(request(ListDevicesRequest {}, &f.user))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(list.devices[0].services, expected);
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(frame(tunnel_frame::Payload::Open(TunnelOpen {
+            device_id: "field".into(),
+            service: "vertical-security".into(),
+        })))
+        .await
+        .unwrap();
+        let result = f
+            .upper
+            .open_tunnel(request(ReceiverStream::new(rx), &f.user))
+            .await;
+        if !ssh {
+            assert_eq!(result.unwrap_err().code(), Code::PermissionDenied);
+        } else {
+            let mut upper = result.unwrap().into_inner();
+            let (_device_tx, mut device, command) = f.attach(&mut control).await;
+            assert_eq!(command.service, "vertical-security");
+            assert!(matches!(
+                upper.message().await.unwrap().unwrap().payload,
+                Some(tunnel_frame::Payload::Ready(_))
+            ));
+            device.message().await.unwrap();
+            tx.send(frame(tunnel_frame::Payload::Data(vec![0, 255, 8])))
+                .await
+                .unwrap();
+            assert_eq!(
+                device.message().await.unwrap().unwrap().payload,
+                Some(tunnel_frame::Payload::Data(vec![0, 255, 8]))
+            );
+        }
+    }
+}
+
+// 保留模块权限而单独撤销 SSH 权限时，已建立的纵密维护流也必须关闭。
+#[tokio::test]
+async fn vertical_security_ssh_revocation_closes_active_stream() {
+    let mut f = Fixture::start().await;
+    let (_control_tx, mut control) = f.online_services(vec!["vertical-security".into()]).await;
+    let (_upper_tx, mut upper) = f.open_service("vertical-security").await;
+    let (_device_tx, mut device, _) = f.attach(&mut control).await;
+    upper.message().await.unwrap();
+    device.message().await.unwrap();
+    f.store
+        .set_grants(
+            "field",
+            vec![Grant {
+                account_id: f.account.clone(),
+                allow_grpc: true,
+                allow_ssh: false,
+            }],
+        )
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), upper.message())
+        .await
+        .unwrap();
+    assert_eq!(result.unwrap_err().code(), Code::PermissionDenied);
+}
+
 struct Fixture {
     _dir: tempfile::TempDir,
     store: DeviceStore,
@@ -134,12 +226,19 @@ impl Fixture {
             .unwrap();
     }
     async fn online(&mut self) -> (mpsc::Sender<DeviceMessage>, Streaming<PlatformMessage>) {
+        self.online_services(vec!["ModuleManager".into(), "ssh".into()])
+            .await
+    }
+    async fn online_services(
+        &mut self,
+        services: Vec<String>,
+    ) -> (mpsc::Sender<DeviceMessage>, Streaming<PlatformMessage>) {
         let (tx, rx) = mpsc::channel(8);
         tx.send(DeviceMessage {
             payload: Some(device_message::Payload::Hello(DeviceHello {
                 device_id: "field".into(),
                 agent_version: "test".into(),
-                services: vec!["ModuleManager".into(), "ssh".into()],
+                services,
             })),
         })
         .await

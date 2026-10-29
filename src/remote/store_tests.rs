@@ -1,5 +1,55 @@
 use super::store::*;
 
+// SSH 维护授权覆盖固定纵密服务，独立于普通模块访问权限。
+#[tokio::test]
+async fn vertical_security_store_permissions_follow_ssh_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = DeviceStore::open(dir.path().join("devices.sqlite3"))
+        .await
+        .unwrap();
+    store
+        .create(
+            NewDevice {
+                device_id: "field".into(),
+                display_name: "现场".into(),
+            },
+            vec![],
+        )
+        .await
+        .unwrap();
+    for (grpc, ssh) in [(true, false), (false, true), (true, true), (false, false)] {
+        store
+            .set_grants(
+                "field",
+                vec![Grant {
+                    account_id: "operator".into(),
+                    allow_grpc: grpc,
+                    allow_ssh: ssh,
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .authorize("field", "operator", "vertical-security")
+                .await
+                .is_ok(),
+            ssh
+        );
+        assert_eq!(
+            store.authorize("field", "operator", "ssh").await.is_ok(),
+            ssh
+        );
+        assert_eq!(
+            store
+                .authorize("field", "operator", "ModuleManager")
+                .await
+                .is_ok(),
+            grpc
+        );
+    }
+}
+
 // 默认授权与设备原子落盘，授权写入中途失败不能留下不可用的设备身份。
 #[tokio::test]
 async fn device_and_initial_grants_are_atomic() {

@@ -4,7 +4,7 @@ use super::{
     proto::*,
     relay::{self, send},
     response::ResponseStream,
-    store::{DeviceStore, Grant, StoreError, valid_service},
+    store::{DeviceStore, Grant, StoreError, uses_ssh_permission, valid_service},
 };
 use crate::{
     accounts::AccountRecord,
@@ -263,7 +263,7 @@ impl remote_access_service_server::RemoteAccessService for RemoteService {
                     d.services
                         .iter()
                         .filter(|s| {
-                            if s.as_str() == "ssh" {
+                            if uses_ssh_permission(s) {
                                 grant.allow_ssh
                             } else {
                                 grant.allow_grpc
@@ -304,6 +304,9 @@ impl remote_access_service_server::RemoteAccessService for RemoteService {
             .authorized(&open, &user.account.id, &token, None)
             .await?;
         tracing::info!(account_id=%account.id,role=%account.role,device_id=%open.device_id,service=%open.service,"上位机设备访问授权已通过");
+        if open.service == "vertical-security" {
+            tracing::info!(device_id=%open.device_id, "固定纵密通路已通过维护权限校验，准备转发管理连接");
+        }
         let id = Uuid::new_v4().to_string();
         let ticket = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let (attach_tx, attach_rx) = oneshot::channel();

@@ -167,7 +167,7 @@ body:has(dialog[open]) { overflow: hidden; }
 </section>
   <div id="settings-fields" hidden>
   <form id="edit-form" class="form-grid edit-device-form"><label>设备名称<input id="display-name" required maxlength="128"></label><label class="check-label"><input id="enabled" type="checkbox">启用设备</label></form>
-  <h3>账号权限</h3><p class="hint">上位机管理员自动拥有全部设备的模块访问和 SSH 权限；运维人员仅可访问明确授权的设备。模块访问包含配置与控制操作；SSH 登录仍需设备系统账号认证。旧版历史授权需重新保存确认。</p>
+  <h3>账号权限</h3><p class="hint">上位机管理员自动拥有全部设备的模块访问和 SSH / 纵密维护权限；运维人员仅可访问明确授权的设备。模块访问包含配置与控制操作；SSH / 纵密维护允许远程 SSH 及纵密管理通路检测，SSH 登录仍需设备系统账号认证。旧版历史授权需重新保存确认。</p>
   <div id="grants"></div>
   <div class="actions editor-actions"><button id="save-device" class="primary" type="submit" form="edit-form">保存修改</button><div class="actions"><button id="rotate" type="button">轮换接入令牌</button><button id="delete" class="danger" type="button">删除设备</button></div></div>
   </div></div>
@@ -245,9 +245,9 @@ async function select(device,keepCredential=false){
     row.dataset.account=account.id;row.dataset.role=account.role;row.style.margin='10px 0';
     const name=document.createElement('span');name.textContent=`${account.display_name}（${account.username}）${account.enabled?'':' · 已停用'}　`;row.append(name);
     if(account.role==='admin'){
-      const automatic=document.createElement('span');automatic.textContent='管理员 · 自动拥有全部权限（模块访问、SSH）';row.append(automatic);
+      const automatic=document.createElement('span');automatic.textContent='管理员 · 自动拥有全部权限（模块访问、SSH / 纵密维护）';row.append(automatic);
     }else{
-      for(const[key,text]of[['allow_grpc','模块访问'],['allow_ssh','SSH']]){
+      for(const[key,text]of[['allow_grpc','模块访问'],['allow_ssh','SSH / 纵密维护']]){
         const label=document.createElement('label'),input=document.createElement('input');input.type='checkbox';input.name=key;input.checked=!!grant?.[key];
         label.append(input,document.createTextNode(text+'　'));row.append(label);
       }

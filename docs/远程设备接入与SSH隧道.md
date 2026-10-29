@@ -26,7 +26,11 @@
 
 ## 目标发现与权限边界
 
-目标为 ModuleManager、模块名或 ssh。下位机只允许配置白名单内的模块，通过本机 ModuleManager.GetRunningModuleInfo 发现对应服务；拒绝任意 URL、路径、IP、端口和未公布名称。模块服务只能连接本机环回（将已知监听端口映射到环回，不跟随远端 IP），管理端和 SSH 使用本机配置目标。SSH 未启用时不公布 ssh。
+2026-10-29 增加上位机内部纵密通路检测：固定服务 `vertical-security` 由下位机在 SSH 维护能力启用时登记，仅连接该 DSP 所在网络的 `11.22.33.44:8888`。平台复用 `allow_ssh` 维护权限：仅模块授权不能查看或打开纵密服务，撤销 SSH 权限也会终止已建立的纵密流。该服务不是模块 RPC；平台不接受任意 IP/端口，不解析纵密 TLS、账号或业务载荷，不对外提供通用 IP 网络。配置通路使用原有 `ssh` 服务执行既有维护脚本，纵密检查使用独立的 `vertical-security` 数据流，无新增协议字段或数据库迁移。管理员授权页以“SSH / 纵密维护”显示此权限。
+
+本次平台本机验证：新增 3 条权限、列表/真实流转发、仅撤销 SSH 后断流测试先失败后通过；`cargo test --locked` 全量 197 条通过（0 失败、0 忽略）。改动 Rust 文件的 `rustfmt --check` 与 `git diff --check` 通过。严格 `cargo clippy --locked --all-targets -- -D warnings` 被原有 `config.rs` 的 `derivable_impls`、`grpc.rs` / `software/grpc.rs` / 旧远程测试的 `result_large_err`、`software/download.rs` 的 `manual_inspect` 拦截；这些代码未作修改，未降低 lint 标准。未执行设备部署或真实纵密联调。
+
+目标为 ModuleManager、模块名、ssh 或固定纵密服务 vertical-security。下位机只允许配置白名单内的模块，通过本机 ModuleManager.GetRunningModuleInfo 发现对应服务；拒绝任意 URL、路径、IP、端口和未公布名称。模块服务只能连接本机环回（将已知监听端口映射到环回，不跟随远端 IP），管理端和 SSH 使用本机配置目标。SSH 未启用时不公布 ssh 或 vertical-security。
 
 第一版授权为设备及服务类别，allow_grpc 表示允许该设备已开放模块的全部业务操作，不能宣传为只读权限。远程 gRPC 继续使用既有业务协议，平台不解析业务载荷。后续细粒度操作授权应放到业务服务或明确引入解析层。SSH 认证和主机身份校验端到端发生在上位机与下位机；平台不保存 SSH 密码/私钥，不记录终端正文。主机密钥信任以设备身份固定，不能依赖每次变化的本地隧道端口。
 

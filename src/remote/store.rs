@@ -62,6 +62,11 @@ fn storage(error: impl std::fmt::Display) -> StoreError {
     tracing::error!(error=%error,"设备存储操作失败");
     StoreError::Storage
 }
+/// SSH 和固定纵密服务共用维护授权，模块权限不能放行维护连接。
+pub fn uses_ssh_permission(service: &str) -> bool {
+    matches!(service, "ssh" | "vertical-security")
+}
+
 pub fn valid_service(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -334,7 +339,7 @@ impl DeviceStore {
     ) -> Result<(), StoreError> {
         let id = id.to_owned();
         let account = account.to_owned();
-        let ssh = service == "ssh";
+        let ssh = uses_ssh_permission(service);
         self.run(move|db|{let allowed:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM devices d JOIN grants g ON d.id=g.device_id WHERE d.id=?1 AND d.enabled=1 AND g.account_id=?2 AND g.confirmed=1 AND ((?3=1 AND g.allow_ssh=1) OR (?3=0 AND g.allow_grpc=1)))",params![id,account,ssh],|r|r.get(0)).map_err(storage)?;if allowed{Ok(())}else{Err(StoreError::Denied)}}).await
     }
 }
