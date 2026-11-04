@@ -1088,6 +1088,42 @@ async fn duplicate_device_and_rotated_credentials() {
     );
 }
 
+// 明确 EOF 或 Goodbye 无需等待失联期限，立即清理登记并向列表报告离线。
+#[tokio::test]
+async fn explicit_device_disconnect_clears_online_registration() {
+    for goodbye in [false, true] {
+        let mut f = Fixture::start().await;
+        let (input, mut control) = f.online().await;
+        if goodbye {
+            input
+                .send(DeviceMessage {
+                    payload: Some(device_message::Payload::Goodbye(DeviceGoodbye {
+                        reason: "主动退出".into(),
+                    })),
+                })
+                .await
+                .unwrap();
+        } else {
+            drop(input);
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), control.message())
+                .await
+                .expect("明确断连应及时清理，不得等待失联期限")
+                .unwrap()
+                .is_none()
+        );
+        assert!(f.hub.snapshot("field").await.is_none());
+        let list = f
+            .upper
+            .list_devices(request(ListDevicesRequest {}, &f.user))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!list.devices[0].online);
+    }
+}
+
 // 上传背压时反向与心跳仍活跃，取消后清理隧道且复用控制连接重新传输。
 #[tokio::test]
 async fn blocked_upload_keeps_reverse_heartbeat_and_reopen_available() {
@@ -1236,11 +1272,32 @@ async fn tcp_echo_roundtrip_preserves_binary_tail() {
         socket.shutdown().await.unwrap();
     });
     let mut f = Fixture::start().await;
-    let (_device_tx, mut control) = f.online().await;
+    let (control_tx, mut control) = f.online().await;
     let (upper_tx, mut upper) = f.open().await;
     let (device_tx, mut device, _) = f.attach(&mut control).await;
     upper.message().await.unwrap();
     device.message().await.unwrap();
+    // 大载荷转发期间假设备仍履行五秒心跳，保持数据完整性断言不受空闲失联干扰。
+    let device_heartbeat = tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = ticks.tick() => {
+                    control_tx.send(DeviceMessage {
+                        payload: Some(device_message::Payload::Heartbeat(DeviceHeartbeat {
+                            services: vec!["ModuleManager".into(), "ssh".into()],
+                        })),
+                    }).await.unwrap();
+                }
+                message = control.message() => {
+                    assert!(matches!(
+                        message.unwrap().expect("大载荷转发期间设备控制流不应结束").payload,
+                        Some(platform_message::Payload::HeartbeatAck(_))
+                    ));
+                }
+            }
+        }
+    });
     let socket = tokio::net::TcpStream::connect(address).await.unwrap();
     let (mut reader, mut writer) = socket.into_split();
     let write = tokio::spawn(async move {
@@ -1301,6 +1358,8 @@ async fn tcp_echo_roundtrip_preserves_binary_tail() {
     write.await.unwrap();
     read.await.unwrap();
     echo.await.unwrap();
+    device_heartbeat.abort();
+    assert!(device_heartbeat.await.unwrap_err().is_cancelled());
 }
 
 // 每设备十六条并发额度同时包含待附着及已建立的隧道。

@@ -23,7 +23,13 @@ use uuid::Uuid;
 const QUEUE: usize = 8;
 const FIRST: Duration = Duration::from_secs(10);
 const ATTACH: Duration = Duration::from_secs(15);
+const DEVICE_HEARTBEAT_INTERVAL_SECONDS: u32 = 5;
+const DEVICE_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(20);
 type Output<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
+
+#[cfg(test)]
+#[path = "grpc_heartbeat_tests.rs"]
+mod heartbeat_tests;
 #[derive(Clone)]
 pub struct RemoteService {
     pub store: DeviceStore,
@@ -70,6 +76,10 @@ fn client(error: ClientAuthError) -> Status {
         ClientAuthError::Storage => Status::unavailable("账号存储暂不可用"),
         _ => Status::unauthenticated("上位机登录状态无效"),
     }
+}
+fn device_heartbeat_timeout(id: &str) -> Status {
+    tracing::warn!(device_id = id, timeout_seconds = DEVICE_HEARTBEAT_TIMEOUT.as_secs(), "设备控制连接心跳超时，正在清理在线状态");
+    Status::deadline_exceeded("设备心跳超时")
 }
 fn bearer<T>(request: &Request<T>) -> Result<String, &'static str> {
     let values: Vec<_> = request.metadata().get_all("authorization").iter().collect();
@@ -410,20 +420,20 @@ impl RemoteService {
             PlatformMessage {
                 payload: Some(platform_message::Payload::Welcome(DeviceWelcome {
                     connection_id: connection.to_owned(),
-                    heartbeat_interval_seconds: 30,
+                    heartbeat_interval_seconds: DEVICE_HEARTBEAT_INTERVAL_SECONDS,
                 })),
             },
             cancel,
         )
         .await?;
-        let heartbeat = tokio::time::sleep(Duration::from_secs(90));
+        let heartbeat = tokio::time::sleep(DEVICE_HEARTBEAT_TIMEOUT);
         tokio::pin!(heartbeat);
         loop {
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Err(Status::permission_denied("设备已由管理端断开")),
                 _ = outbound.closed() => return Ok(()),
-                _ = &mut heartbeat => return Err(Status::deadline_exceeded("设备心跳超时")),
+                _ = &mut heartbeat => return Err(device_heartbeat_timeout(id)),
                 message = inbound.message() => {
                     let Some(message) = message? else { return Ok(()) };
                     match message.payload {
@@ -432,10 +442,11 @@ impl RemoteService {
                             if let Some(live) = self.hub.0.lock().await.devices.get_mut(id) {
                                 if live.connection_id == connection { live.services = names; }
                             }
-                            heartbeat.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(90));
-                            send(outbound, PlatformMessage {
+                            heartbeat.as_mut().reset(tokio::time::Instant::now() + DEVICE_HEARTBEAT_TIMEOUT);
+                            // 控制响应背压不能把设备失联判定拖长到通用写入期限。
+                            tokio::time::timeout_at(heartbeat.deadline(), send(outbound, PlatformMessage {
                                 payload: Some(platform_message::Payload::HeartbeatAck(DeviceHeartbeatAck {})),
-                            }, cancel).await?;
+                            }, cancel)).await.map_err(|_| device_heartbeat_timeout(id))??;
                         }
                         Some(device_message::Payload::Goodbye(_)) => return Ok(()),
                         Some(device_message::Payload::TunnelFailure(failure)) => {
