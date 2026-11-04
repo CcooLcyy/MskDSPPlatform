@@ -120,11 +120,7 @@ async fn blocked_heartbeat_ack_does_not_extend_device_deadline() {
         }
         tokio::task::yield_now().await;
     }
-    assert_eq!(
-        input.capacity(),
-        input.max_capacity(),
-        "第二次心跳应已读取"
-    );
+    assert_eq!(input.capacity(), input.max_capacity(), "第二次心跳应已读取");
     tokio::time::advance(Duration::from_secs(19)).await;
     tokio::task::yield_now().await;
     assert!(!task.is_finished(), "背压不应提前判定失联");

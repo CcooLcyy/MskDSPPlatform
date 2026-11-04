@@ -78,7 +78,11 @@ fn client(error: ClientAuthError) -> Status {
     }
 }
 fn device_heartbeat_timeout(id: &str) -> Status {
-    tracing::warn!(device_id = id, timeout_seconds = DEVICE_HEARTBEAT_TIMEOUT.as_secs(), "设备控制连接心跳超时，正在清理在线状态");
+    tracing::warn!(
+        device_id = id,
+        timeout_seconds = DEVICE_HEARTBEAT_TIMEOUT.as_secs(),
+        "设备控制连接心跳超时，正在清理在线状态"
+    );
     Status::deadline_exceeded("设备心跳超时")
 }
 fn bearer<T>(request: &Request<T>) -> Result<String, &'static str> {
