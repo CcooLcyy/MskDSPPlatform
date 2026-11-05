@@ -193,7 +193,8 @@ function timeField(list, label, value) {
 async function mutate(pkg, channel, operation) {
   if (busy || !authenticated) return;
   if (pkg.metadata.product === 'mskdsp-platform') { message('平台候选包请到平台维护页手动升级。', true); return; }
-  if (!allowedChannels(pkg).includes(channel) || !['publish','withdraw'].includes(operation)) return;
+  if (!['publish','withdraw'].includes(operation)) return;
+  if (!allowedChannels(pkg).includes(channel) && !(operation === 'withdraw' && channel === 'beta' && pkg.channels.includes(channel))) return;
   if (operation === 'withdraw' && !pkg.channels.includes(channel)) { message('该安装包未发布到所选通道。', true); return; }
   const label = `${productNames[pkg.metadata.product] || pkg.metadata.product} ${pkg.metadata.version} · ${pkg.metadata.platform}`;
   const previous = packages.find(item => item.metadata.product === pkg.metadata.product && item.metadata.platform === pkg.metadata.platform && item.channels.includes(channel));
@@ -216,7 +217,7 @@ async function mutate(pkg, channel, operation) {
   finally { setBusy(false); }
 }
 function allowedChannels(pkg) {
-  return pkg.metadata.platform === 'linux-x64' && pkg.metadata.product === 'mskdsp-lower' ? ['ci'] : ['ci','beta','stable'];
+  return pkg.metadata.platform === 'linux-x64' && pkg.metadata.product === 'mskdsp-lower' ? ['ci'] : ['ci','stable'];
 }
 function packageChannels(pkg) {
   const channels = element('div', undefined, 'channels');
@@ -269,6 +270,12 @@ function packageActions(pkg) {
   publish.addEventListener('click', () => mutate(pkg, select.value, 'publish'));
   withdraw.addEventListener('click', () => mutate(pkg, select.value, 'withdraw'));
   actions.append(select, publish, withdraw);
+  if (pkg.channels.includes('beta')) {
+    const legacyWithdraw = element('button', '撤回历史 Beta'); legacyWithdraw.type = 'button';
+    legacyWithdraw.setAttribute('data-package-control', 'true');
+    legacyWithdraw.addEventListener('click', () => mutate(pkg, 'beta', 'withdraw'));
+    actions.append(legacyWithdraw);
+  }
   if (pkg.ever_published) {
     const download = element('a', '下载安装包');
     download.href = `/software/packages/${encodeURIComponent(pkg.id)}/${encodeURIComponent(meta.file_name)}`;
@@ -293,7 +300,7 @@ function createSections() {
     }
     const search = control('搜索版本', 'search', 'input', null, 'version-search');
     search.type = 'search'; search.placeholder = '输入版本号'; search.autocomplete = 'off';
-    const channelOptions = product === 'mskdsp-platform' ? [['','全部候选包'],['ci','CI 来源'],['beta','Beta 来源'],['stable','Stable 来源']] : [['','全部状态'],['unpublished','待发布 / 已撤回'],['ci','CI'],['beta','Beta'],['stable','Stable']];
+    const channelOptions = product === 'mskdsp-platform' ? [['','全部候选包'],['ci','CI 来源'],['stable','Stable 来源']] : [['','全部状态'],['unpublished','待发布 / 已撤回'],['ci','CI'],['stable','Stable']];
     const channel = control(product === 'mskdsp-platform' ? '入库通道' : '发布通道', 'channel', 'select', channelOptions);
     const architecture = control('架构', 'architecture', 'select', [['','全部架构']]);
     const view = control('显示方式', 'view', 'select', [['list','紧凑列表'],['cards','版本卡片']], 'view-picker'); view.value = 'list';
@@ -315,7 +322,7 @@ function createSections() {
 function renderRecommendations(section, records) {
   section.summary.replaceChildren();
   const grid = element('div', undefined, 'recommendations');
-  for (const channel of ['stable','beta','ci']) {
+  for (const channel of ['stable','ci']) {
     const box = element('div', undefined, 'channel-summary'); box.append(element('strong', channel.toUpperCase()));
     const refs = records.filter(pkg => pkg.channels.includes(channel));
     const values = element('div');

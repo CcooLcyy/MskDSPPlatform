@@ -265,6 +265,114 @@ mod tests {
         store.complete_upload(&task.id).await.unwrap()
     }
     #[tokio::test]
+    async fn beta_publication_stops_but_legacy_release_survives_restart_and_withdrawal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let store = SoftwareStore::new(root.clone(), 64).unwrap();
+        let old = upload(&store, metadata(b"old"), b"old").await;
+        let mut next = metadata(b"new");
+        next.version = "1.0.1".into();
+        let next = upload(&store, next, b"new").await;
+        store.publish(&next.id, "ci").await.unwrap();
+        store.publish(&next.id, "stable").await.unwrap();
+        // 模拟升级前已落盘的 Beta 发布，不通过待废止的发布入口造数据。
+        {
+            let inner = store.inner.lock().unwrap();
+            inner
+                .db
+                .execute(
+                    "INSERT INTO channels VALUES('mskdsp-lower','beta','linux-arm64',?1)",
+                    [&old.id],
+                )
+                .unwrap();
+            inner
+                .db
+                .execute(
+                    "UPDATE packages SET ever_published=1,published=?1 WHERE id=?2",
+                    params![timestamp(), old.id],
+                )
+                .unwrap();
+        }
+        drop(store);
+        let store = SoftwareStore::new(root, 64).unwrap();
+        for id in [&old.id, &next.id] {
+            assert!(matches!(
+                store.publish(id, "beta").await,
+                Err(StoreError::Invalid(_))
+            ));
+        }
+        let legacy = store.get_package(&old.id).await.unwrap();
+        assert_eq!(legacy.channels, vec!["beta"]);
+        assert!(
+            store
+                .list_packages()
+                .await
+                .unwrap()
+                .iter()
+                .any(|p| p.id == old.id)
+        );
+        assert_eq!(
+            store.get_package(&next.id).await.unwrap().channels,
+            vec!["ci", "stable"]
+        );
+        let manifest = store
+            .manifest(
+                "mskdsp-lower",
+                "beta",
+                Some("linux-arm64"),
+                "https://example.test",
+            )
+            .await
+            .unwrap();
+        assert_eq!(manifest["version"], "1.0.0");
+        assert!(store.download_file(&old.id, "lower.tar.gz").await.is_ok());
+        assert!(
+            store
+                .withdraw(&old.id, "beta")
+                .await
+                .unwrap()
+                .channels
+                .is_empty()
+        );
+        assert!(
+            store
+                .manifest(
+                    "mskdsp-lower",
+                    "beta",
+                    Some("linux-arm64"),
+                    "https://example.test"
+                )
+                .await
+                .is_err()
+        );
+        assert!(store.download_file(&old.id, "lower.tar.gz").await.is_ok());
+    }
+    #[tokio::test]
+    async fn upper_and_lower_maintenance_branch_packages_can_publish_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SoftwareStore::new(dir.path().into(), 64).unwrap();
+        for product in ["mskdsp-upper", "mskdsp-lower"] {
+            let mut m = metadata(b"patch");
+            m.product = product.into();
+            m.version = "1.0.1".into();
+            m.source_ref = "release/1.0".into();
+            m.source_sha = "a".repeat(40);
+            if product == "mskdsp-upper" {
+                m.platform = "windows-x86_64-nsis".into();
+                m.signature = "signature".into();
+            }
+            let package = upload(&store, m, b"patch").await;
+            assert!(matches!(
+                store.publish(&package.id, "beta").await,
+                Err(StoreError::Invalid(_))
+            ));
+            assert_eq!(
+                store.publish(&package.id, "stable").await.unwrap().channels,
+                vec!["stable"]
+            );
+        }
+    }
+    #[tokio::test]
     async fn rename_before_database_commit_recovers_on_restart() {
         let dir = tempfile::tempdir().unwrap();
         let store = SoftwareStore::new(dir.path().into(), 64).unwrap();
@@ -1268,6 +1376,11 @@ impl Inner {
     }
     fn publish(&mut self, id: &str, channel: &str) -> Result<Package, StoreError> {
         channel_valid(channel)?;
+        if channel == "beta" {
+            return Err(StoreError::Invalid(
+                "Beta 已停止发布，请选择 CI 或 Stable；历史 Beta 仍可查询和撤回".into(),
+            ));
+        }
         let p = self.package(id)?;
         if p.metadata.product == "mskdsp-platform" {
             return Err(StoreError::Invalid(
