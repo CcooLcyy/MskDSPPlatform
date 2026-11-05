@@ -82,7 +82,7 @@
       </header>
     <div class="app-content">
       <main class="page-content update-content">
-        <div class="page-heading"><div><h1>平台维护</h1><p class="page-summary">查看平台当前版本，手动检查、安装更新或回退上一版本。</p></div></div>
+        <div class="page-heading"><div><h1>平台维护</h1><p class="page-summary">查看平台当前版本、更新策略和任务状态，或手动检查、安装及回退。</p></div></div>
         <p><a href="/network">管理 gRPC 端口网络兼容设置</a></p>
         <div class="version-grid">
           <section class="version-panel panel" aria-labelledby="current-heading">
@@ -92,9 +92,9 @@
             <div class="actions"><span class="channel-caption">更新通道 · <strong id="channel">—</strong></span><button id="rollback" type="button" disabled>回退上一版本</button></div>
           </section>
           <section class="version-panel panel" aria-labelledby="available-heading">
-            <div class="version-heading"><h2 id="available-heading">可用版本</h2><span class="badge">手动更新</span></div>
+            <div class="version-heading"><h2 id="available-heading">可用版本</h2><span id="update-mode" class="badge">正在读取</span></div>
             <span class="version-label">最新检查结果</span><div id="latest" class="version-code">待检查</div>
-            <p class="hint">CI 程序包入库后可检查更新，再选择是否安装。</p>
+            <p id="update-policy" class="hint">正在读取平台更新策略…</p>
             <p id="release-notes" class="release-notes">变更说明：未提供变更说明。安装期间平台服务会短暂重连。</p>
             <div class="actions"><button id="check" type="button" disabled>检查更新</button><button id="apply" class="primary" type="button" disabled>安装更新</button></div>
           </section>
@@ -103,7 +103,7 @@
           <div class="panel-heading"><h2 id="task-heading">任务状态</h2><span id="state" class="task-indicator">正在读取</span></div>
           <div class="panel-body" role="status" aria-live="polite"><p id="message">正在读取更新状态…</p><p id="connection" hidden></p></div>
         </section>
-        <footer class="update-footer">更新和回退由管理员手动发起，期间服务会短暂重连。新版本启动失败时自动恢复旧版本；业务问题可手动回退上一版本。操作完成后若会话失效，请重新登录。</footer>
+        <footer id="update-footer" class="update-footer">安装和回退期间服务会短暂重连。新版本启动失败时自动恢复旧版本。操作完成后若会话失效，请重新登录。</footer>
         <noscript>请启用 JavaScript 以查看更新状态并操作更新。</noscript>
       </main>
     </div>
@@ -115,6 +115,19 @@ const text = value => typeof value === 'string' ? value : '';
 const busy = status => ['checking','updating','rolling_back'].includes(status?.state);
 const validStatus = value => value && typeof value === 'object' && typeof value.enabled === 'boolean' && Object.hasOwn(labels, value.state);
 const validUser = value => typeof value?.username === 'string' && Boolean(value.username.trim()) && value?.role === 'admin';
+
+function updatePolicy(status) {
+  const recovery = '安装和回退期间服务会短暂重连。新版本启动失败时自动恢复旧版本。操作完成后若会话失效，请重新登录。';
+  if (!status) return {badge:'正在读取', hint:'正在读取平台更新策略…', footer:recovery};
+  if (!status.enabled) return {badge:'更新未启用', hint:'请由管理员配置更新源。', footer:recovery};
+  const interval = status.auto_update_interval_seconds;
+  if (Number.isInteger(interval) && interval > 0) {
+    return {badge:'自动更新', hint:`平台每 ${interval} 秒检查一次，有新版本自动安装；也可手动检查或安装。`,
+      footer:recovery + ' 安装失败后下一轮继续检查。手动回退后，若仓库仍有更新版本，将再次自动安装。'};
+  }
+  // 旧管理器未声明自动更新能力时，继续显示其实际支持的手动模式。
+  return {badge:'手动更新', hint:'程序包入库后可检查更新，再选择是否安装。', footer:'更新和回退由管理员手动发起。' + recovery};
+}
 
 function installConfirmation(status) {
   const current = text(status?.current_version) || '未知版本';
@@ -267,6 +280,10 @@ const client = createUpdateClient({
     element('previous').textContent = text(status?.previous_version) || '暂无可回退版本';
     element('latest').textContent = text(status?.latest_version) || (status?.state === 'empty' ? '暂无可升级版本' : '待检查');
     element('channel').textContent = channels[status?.channel] || text(status?.channel) || '—';
+    const policy = updatePolicy(status);
+    element('update-mode').textContent = policy.badge;
+    element('update-policy').textContent = policy.hint;
+    element('update-footer').textContent = policy.footer;
     element('state').textContent = disconnected ? '连接中断' : pending ? '正在提交' : labels[status?.state] || '正在读取';
     element('message').textContent = actionError || text(status?.message) || (status?.enabled === false ? '网页更新未启用，请由管理员配置更新源。' : '点击“检查更新”获取最新版本。');
     element('connection').hidden = !disconnected;

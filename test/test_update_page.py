@@ -9,6 +9,51 @@ PAGE = Path(__file__).resolve().parents[1] / "web" / "update.html"
 
 
 class UpdatePageTests(unittest.TestCase):
+    # 后台声明自动策略后页面才显示自动安装；旧管理器与无更新源不能误报。
+    def test_update_policy_matches_manager_capability(self):
+        page = PAGE.read_text(encoding="utf-8")
+        for field in ("update-mode", "update-policy", "update-footer"):
+            self.assertIn(f'id="{field}"', page)
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("未找到 Node，页面静态契约检查仍执行")
+        script = re.search(r'<script type="module">([\s\S]*?)</script>', page).group(1)
+        library = script.split("// 页面启动")[0]
+        scenario = r'''
+const assert=require('node:assert/strict');
+const vm=require('node:vm');
+const context=vm.createContext({AbortController,setTimeout,clearTimeout});
+vm.runInContext(LIBRARY+'\nthis.api={updatePolicy,createUpdateClient};',context);
+const {updatePolicy,createUpdateClient}=context.api;
+assert.equal(updatePolicy(null).badge,'正在读取');
+const automatic=updatePolicy({enabled:true,auto_update_interval_seconds:60});
+assert.equal(automatic.badge,'自动更新');
+assert.match(automatic.hint,/每 60 秒/); assert.match(automatic.hint,/自动安装/);
+assert.match(automatic.footer,/回退后/); assert.match(automatic.footer,/再次自动安装/);
+for(const fields of [{enabled:true},{enabled:true,auto_update_interval_seconds:0},
+                     {enabled:true,auto_update_interval_seconds:'60'}]) {
+  assert.equal(updatePolicy(fields).badge,'手动更新');
+  assert.doesNotMatch(updatePolicy(fields).hint,/自动安装/);
+}
+assert.equal(updatePolicy({enabled:false,auto_update_interval_seconds:60}).badge,'更新未启用');
+// 即使后台自动安装启用，页面刷新仍只查询状态，不发起安装或检查。
+const calls=[];
+const client=createUpdateClient({fetchImpl:async(url,options)=>{
+  calls.push({url,options});
+  return {ok:true,status:200,json:async()=>url==='/api/v1/auth/me'?{username:'root',role:'admin'}:
+    {enabled:true,auto_update_interval_seconds:60,state:'idle',current_version:'1'}};
+},onChange:()=>{},reload:()=>{}});
+(async()=>{
+  await client.refresh(); await client.refresh();
+  assert.ok(calls.every(call=>call.options.method==='GET'));
+  assert.ok(calls.every(call=>!['/api/update/check','/api/update/apply'].includes(call.url)));
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+        import json
+        result = subprocess.run([node, "-e", "const LIBRARY=" + json.dumps(library) + ";\n" + scenario],
+                                capture_output=True, text=True, encoding="utf-8", timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     # 更新页共用平台导航，当前版本、可用版本、任务状态分别呈现。
     def test_shared_shell_and_separate_update_regions(self):
         page = PAGE.read_text(encoding="utf-8")

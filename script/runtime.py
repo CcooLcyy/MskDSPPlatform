@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""单容器平台管理进程：手动更新、HTTP 代理与子进程监督。"""
+"""单容器平台管理进程：自动/手动更新、HTTP 代理与子进程监督。"""
 import codecs
 import copy
 import hashlib
@@ -34,6 +34,7 @@ MAX_AUTH_RESPONSE = 4096
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUPS = 3
 LOG_CHUNK_SIZE = 4096
+AUTO_UPDATE_INTERVAL = 60
 
 
 class BusyError(common.UpdateError):
@@ -190,6 +191,7 @@ class Manager:
         self.guard, self.lifecycle = threading.RLock(), threading.RLock()
         self.stopping = threading.Event()
         self.child = self.child_reader = self.worker = self.monitor = None
+        self.auto_updater = None
         self.busy, self.source_url, self.local_source = False, "", None
         config_error = ""
         if Path(updater_config).exists():
@@ -216,7 +218,9 @@ class Manager:
             self.validate_installed(self.current)
         else:
             self.current = {**binary_identity(self.seed), "release": "seed"}
-        self.result = dict(latest_version="", state="idle", message=config_error or "等待手动检查更新",
+        update_message = ("每分钟自动检查更新，发现新版本后自动安装" if (self.local_source or self.source_url)
+                          else "未配置更新源，自动更新未启用")
+        self.result = dict(latest_version="", state="idle", message=config_error or update_message,
                            update_available=False, job_id="")
         task = self.runtime_dir / "task.json"
         if task.exists():
@@ -270,6 +274,7 @@ class Manager:
                 rollback_available = False
             return dict(enabled=bool(self.local_source or self.source_url), current_version=self.current["version"],
                         source_url=self.source_url, channel=channel,
+                        auto_update_interval_seconds=AUTO_UPDATE_INTERVAL if (self.local_source or self.source_url) else 0,
                         previous_version=previous_version if isinstance(previous_version, str) else "",
                         rollback_available=rollback_available, **self.result)
 
@@ -347,6 +352,21 @@ class Manager:
                 finally:
                     os.close(descriptor)
         return destination
+
+    def auto_update_loop(self):
+        # 首次也等待完整周期；复用任务互斥与安装校验，不依赖网页或管理员会话。
+        while not self.stopping.wait(AUTO_UPDATE_INTERVAL):
+            if self.stopping.is_set():
+                return
+            if not (self.local_source or self.source_url):
+                continue
+            try:
+                self.log("自动检查平台更新，发现新版本后自动安装")
+                self.begin("apply")
+            except BusyError:
+                self.log("已有更新或回退任务，跳过本轮自动检查")
+            except Exception as exc:
+                self.log("提交自动更新任务失败，下轮重试：" + str(exc))
 
     def run_rollback(self, target_version):
         committed = False
@@ -434,6 +454,7 @@ class Manager:
                 if operation == "check":
                     self.set_result(state="available", message="发现新版本，可手动更新")
                     return
+                self.log("发现平台新版本，准备安装：" + self.current["version"] + " → " + manifest["version"])
                 self.set_result(state="updating", message="正在复制校验本地程序包，当前平台继续服务" if self.local_source else "正在下载校验，当前平台继续服务")
                 candidate = self.prepare(manifest, artifact)
                 self.ensure_running()
@@ -469,6 +490,7 @@ class Manager:
                     with self.guard:
                         self.current = next_state
                     self.set_result(state="succeeded", message="更新成功：" + next_state["version"], update_available=False)
+                    self.log("平台更新完成：" + next_state["version"])
                 self.prune()
         except Exception as exc:
             message = ("新版已提交，但后续任务处理失败：" if committed else "") + str(exc)
@@ -564,6 +586,14 @@ class Manager:
                 common.atomic_json(self.runtime_dir / "state.json", self.current)
         self.monitor = threading.Thread(target=self.supervise, daemon=True)
         self.monitor.start()
+        if self.local_source or self.source_url:
+            self.auto_updater = threading.Thread(target=self.auto_update_loop, daemon=True)
+            try:
+                self.auto_updater.start()
+            except Exception:
+                self.auto_updater = None
+                raise
+            self.log("平台自动更新已启用，每 60 秒检查并安装新版本")
 
     def supervise(self):
         failures = []
@@ -591,6 +621,8 @@ class Manager:
 
     def close(self):
         self.stopping.set()
+        if self.auto_updater:
+            self.auto_updater.join(timeout=2)
         with self.lifecycle:
             self.stop_child()
         if self.worker:
@@ -883,7 +915,7 @@ def main():
         manager.start()
         server = RuntimeServer(listen_address(os.environ.get("MSKDSP_MANAGER_LISTEN", "0.0.0.0:8080")), manager)
         server.timeout = 0.5
-        manager.log("网页管理服务已启动，等待手动操作")
+        manager.log("网页管理服务已启动，支持查看更新状态和手动维护")
         while not stopped.is_set():
             server.handle_request()
         return 0
