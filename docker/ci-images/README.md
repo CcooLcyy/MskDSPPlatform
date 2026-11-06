@@ -41,7 +41,7 @@ python3 -B script/platform_grpc_client.py generate --output-dir .ci-tmp/platform
 所需 `.proto` 必须已提交到固定子模块版本；本地未跟踪文件不会出现在干净检出中。
 绑定仅作为作业临时文件，更新协议后重新生成，不复制进工具镜像。
 镜像依赖准备与绑定生成本身不执行平台软件上传。当前 GitLab 的 `upload-platform`
-作业另行使用这些依赖完成平台 CI 包入库；Beta/Stable 的远程发布能力保留。
+作业另行使用这些依赖完成平台 CI 包入库；Stable 的远程发布能力保留。
 
 2026-10-18：两个 v2 镜像已在现有 Linux x64 Runner 主机构建并预加载，
 依赖导入检查通过，各自在只读作业容器运行 7 项客户端专项测试全部通过。

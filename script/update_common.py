@@ -130,7 +130,7 @@ def validate_manifest(data, url, selected_platform="linux-amd64", transport=None
     if not isinstance(data, dict) or type(data.get("schema_version")) is not int or data["schema_version"] != 1 or data.get("project") != PROJECT:
         raise UpdateError("清单版本或项目不正确")
     channel = data.get("channel")
-    if channel not in ("ci", "beta", "stable") or base.path.split("/")[-2:] != [channel, "latest.json"]:
+    if channel not in ("ci", "stable") or base.path.split("/")[-2:] != [channel, "latest.json"]:
         raise UpdateError("清单地址与通道不一致")
     validate_commit(channel, data.get("version"), data.get("commit"))
     validate_time(data.get("published_at"))

@@ -61,8 +61,8 @@ CI 上传动作本身不发布、不安装、不重启；自动安装由独立�
 
 ## Docker 发布
 
-CI 通过 GitLab 生成 Linux amd64 镜像和程序包并上传平台；已有 Beta/Stable 发布保留，不在此次接入范围。
-推送 main 发布 CI，推送 beta 版本分支发布 Beta，推送正式版本标签发布 Stable。
+CI 通过 GitLab 生成 Linux amd64 镜像和程序包并上传平台；已有 Stable 发布保留，不在此次接入范围。
+推送 main 发布 CI，推送正式版本标签发布 Stable；Beta 新发布入口已退役。
 首轮只发布 CI。部署和版本晋升步骤见 [RELEASING.md](RELEASING.md)，
 发布范围与验收要求见 [发布方案](docs/发布方案.md)。
 

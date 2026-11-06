@@ -207,8 +207,8 @@ class Manager:
                         raise common.UpdateError("更新来源不受支持")
                     source = settings.get("manifest_url", "")
                     parsed = self.transport.validate_url(source)
-                    if parsed.path.split("/")[-2:] not in (["ci", "latest.json"], ["beta", "latest.json"], ["stable", "latest.json"]):
-                        raise common.UpdateError("更新源必须是通道 latest.json")
+                    if parsed.path.split("/")[-2:] not in (["ci", "latest.json"], ["stable", "latest.json"]):
+                        raise common.UpdateError("更新源必须是 CI/Stable 的 latest.json，Beta 已退役")
                     self.source_url = source
             except common.UpdateError as exc:
                 config_error = "更新配置无效：" + str(exc)

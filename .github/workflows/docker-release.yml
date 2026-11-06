@@ -1,4 +1,4 @@
-name: Docker 通道发布
+name: Docker Stable 发布
 
 on:
   workflow_call:
@@ -23,8 +23,10 @@ env:
 
 jobs:
   publish:
-    # CI 自身程序包统一由 GitLab 上传平台；这里只保留已有 Beta/Stable 发布。
-    if: inputs.channel != 'ci'
+    # CI 程序包由 GitLab 上传平台，远程入口仅允许 Stable。
+    if: inputs.channel == 'stable'
+    env:
+      PLATFORM_SOURCE_READ_TOKEN: ${{ github.token }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -114,14 +116,6 @@ jobs:
           path: release/
           if-no-files-found: error
           retention-days: 14
-      - name: 拒绝过期的分支构建覆盖滚动通道
-        if: inputs.channel != 'stable'
-        env:
-          SOURCE_REF: ${{ steps.metadata.outputs.ref }}
-          COMMIT: ${{ steps.metadata.outputs.commit }}
-        run: |
-          git fetch origin "refs/heads/$SOURCE_REF"
-          test "$(git rev-parse FETCH_HEAD)" = "$COMMIT" || { echo '分支已有新提交，本次构建不更新滚动通道'; exit 1; }
       - name: 发布 R2 程序包、镜像包与更新清单
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -131,6 +125,7 @@ jobs:
           AWS_REQUEST_CHECKSUM_CALCULATION: when_required
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: |
+          python script/release.py verify-source --metadata package/metadata.json
           aws --version
           python script/publish_r2.py publish --output-dir r2 --bucket "$R2_BUCKET" --public-base-url "$R2_PUBLIC_BASE_URL" --prefix "$R2_PREFIX"
           printf 'R2 更新入口：%s/%s/%s/latest.json\n' "$R2_PUBLIC_BASE_URL" "$R2_PREFIX" '${{ steps.metadata.outputs.channel }}' >> "$GITHUB_STEP_SUMMARY"
@@ -146,13 +141,12 @@ jobs:
           IMAGE_REPOSITORY: ${{ steps.metadata.outputs.image_repository }}
           CHANNEL: ${{ steps.metadata.outputs.channel }}
         run: |
+          python script/release.py verify-source --metadata package/metadata.json
           docker push "$IMAGE"
           docker tag "$IMAGE" "$IMAGE_REPOSITORY:$CHANNEL"
           docker push "$IMAGE_REPOSITORY:$CHANNEL"
-          if [ "$CHANNEL" = stable ]; then
-            docker tag "$IMAGE" "$IMAGE_REPOSITORY:latest"
-            docker push "$IMAGE_REPOSITORY:latest"
-          fi
+          docker tag "$IMAGE" "$IMAGE_REPOSITORY:latest"
+          docker push "$IMAGE_REPOSITORY:latest"
       - name: 发布 GitHub 交付包，最后更新通道清单
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -164,14 +158,11 @@ jobs:
           IMAGE: ${{ steps.metadata.outputs.image }}
         run: |
           printf '版本：%s\n通道：%s\n提交：%s\n镜像：%s\n\n下载离线包并核对 SHA256SUMS 后，可使用 docker load 导入。\n' "$VERSION" "$CHANNEL" "$COMMIT" "$IMAGE" > package/notes.md
-          flags=(--prerelease --latest=false)
-          if [ "$CHANNEL" = stable ]; then flags=(--latest); fi
+          python script/release.py verify-source --metadata package/metadata.json
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "MskDSPPlatform $VERSION" --notes-file package/notes.md "${flags[@]}"
+            gh release edit "$RELEASE_TAG" --title "MskDSPPlatform $VERSION" --notes-file package/notes.md --latest
           else
-            tag_flags=(--target "$COMMIT")
-            if [ "$CHANNEL" = stable ]; then tag_flags=(--verify-tag); fi
-            gh release create "$RELEASE_TAG" --title "MskDSPPlatform $VERSION" --notes-file package/notes.md "${flags[@]}" "${tag_flags[@]}"
+            gh release create "$RELEASE_TAG" --title "MskDSPPlatform $VERSION" --notes-file package/notes.md --latest --verify-tag
           fi
           gh release upload "$RELEASE_TAG" release/*.zip release/*-binary.tar.gz release/updater-manifest.json release/SHA256SUMS --clobber
           gh release upload "$RELEASE_TAG" release/latest.json --clobber

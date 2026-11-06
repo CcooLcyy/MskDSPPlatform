@@ -26,8 +26,8 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(data["release_tag"], "v0.0.1")
 
     # 确认非正式构建含通道、时间和提交身份，并产生合法 Docker 标签。
-    def test_ci_and_beta_versions(self):
-        for channel in ("ci", "beta"):
+    def test_ci_versions(self):
+        for channel in ("ci",):
             with self.subTest(channel=channel):
                 data = build_metadata(channel, "0.0.1", SHA, TIME, "42.1", "CcooLcyy/MskDSPPlatform")
                 self.assertEqual(data["version"], f"0.0.1-{channel}.20261013t080000.42.1+sha.0123456")
@@ -43,7 +43,7 @@ class MetadataTests(unittest.TestCase):
     # 拒绝非法输入，防止版本与镜像仓库元数据污染。
     def test_invalid_inputs(self):
         valid = ["ci", "0.0.1", SHA, TIME, "42.1", "owner/repo"]
-        for index, value in ((0, "prod"), (1, "00.0.1"), (1, "0.0.1-beta"), (2, "bad"), (3, "bad"), (4, "x\ny"), (5, "owner/repo\nx=y")):
+        for index, value in ((0, "prod"), (0, "beta"), (1, "00.0.1"), (1, "0.0.1-beta"), (2, "bad"), (3, "bad"), (4, "x\ny"), (5, "owner/repo\nx=y")):
             with self.subTest(index=index, value=value):
                 args = valid.copy()
                 args[index] = value
@@ -59,18 +59,20 @@ class SourceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_source("ci", ref, "0.0.1", [])
 
-    # Beta 分支必须是匹配当前版本的合法数字版本线。
-    def test_beta_line(self):
-        for ref in ("beta/0.0", "refs/heads/beta/0.0.1"):
-            validate_source("beta", ref, "0.0.1", [])
-        for ref in ("main", "beta/0.1", "beta/0.0.2", "beta/test", "beta/0.0.1/extra"):
+    # Beta 新发布退役，包括曾经有效的版本线与手动来源。
+    def test_beta_is_retired(self):
+        for ref in ("main", "beta/0.0", "refs/heads/beta/0.0.1", "beta/0.1", "beta/test"):
             with self.assertRaises(ValueError):
                 validate_source("beta", ref, "0.0.1", [])
 
-    # Stable 标签和匹配的 Beta 提交来源缺一不可。
+    # Stable 必须使用匹配标签及 main 或同版本维护线的远端历史。
     def test_stable_lineage(self):
-        validate_source("stable", "refs/tags/v0.0.1", "0.0.1", ["origin/beta/0.0.1"])
-        for ref, branches in (("v0.0.2", ["origin/beta/0.0.1"]), ("v0.0.1", []), ("v0.0.1", ["origin/beta/1.0"]), ("main", ["origin/beta/0.0.1"])):
+        for branch in ("origin/main", "origin/release/0.0"):
+            validate_source("stable", "refs/tags/v0.0.1", "0.0.1", [branch])
+        for ref, branches in (("v0.0.2", ["origin/main"]), ("v0.0.1", []),
+                              ("v0.0.1", ["origin/beta/0.0.1"]), ("main", ["origin/main"]),
+                              ("v0.0.1", ["origin/release/0.1"]), ("v0.0.1", ["origin/release/0.0.1"]),
+                              ("v0.0.1", ["origin/release/00.0"])):
             with self.assertRaises(ValueError):
                 validate_source("stable", ref, "0.0.1", branches)
 
@@ -83,6 +85,15 @@ class ArchiveTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    # 历史 Beta 元数据不能被重新打包为新的交付物。
+    def test_beta_bundle_is_rejected_before_reading_archive(self):
+        with patch.object(release, "inspect_archive") as inspect:
+            with self.assertRaisesRegex(ValueError, "Beta"):
+                write_bundle({**self.metadata, "channel": "beta"}, self.root / "missing.tar.gz",
+                             self.root / "output", self.root / "source")
+            inspect.assert_not_called()
+            self.assertFalse((self.root / "output").exists())
 
     def archive(self, tag=None, architecture="amd64", corrupt=False):
         import hashlib

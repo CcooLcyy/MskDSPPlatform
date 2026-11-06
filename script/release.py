@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""生成三通道构建身份，校验 Docker 离线镜像并整理交付文件。"""
+"""生成 CI/Stable 构建身份，校验 Docker 离线镜像并整理交付文件。"""
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import nullcontext
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import tomllib
 from urllib.parse import urlsplit
 from datetime import datetime, timezone
@@ -29,31 +32,25 @@ def read_version(root: Path) -> str:
     return version
 
 
-def matching_beta(ref: str, base_version: str) -> bool:
-    ref = ref.removeprefix("refs/heads/").removeprefix("origin/")
-    minor = ".".join(base_version.split(".")[:2])
-    return ref in (f"beta/{base_version}", f"beta/{minor}")
-
-
-def validate_source(channel: str, ref: str, base_version: str, beta_branches: list[str]) -> None:
+def validate_source(channel: str, ref: str, base_version: str, containing_branches: list[str]) -> None:
+    if not VERSION_RE.fullmatch(base_version):
+        raise ValueError("基础版本必须是无前导零的三段版本")
     ref = ref.removeprefix("refs/heads/").removeprefix("refs/tags/")
     if channel == "ci":
         if ref != "main":
             raise ValueError("CI 通道只能发布 main 分支")
-    elif channel == "beta":
-        if not matching_beta(ref, base_version):
-            raise ValueError("Beta 通道必须使用与基础版本匹配的 beta/X.Y 或 beta/X.Y.Z 分支")
     elif channel == "stable":
         if ref != f"v{base_version}":
             raise ValueError("正式标签必须与 Cargo 基础版本完全一致")
-        if not any(matching_beta(branch, base_version) for branch in beta_branches):
-            raise ValueError("正式提交必须属于与版本匹配的远端 Beta 分支")
+        allowed = {"origin/main", "origin/release/" + ".".join(base_version.split(".")[:2])}
+        if not allowed.intersection(containing_branches):
+            raise ValueError("正式提交必须属于远端 main 或匹配版本 release/X.Y 的历史")
     else:
-        raise ValueError("未知发布通道")
+        raise ValueError("仅允许 CI/Stable 新发布，Beta 已退役")
 
 
 def build_metadata(channel: str, base_version: str, commit: str, timestamp: str, build_id: str, repository: str) -> dict:
-    if channel not in ("ci", "beta", "stable") or not VERSION_RE.fullmatch(base_version):
+    if channel not in ("ci", "stable") or not VERSION_RE.fullmatch(base_version):
         raise ValueError("发布通道或基础版本不合法")
     if not SHA_RE.fullmatch(commit) or not re.fullmatch(r"\d+\.\d+", build_id):
         raise ValueError("完整提交 SHA 或构建编号不合法")
@@ -123,6 +120,8 @@ def inspect_archive(path: Path | tarfile.TarFile, metadata: dict) -> str:
 
 
 def write_bundle(metadata: dict, archive: Path, output: Path, source: Path) -> None:
+    if metadata.get("channel") not in ("ci", "stable"):
+        raise ValueError("仅允许生成 CI/Stable 交付包，Beta 已退役")
     if output.exists():
         raise ValueError("交付输出目录已存在，请使用新目录避免混入旧产物")
     image_id = inspect_archive(archive, metadata)
@@ -159,15 +158,72 @@ def _write_verified_bundle(metadata: dict, archive: Path, output: Path, source: 
     print(f"离线包校验完成：版本={metadata['version']} 镜像ID={image_id} 目录={output}")
 
 
-def git(*args: str) -> str:
-    return subprocess.check_output(["git", *args], text=True, encoding="utf-8").strip()
+def git_environment() -> dict:
+    """为临时仓库继承短期只读凭据，不写入 Git 配置、远端 URL 或日志。"""
+    environment = os.environ.copy()
+    token = environment.pop("PLATFORM_SOURCE_READ_TOKEN", "")
+    if token:
+        if not token.isascii() or any(ord(char) < 33 or ord(char) > 126 for char in token):
+            raise ValueError("来源仓库临时凭据格式无效")
+        count = int(environment.get("GIT_CONFIG_COUNT", "0"))
+        if not 0 <= count <= 100:
+            raise ValueError("Git 临时配置数量不合法")
+        authorization = base64.b64encode(("x-access-token:" + token).encode("ascii")).decode("ascii")
+        environment["GIT_CONFIG_COUNT"] = str(count + 1)
+        environment[f"GIT_CONFIG_KEY_{count}"] = "http.https://github.com/.extraHeader"
+        environment[f"GIT_CONFIG_VALUE_{count}"] = "AUTHORIZATION: basic " + authorization
+    return environment
+
+
+def git(*args: str, cwd=None) -> str:
+    return subprocess.check_output(["git", *args], cwd=cwd, env=git_environment(), text=True, encoding="utf-8").strip()
+
+
+def verify_remote_stable_source(ref: str, version: str, commit: str, *, repo=Path(".")) -> None:
+    """查询并抓取当前远端来源，不依赖工作区可能过期的跟踪引用。"""
+    tag = ref.removeprefix("refs/tags/")
+    if not VERSION_RE.fullmatch(version) or tag != "v" + version or not SHA_RE.fullmatch(commit):
+        raise ValueError("正式标签、版本或冻结提交不合法")
+    tag_ref = "refs/tags/" + tag
+    allowed = ("refs/heads/main", "refs/heads/release/" + ".".join(version.split(".")[:2]))
+    refs = (tag_ref, tag_ref + "^{}", *allowed)
+    def snapshot():
+        result = {}
+        for line in git("ls-remote", "origin", *refs, cwd=repo).splitlines():
+            sha, name = line.split()
+            if name not in refs or not SHA_RE.fullmatch(sha) or name in result:
+                raise ValueError("远端来源引用不合法")
+            result[name] = sha
+        if tag_ref not in result or result.get(tag_ref + "^{}", result[tag_ref]) != commit:
+            raise ValueError("远端正式标签缺失或已移动，拒绝发布冻结产物")
+        return result
+    observed = snapshot()
+    remote = git("remote", "get-url", "origin", cwd=repo)
+    containing = []
+    # 临时仓库只保留本次观察到的完整历史，不改变用户分支或检出状态。
+    with tempfile.TemporaryDirectory(prefix="platform-stable-source-") as temporary:
+        git("init", "--bare", temporary)
+        for branch in allowed:
+            if branch not in observed:
+                continue
+            git("fetch", "--no-tags", remote, branch + ":" + branch, cwd=temporary)
+            if git("rev-parse", branch, cwd=temporary) != observed[branch]:
+                raise ValueError("校验期间远端分支发生变化，请重新发布")
+            ancestry = subprocess.run(["git", "merge-base", "--is-ancestor", commit, branch],
+                                      cwd=temporary, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if ancestry.returncode == 0:
+                containing.append("origin/" + branch.removeprefix("refs/heads/"))
+    if snapshot() != observed:
+        raise ValueError("校验期间远端引用发生变化，请重新发布")
+    validate_source("stable", tag, version, containing)
+    print(f"正式发布来源校验通过：标签={tag} 提交={commit} 来源={','.join(containing)}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     meta = sub.add_parser("metadata", help="验证发布来源并生成唯一版本身份")
-    meta.add_argument("--channel", required=True, choices=("ci", "beta", "stable"))
+    meta.add_argument("--channel", required=True, choices=("ci", "stable"))
     meta.add_argument("--ref", required=True)
     meta.add_argument("--repository", required=True)
     meta.add_argument("--build-id", required=True)
@@ -180,15 +236,25 @@ def main() -> None:
     bundle.add_argument("--archive", type=Path, required=True)
     bundle.add_argument("--output", type=Path, required=True)
     bundle.add_argument("--source", type=Path, default=Path("."))
+    verify = sub.add_parser("verify-source", help="对外发布前重新校验冻结 Stable 来源")
+    verify.add_argument("--metadata", type=Path, required=True)
     args = parser.parse_args()
+    if args.command == "verify-source":
+        frozen = json.loads(args.metadata.read_text(encoding="utf-8"))
+        if frozen.get("channel") != "stable" or frozen.get("version") != frozen.get("base_version"):
+            raise ValueError("仅允许校验冻结的 Stable 发布身份")
+        verify_remote_stable_source(frozen["ref"], frozen["base_version"], frozen["commit"])
+        return
     if args.command == "bundle":
         write_bundle(json.loads(args.metadata.read_text(encoding="utf-8")), args.archive, args.output, args.source)
         return
     version = read_version(Path("."))
     commit = git("rev-parse", "HEAD")
-    branches = git("branch", "-r", "--contains", commit, "--format=%(refname:short)").splitlines()
-    validate_source(args.channel, args.ref, version, branches)
     ref = args.ref.removeprefix("refs/heads/").removeprefix("refs/tags/")
+    if args.channel == "stable":
+        verify_remote_stable_source(args.ref, version, commit)
+    else:
+        validate_source(args.channel, args.ref, version, [])
     target = f"refs/tags/{ref}^{{commit}}" if args.channel == "stable" else f"refs/remotes/origin/{ref}"
     if git("rev-parse", target) != commit:
         raise ValueError("检出的提交与发布来源最新提交不一致")

@@ -77,6 +77,8 @@ def json_bytes(data: dict) -> bytes:
 def validate_metadata(data: dict) -> str:
     if not isinstance(data, dict) or any(not isinstance(data.get(key), str) for key in ("channel", "version", "commit", "base_version", "build_time")):
         raise ValueError("发布身份必须是包含完整字符串字段的 JSON 对象")
+    if data["channel"] not in ("ci", "stable"):
+        raise ValueError("仅允许准备和发布 CI/Stable 产物，Beta 已退役")
     validate_commit(data["channel"], data["version"], data["commit"])
     base = data["base_version"]
     if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", base):

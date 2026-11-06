@@ -194,9 +194,9 @@ class PublishingTests(unittest.TestCase):
         self.assertEqual(release.digest(binary_tar), before)
         self.assertEqual(validate_manifest(manifest, BASE + "/mskdsp-platform/stable/latest.json"), entry)
 
-    # 三通道清单均兼容更新器，构建编号与重跑编号按数字排序。
-    def test_ci_beta_format_and_runtime_compatibility(self):
-        for channel in ("ci", "beta"):
+    # CI 清单兼容更新器，构建编号与重跑编号按数字排序。
+    def test_ci_format_and_runtime_compatibility(self):
+        for channel in ("ci",):
             self.metadata = build_metadata(channel, "0.0.1", SHA, "2026-10-13T08:00:00Z", "42.10", "owner/repo")
             self.meta_path.write_text(json.dumps(self.metadata), encoding="utf-8")
             self.write_image()
@@ -204,6 +204,25 @@ class PublishingTests(unittest.TestCase):
             validate_manifest(manifest, BASE + f"/mskdsp-platform/{channel}/latest.json")
             self.assertIn(".42.10-sha.0123456/linux-amd64/", manifest["platforms"]["linux-amd64"]["binary_url"])
             self.assertGreater(version_order(channel, manifest["version"]), version_order(channel, manifest["version"].replace(".42.10+", ".42.2+")))
+
+    # 旧 Beta 身份即使格式合法也不能重新准备或发布到远端。
+    def test_beta_metadata_is_rejected_before_asset_or_network_work(self):
+        legacy = build_metadata("ci", "0.0.1", SHA, "2026-10-13T08:00:00Z", "42.1", "owner/repo")
+        legacy = {key: value.replace("ci", "beta") if isinstance(value, str) else value for key, value in legacy.items()}
+        self.meta_path.write_text(json.dumps(legacy), encoding="utf-8")
+        with patch.object(release, "inspect_archive") as inspect, patch.object(release, "upload") as upload:
+            with self.assertRaisesRegex(ValueError, "Beta"):
+                self.prepare()
+            inspect.assert_not_called()
+            upload.assert_not_called()
+        self.output.mkdir()
+        (self.output / "release.json").write_text(json.dumps({**legacy, "schema_version": 1,
+            "project": "mskdsp-platform", "platforms": {"linux-amd64": {"image": legacy["image"]}}}), encoding="utf-8")
+        with patch.dict(os.environ, SECRETS), patch.object(release, "get_json") as fetch, patch.object(release, "upload") as upload:
+            with self.assertRaisesRegex(ValueError, "Beta"):
+                self.publish()
+            fetch.assert_not_called()
+            upload.assert_not_called()
 
     # 程序身份不匹配时不得写入交付目录。
     def test_wrong_binary_identity_is_rejected(self):

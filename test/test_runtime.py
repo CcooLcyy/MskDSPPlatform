@@ -76,6 +76,22 @@ class ManagerTests(unittest.TestCase):
         platform.start()
         self.addCleanup(platform.stop)
 
+    # 旧 Beta 更新源禁用后不发起网络检查，当前历史版本仍可显示。
+    def test_beta_remote_source_is_disabled_without_network_access(self):
+        self.config.write_text(json.dumps({"manifest_url": "https://updates.example/platform/beta/latest.json"}))
+        self.identity.update(channel="beta", version="0.0.1-beta.20261013t080000.12.1+sha.abcdef1",
+                             commit="abcdef1" + "0" * 33, build_time="2026-10-13T08:00:00Z")
+        manager = runtime.Manager(self.folder / "legacy-runtime", self.config,
+                                  config=self.platform_config, seed=self.folder / "seed")
+        self.addCleanup(manager.close)
+        self.assertEqual(manager.source_url, "")
+        self.assertEqual(manager.status()["channel"], "beta")
+        self.assertIn("Beta", manager.status()["message"])
+        with mock.patch.object(manager.transport, "fetch_manifest") as fetch:
+            with self.assertRaises(runtime.common.UpdateError):
+                manager.begin("check")
+            fetch.assert_not_called()
+
     def http_server(self, handler, manager=None):
         server = (runtime.RuntimeServer(("127.0.0.1", 0), manager) if manager
                   else ThreadingHTTPServer(("127.0.0.1", 0), handler))

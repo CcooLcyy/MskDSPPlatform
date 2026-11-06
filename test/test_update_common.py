@@ -24,6 +24,13 @@ def manifest(channel="ci", version=None):
 
 
 class CommonTests(unittest.TestCase):
+    # 历史 Beta 版本仍可读，但不能把旧通道清单作为新更新候选。
+    def test_legacy_beta_identity_remains_readable_but_update_manifest_is_rejected(self):
+        version = "0.0.1-beta.20261013t080000.12.1+sha.abcdef1"
+        common.validate_commit("beta", version, "abcdef1" + "0" * 33)
+        with self.assertRaises(common.UpdateError):
+            common.validate_manifest(manifest("beta", version), "https://updates.example/platform/beta/latest.json")
+
     def test_download_checksum_size_and_redirect_boundary(self):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
