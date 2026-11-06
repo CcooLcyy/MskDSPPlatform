@@ -6,7 +6,7 @@ GitLab 完成构建、测试和打包后只向平台上传程序更新包；平�
 
 ## 数据及接口契约
 
-复用 SoftwarePublishService 的 CreateUpload → GetUpload/UploadPackage → CompleteUpload，不调用 PublishRelease。产品为 mskdsp-platform，架构为 linux-amd64，channel 为 ci，版本沿用现有 0.0.1-ci.<UTC时间>.<流水线>.<作业>+sha.<短SHA> 规则；source_ref 为 main，source_sha 为完整小写 SHA，build_time 为带时区的构建时间。
+复用 SoftwarePublishService 的 CreateUpload → GetUpload/UploadPackage → CompleteUpload，不调用 PublishRelease。产品为 mskdsp-platform，架构为 linux-amd64，channel 为 ci，版本沿用现有 0.0.1-ci.<北京时间>.<流水线>.<作业>+sha.<短SHA> 规则；source_ref 为 main，source_sha 为完整小写 SHA，build_time 为带时区的构建时间。
 
 PackageMetadata 在现有字段之后兼容增加 build_time=14、channel=15；Rust JSON 字段缺省为空，保留旧包读取兼容。程序包使用现有单根 mskdsp-platform 文件的 binary.tar.gz，size/sha256 为压缩包大小和摘要。上传完整性确认后保存到 software/packages/mskdsp-platform/<版本>/linux-amd64/<文件名>，SQLite 保存元数据；不能将平台包发布到上下位机公共更新目录。
 
@@ -79,3 +79,5 @@ Python 常驻管理进程新增平台本地软件仓库来源，updater.json 为
 启动配置已校准：.env 固定当前容器使用的不可变镜像 ID，种子程序为 fd9dd81；deployment.json 分别记录基础镜像、种子身份、实际运行身份及回退身份，避免将程序升级误认为镜像替换。部署记录为检查时快照，后续程序升级后的实时身份仍以 runtime/state.json 和版本接口为准。旧启动配置及说明文件备份为 /home/daniel/mskplt-backups/20261018T141546Z-startup-cleanup.tar.gz，已核对归档内容；线上容器 ID、重启次数、运行身份及认证/更新配置均保持不变。
 
 清理后的 Linux Python 完整回归共 166 项全部通过；旧发布入口的 3 项测试替换为当前入口的 2 项测试，其他归档身份、链接、whiteout、层摘要及离线包篡改保护继续保留。新流水线仍执行 Rust 检查和完整 Python 回归，并只上传候选包，不触发线上安装。
+
+CI 版本及产物名称中的紧凑时间使用北京时间（UTC+8）；`build_time` 仍保留 UTC `Z` 格式。上传与发布校验兼容历史 UTC 编号，历史产物不改名。运行中的平台须升级到支持北京时间编号的版本后，才能接收新包；本次不部署。

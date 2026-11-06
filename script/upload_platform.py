@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from script import platform_grpc_client as client
-from script.release import sha256_file
+from script.release import BEIJING, sha256_file
 from script.update_common import validate_commit
 from datetime import datetime, timezone
 
@@ -33,8 +33,8 @@ def package_metadata(data: dict, archive: Path) -> dict:
     moment = datetime.fromisoformat(data["build_time"].replace("Z", "+00:00"))
     if moment.tzinfo is None:
         raise UploadError("构建时间必须包含时区")
-    stamp = moment.astimezone(timezone.utc).strftime("%Y%m%dt%H%M%S")
-    if f"-ci.{stamp}." not in data["version"]:
+    stamps = [moment.astimezone(zone).strftime("%Y%m%dt%H%M%S") for zone in (BEIJING, timezone.utc)]
+    if not any(f"-ci.{stamp}." in data["version"] for stamp in stamps):
         raise UploadError("构建时间与版本不一致")
     source = urlsplit(data["source"])
     if source.scheme not in ("http", "https") or not source.hostname or source.username or source.password or source.query or source.fragment:

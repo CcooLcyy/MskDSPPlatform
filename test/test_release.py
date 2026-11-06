@@ -30,9 +30,17 @@ class MetadataTests(unittest.TestCase):
         for channel in ("ci",):
             with self.subTest(channel=channel):
                 data = build_metadata(channel, "0.0.1", SHA, TIME, "42.1", "CcooLcyy/MskDSPPlatform")
-                self.assertEqual(data["version"], f"0.0.1-{channel}.20261013t080000.42.1+sha.0123456")
+                self.assertEqual(data["version"], f"0.0.1-{channel}.20261013t160000.42.1+sha.0123456")
                 self.assertNotIn("+", data["image_tag"])
                 self.assertEqual(data["release_tag"], f"{channel}-latest")
+
+    # 北京时间跨年生成版本，原始构建时间仍保持明确的 UTC 身份。
+    def test_beijing_midnight_and_offset_equivalence(self):
+        utc = build_metadata("ci", "0.0.1", SHA, "2026-12-31T16:00:00Z", "42.1", "owner/repo")
+        local = build_metadata("ci", "0.0.1", SHA, "2027-01-01T00:00:00+08:00", "42.1", "owner/repo")
+        self.assertEqual(utc, local)
+        self.assertIn("20270101t000000", utc["version"])
+        self.assertEqual(utc["build_time"], "2026-12-31T16:00:00Z")
 
     # 确认重跑编号会生成不同的非正式版本，避免覆盖唯一版本镜像。
     def test_rerun_has_distinct_identity(self):

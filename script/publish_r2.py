@@ -22,7 +22,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from script.release import _write_verified_bundle, inspect_archive
+from script.release import BEIJING, _write_verified_bundle, inspect_archive
 from script.update_common import validate_commit, version_order
 
 PROJECT = "mskdsp-platform"
@@ -92,8 +92,8 @@ def validate_metadata(data: dict) -> str:
     except ValueError as error:
         raise ValueError("构建时间必须是包含时区的 ISO8601 时间") from error
     if data["channel"] != "stable":
-        stamp = moment.astimezone(timezone.utc).strftime("%Y%m%dt%H%M%S")
-        if not data["version"].startswith(f"{base}-{data['channel']}.{stamp}."):
+        stamps = [moment.astimezone(zone).strftime("%Y%m%dt%H%M%S") for zone in (BEIJING, timezone.utc)]
+        if not any(data["version"].startswith(f"{base}-{data['channel']}.{stamp}.") for stamp in stamps):
             raise ValueError("发布版本与构建时间不一致")
     tag = data["version"].replace("+", "-")
     if data.get("image_tag", tag) != tag or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag):

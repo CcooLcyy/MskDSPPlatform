@@ -40,6 +40,20 @@ class UploadTests(unittest.TestCase):
                 with self.subTest(changes=changes), self.assertRaises(ValueError):
                     upload.package_metadata(data | changes, binary)
 
+    # 新北京时间及历史 UTC 编号都必须与同一构建瞬间匹配，差一秒仍拒绝。
+    def test_beijing_and_legacy_utc_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "binary.tar.gz"
+            binary.write_bytes(b"archive")
+            data = build_metadata("ci", "0.0.1", "a" * 40,
+                                  "2026-12-31T16:00:00Z", "6.98", "owner/repo")
+            data.update(ref="main", source="https://gitlab.test/platform")
+            upload.package_metadata(data, binary)
+            legacy = data | {"version": data["version"].replace("20270101t000000", "20261231t160000")}
+            upload.package_metadata(legacy, binary)
+            with self.assertRaises(ValueError):
+                upload.package_metadata(data | {"build_time": "2026-12-31T16:00:01Z"}, binary)
+
     def test_plaintext_is_explicit_and_restricted_to_private_addresses(self):
         for endpoint in ("example.com:50000", "8.8.8.8:50000", "http://172.17.0.1:50000", "user:secret@127.0.0.1:1"):
             with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):

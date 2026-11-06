@@ -205,6 +205,16 @@ class PublishingTests(unittest.TestCase):
             self.assertIn(".42.10-sha.0123456/linux-amd64/", manifest["platforms"]["linux-amd64"]["binary_url"])
             self.assertGreater(version_order(channel, manifest["version"]), version_order(channel, manifest["version"].replace(".42.10+", ".42.2+")))
 
+    # 发布校验兼容历史 UTC 编号，但仍拒绝与构建瞬间不符的版本。
+    def test_legacy_utc_version_identity(self):
+        data = build_metadata("ci", "0.0.1", SHA, "2026-10-13T08:00:00Z", "42.1", "owner/repo")
+        release.validate_metadata(data)
+        legacy = {key: value.replace("20261013t160000", "20261013t080000")
+                  if isinstance(value, str) else value for key, value in data.items()}
+        release.validate_metadata(legacy)
+        with self.assertRaises(ValueError):
+            release.validate_metadata(data | {"build_time": "2026-10-13T08:00:01Z"})
+
     # 旧 Beta 身份即使格式合法也不能重新准备或发布到远端。
     def test_beta_metadata_is_rejected_before_asset_or_network_work(self):
         legacy = build_metadata("ci", "0.0.1", SHA, "2026-10-13T08:00:00Z", "42.1", "owner/repo")

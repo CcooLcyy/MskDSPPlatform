@@ -97,6 +97,18 @@ mod tests {
         assert_eq!(store.get_upload(&corrupt.id).await.unwrap().state, "failed");
         assert_eq!(store.list_packages().await.unwrap().len(), 1);
     }
+    // 北京时间版本与历史 UTC 版本共存，跨年仍校验同一构建瞬间。
+    #[test]
+    fn platform_ci_identity_accepts_beijing_and_legacy_utc_versions() {
+        let mut m = platform_metadata(b"abc");
+        m.build_time = "2026-12-31T16:00:00Z".into();
+        m.version = "0.0.1-ci.20270101t000000.6.98+sha.aaaaaaa".into();
+        platform_ci_identity(&m).unwrap();
+        m.version = "0.0.1-ci.20261231t160000.6.98+sha.aaaaaaa".into();
+        platform_ci_identity(&m).unwrap();
+        m.version = "0.0.1-ci.20270101t000001.6.98+sha.aaaaaaa".into();
+        assert!(platform_ci_identity(&m).is_err());
+    }
     // 拒绝非 CI/非 main、错时区或时间身份、短提交，以及超过平台独立限额的包。
     #[test]
     fn platform_ci_metadata_requires_complete_matching_build_identity() {
@@ -704,7 +716,7 @@ fn channel_valid(channel: &str) -> Result<(), StoreError> {
 pub(crate) fn platform_ci_identity(m: &PackageMetadata) -> Result<(), StoreError> {
     let invalid = || {
         StoreError::Invalid(
-            "平台包必须为 main 的 linux-amd64 CI 构建，且版本、完整提交和 UTC 构建时间一致".into(),
+            "平台包必须为 main 的 linux-amd64 CI 构建，且版本、完整提交和构建时间一致（兼容历史 UTC 编号）".into(),
         )
     };
     if m.product != "mskdsp-platform"
@@ -726,10 +738,15 @@ pub(crate) fn platform_ci_identity(m: &PackageMetadata) -> Result<(), StoreError
     }
     let version = semver::Version::parse(&m.version).map_err(|_| invalid())?;
     let pre = version.pre.as_str().split('.').collect::<Vec<_>>();
-    let stamp = moment.format("%Y%m%dt%H%M%S").to_string();
+    let stamp = moment
+        .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+        .format("%Y%m%dt%H%M%S")
+        .to_string();
+    // 新编号使用北京时间，历史 UTC 编号仍允许上传和读取。
+    let legacy_stamp = moment.format("%Y%m%dt%H%M%S").to_string();
     if pre.len() != 4
         || pre[0] != "ci"
-        || pre[1] != stamp
+        || (pre[1] != stamp && pre[1] != legacy_stamp)
         || !pre[2..]
             .iter()
             .all(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))

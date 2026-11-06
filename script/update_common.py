@@ -41,7 +41,7 @@ def version_order(channel, version):
             try:
                 datetime.strptime(found[4], "%Y%m%dt%H%M%S")
             except ValueError as exc:
-                raise UpdateError("版本包含无效 UTC 时间") from exc
+                raise UpdateError("版本包含无效日期时间") from exc
             return tuple(map(int, found.groups()[:3])) + (int(found[4].replace("t", "")), int(found[5]), int(found[6]))
     raise UpdateError("版本格式与通道不一致")
 

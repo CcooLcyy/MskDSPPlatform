@@ -15,8 +15,10 @@ import tarfile
 import tempfile
 import tomllib
 from urllib.parse import urlsplit
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+BEIJING = timezone(timedelta(hours=8))
 
 VERSION_RE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -61,7 +63,7 @@ def build_metadata(channel: str, base_version: str, commit: str, timestamp: str,
         raise ValueError("构建时间必须包含时区")
     moment = moment.astimezone(timezone.utc)
     published_at = moment.isoformat(timespec="seconds").replace("+00:00", "Z")
-    stamp = moment.strftime("%Y%m%dt%H%M%S")
+    stamp = moment.astimezone(BEIJING).strftime("%Y%m%dt%H%M%S")
     version = base_version if channel == "stable" else f"{base_version}-{channel}.{stamp}.{build_id}+sha.{commit[:7]}"
     image_tag = version.replace("+", "-")
     image_repository = "ghcr.io/" + repository.split("/")[0].lower() + "/mskdsp-platform"

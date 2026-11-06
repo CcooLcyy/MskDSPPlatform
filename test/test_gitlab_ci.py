@@ -34,7 +34,7 @@ class GitlabMetadataTests(unittest.TestCase):
 
     def test_main_identity_uses_gitlab_source_and_explicit_image_default(self):
         data = self.metadata()
-        self.assertEqual(data["version"], "0.0.1-ci.20261016t080000.42.101+sha.0123456")
+        self.assertEqual(data["version"], "0.0.1-ci.20261016t160000.42.101+sha.0123456")
         self.assertEqual(data["source"], ENV["CI_PROJECT_URL"])
         self.assertEqual(data["image_repository"], "ghcr.io/ccoolcyy/mskdsp-platform")
         self.assertEqual(data["ref"], "main")
