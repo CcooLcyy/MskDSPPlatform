@@ -1,0 +1,63 @@
+name: 清理上下位机旧 R2 前缀
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: '固定清理 mskdsp-update 内三个旧上下位机前缀；不删除桶或其他前缀'
+        type: choice
+        required: true
+        default: inspect
+        options: [inspect, delete]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: retire-legacy-upper-lower-r2
+  cancel-in-progress: false
+
+jobs:
+  retire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 验证前缀边界、分页、并发变化和失败记录
+        run: python3 -m unittest discover -s test -p test_retire_legacy_r2.py -v
+      - name: 冻结完整存储桶清单
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: python3 script/retire_legacy_r2.py snapshot
+      - name: 保存删除前清单
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-r2-before-${{ github.run_id }}
+          path: package/r2-retirement/
+          if-no-files-found: error
+          retention-days: 90
+      - name: 仅删除三个已授权前缀并重新列举验证
+        if: inputs.action == 'delete'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: python3 script/retire_legacy_r2.py apply
+      - name: 始终保存清理结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legacy-r2-result-${{ github.run_id }}
+          path: package/r2-retirement/
+          if-no-files-found: warn
+          retention-days: 90
