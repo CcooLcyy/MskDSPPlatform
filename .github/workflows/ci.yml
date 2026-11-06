@@ -36,8 +36,6 @@ jobs:
           python -m pip install grpcio grpcio-tools
       - uses: Swatinem/rust-cache@v2
       - name: 发布工具测试与 Rust 检查
-        env:
-          PLATFORM_PROTO_READ_TOKEN: ${{ secrets.PLATFORM_PROTO_READ_TOKEN }}
         run: bash script/verify_ci.sh
       - name: 保留检查及平台进程日志
         if: always()

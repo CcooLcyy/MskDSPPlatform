@@ -43,8 +43,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: 初始化平台协议子模块
-        env:
-          PLATFORM_PROTO_READ_TOKEN: ${{ secrets.PLATFORM_PROTO_READ_TOKEN }}
         run: python script/init_platform_proto.py
       - name: 校验通道来源并生成版本
         id: metadata

@@ -1,4 +1,4 @@
-"""平台构建必须固定引用共享协议，私有认证不能进入命令参数或磁盘。"""
+"""平台构建固定引用公开共享协议，不向 GitHub 传递旧读取凭据。"""
 import importlib.util
 import os
 from pathlib import Path
@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PlatformProtoTests(unittest.TestCase):
-    # 初始化显式使用 gitlink 固定提交，并将令牌限制在 Git 子进程环境。
+    # 先同步旧工作副本地址，再按 gitlink 检出；旧读取令牌不能传给 GitHub。
     def test_submodule_initialization_keeps_credentials_out_of_arguments(self):
         spec = importlib.util.spec_from_file_location("init_platform_proto", ROOT / "script/init_platform_proto.py")
         module = importlib.util.module_from_spec(spec)
@@ -19,18 +19,44 @@ class PlatformProtoTests(unittest.TestCase):
             root = Path(directory)
             protocol = root / "platform-proto/platform/v1/software.proto"
 
+            commands = []
+
             def run(command, **options):
-                self.assertEqual(command, ["git", "submodule", "update", "--init", "--recursive", "--", "platform-proto"])
+                commands.append(command)
                 self.assertNotIn("secret-value", " ".join(command))
                 self.assertEqual(options["env"]["GIT_TERMINAL_PROMPT"], "0")
                 self.assertNotIn("PLATFORM_PROTO_READ_TOKEN", options["env"])
-                self.assertTrue(options["env"]["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic "))
+                self.assertNotIn("GIT_CONFIG_VALUE_0", options["env"])
+                self.assertTrue(options["check"])
+                if command[2] == "sync":
+                    return
                 protocol.parent.mkdir(parents=True)
                 protocol.write_text('syntax = "proto3";', encoding="utf-8")
                 protocol.with_name("templates.proto").write_text('syntax = "proto3";', encoding="utf-8")
 
-            with patch.dict(os.environ, {"PLATFORM_PROTO_READ_TOKEN": "secret-value"}), patch.object(module.subprocess, "run", side_effect=run):
+            with patch.dict(os.environ, {"PLATFORM_PROTO_READ_TOKEN": "secret-value"}, clear=True), patch.object(module.subprocess, "run", side_effect=run):
                 module.initialize(root)
+            self.assertEqual(commands, [
+                ["git", "submodule", "sync", "--", "platform-proto"],
+                ["git", "submodule", "update", "--init", "--recursive", "--", "platform-proto"],
+            ])
+
+    # 公开仓库不配置令牌也必须能初始化，旧令牌不再是 CI 前置条件。
+    def test_public_submodule_initialization_without_token(self):
+        spec = importlib.util.spec_from_file_location("init_platform_proto", ROOT / "script/init_platform_proto.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protocol = root / "platform-proto/platform/v1/software.proto"
+            protocol.parent.mkdir(parents=True)
+            protocol.write_text('syntax = "proto3";', encoding="utf-8")
+            protocol.with_name("templates.proto").write_text('syntax = "proto3";', encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=True), patch.object(module.subprocess, "run") as run:
+                module.initialize(root)
+            self.assertEqual(run.call_count, 2)
+            for call in run.call_args_list:
+                self.assertNotIn("GIT_CONFIG_COUNT", call.kwargs["env"])
 
     # Git 初始化返回成功但固定提交尚无协议文件时必须拒绝继续构建。
     def test_old_or_incomplete_protocol_checkout_is_rejected(self):

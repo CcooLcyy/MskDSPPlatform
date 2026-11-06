@@ -6,8 +6,8 @@ MskDSP 的服务端平台，面向上位机、下位机和后续网页管理端�
 原 GitLab 平台项目归档并停用 CI。GitHub Actions 在 `main` 推送、PR 和手动运行时执行检查；
 正式 `v*` 标签保留 Stable 发布入口，不提供 Beta 新发布入口。
 本轮仅切换源码管理和检查入口：原 GitLab 镜像构建、打包及平台上传链路停用，
-GitHub CI 不生成自动更新候选包。协议子模块仍在内网 GitLab，托管 runner 不可达，
-且尚未配置 `PLATFORM_PROTO_READ_TOKEN`；协议依赖未迁移，检查结果须以实际 Actions 运行为准。
+GitHub CI 不生成自动更新候选包。协议子模块已迁至 GitHub 公开仓库，无需协议读取令牌；
+检查结果须以实际 Actions 运行为准。
 
 ## 规划范围
 
@@ -33,7 +33,8 @@ GitHub CI 不生成自动更新候选包。协议子模块仍在内网 GitLab，
 git submodule update --init --recursive
 ```
 
-子模块来源为内网 GitLab 的 `mskdsp/mskdspplatformproto`，需要相应的仓库读取权限。
+子模块来源为 [GitHub 公开协议仓库](https://github.com/CcooLcyy/MskDSPPlatformProto)，无需读取令牌。
+已有工作副本迁移地址后先运行 `git submodule sync -- platform-proto`；CI 初始化脚本会自动同步地址。
 父仓库固定引用具体提交，初始化时不会自动跟随协议仓库的最新版本。
 软件仓库发布和查询接口由 `platform-proto/platform/v1/software.proto` 提供，
 现有 Agent 协议仍由 `proto/platform/v1/agent.proto` 提供。

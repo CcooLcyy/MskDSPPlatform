@@ -9,9 +9,9 @@
 
 本轮没有迁移原 GitLab 镜像构建、程序包打包和 gRPC 上传链路；GitHub CI 仅检查，
 不会生产平台自动更新候选包。历史入库包及平台更新能力保留。
-`platform-proto` 仍来自内网 GitLab，GitHub 托管 runner 无法直接访问，且仓库尚缺
-`PLATFORM_PROTO_READ_TOKEN`。本轮未迁移协议依赖；必须解决网络和只读凭据前置条件后，
-才能完成 GitHub 检查或 Stable 构建，不能将入口切换视为验证通过。
+`platform-proto` 已迁至 GitHub 公开仓库，CI 和 Stable 构建按父仓库固定提交匿名读取，
+无需 `PLATFORM_PROTO_READ_TOKEN` 或内网 GitLab 连通性。迁移本身不代表检查通过，
+检查结果以对应 GitHub Actions 运行为准。
 
 ## 平台自身 CI 更新的历史链路
 
@@ -49,8 +49,8 @@ PR 只检查，不发布。版本来源、配置、打包范围见 [发布方案
 
 ## GitHub 与 R2 配置
 
-平台构建需要固定版本的 `platform-proto` 私有协议子模块。构建机须能访问内网 GitLab；原 GitLab 作业使用 `CI_JOB_TOKEN` 和协议项目 allowlist，GitHub 工作流需要只读 Secret `PLATFORM_PROTO_READ_TOKEN`，本轮切换时尚未配置。检出步骤见 `script/init_platform_proto.py`。
-GitHub 托管 runner 默认不具备该内网连通能力，发布前须先准备可达的构建环境。平台自身 CI 包使用平台软件仓库，Stable 仍支持 R2 远程更新；产品和权限边界见 [软件仓库](docs/软件仓库.md)。
+平台构建需要固定版本的 `platform-proto` 公开协议子模块，来源为 `https://github.com/CcooLcyy/MskDSPPlatformProto.git`。构建机须能访问 GitHub，无需协议读取 Secret；检出脚本 `script/init_platform_proto.py` 会先同步子模块地址，再检出固定提交。
+平台自身 CI 包使用平台软件仓库，Stable 仍支持 R2 远程更新；产品和权限边界见 [软件仓库](docs/软件仓库.md)。
 
 仓库 Actions Secrets：`R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`。
 仅发布作业使用这些凭据，运行设备只访问公开 HTTPS 地址。
