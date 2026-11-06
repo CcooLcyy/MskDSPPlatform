@@ -3,8 +3,7 @@ include:
 
 workflow:
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE =~ /^(push|web)$/'
+    # 平台主仓库迁往 GitHub，旧作业定义仅作历史参考。
     - when: never
 
 stages: [verify, build, package, publish]

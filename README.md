@@ -2,6 +2,13 @@
 
 MskDSP 的服务端平台，面向上位机、下位机和后续网页管理端提供统一的服务能力。
 
+自 2026-11-06 起，平台主仓库以 [GitHub](https://github.com/CcooLcyy/MskDSPPlatform) 为唯一 `origin`，
+原 GitLab 平台项目归档并停用 CI。GitHub Actions 在 `main` 推送、PR 和手动运行时执行检查；
+正式 `v*` 标签保留 Stable 发布入口，不提供 Beta 新发布入口。
+本轮仅切换源码管理和检查入口：原 GitLab 镜像构建、打包及平台上传链路停用，
+GitHub CI 不生成自动更新候选包。协议子模块仍在内网 GitLab，托管 runner 不可达，
+且尚未配置 `PLATFORM_PROTO_READ_TOKEN`；协议依赖未迁移，检查结果须以实际 Actions 运行为准。
+
 ## 规划范围
 
 - 现场和设备管理
@@ -47,9 +54,9 @@ git submodule update --init --recursive
 新增 [上下位机软件仓库](docs/软件仓库.md)：发布客户端可通过独立认证的 gRPC 服务上传、校验入库并发布安装包。
 管理员在 `/software` 查看版本、发布与撤回；公开 HTTP 提供上下位机兼容清单和流式下载。
 安装包及版本记录保存在业务数据目录的 `software/`，不会因平台程序更新或重建容器而清空。
-上下位机发布客户端与上位机查询逻辑仍需独立接入；平台自身 CI 更新采用独立的只上传流程，由更新管理进程定时检查并安装。
+上下位机发布客户端与上位机查询逻辑仍需独立接入；平台自身更新管理进程可定时检查并安装已入库候选包，当前 CI 不再自动生产候选包。
 
-平台自身 [CI 更新](docs/平台自身CI更新.md)：GitLab 构建测试后通过 gRPC 上传完整程序包，
+平台自身 [CI 更新](docs/平台自身CI更新.md) 的原 GitLab 上传链路已停用，历史入库包和更新能力保留。
 平台校验入库并保存历史版本；更新管理进程在平台就绪后每 60 秒检查一次，发现新版本自动安装，
 管理员仍可在 `/update` 手动检查、安装或回退。
 CI 上传动作本身不发布、不安装、不重启；自动安装由独立的定时任务发起。
@@ -61,9 +68,10 @@ CI 上传动作本身不发布、不安装、不重启；自动安装由独立�
 
 ## Docker 发布
 
-CI 通过 GitLab 生成 Linux amd64 镜像和程序包并上传平台；已有 Stable 发布保留，不在此次接入范围。
-推送 main 发布 CI，推送正式版本标签发布 Stable；Beta 新发布入口已退役。
-首轮只发布 CI。部署和版本晋升步骤见 [RELEASING.md](RELEASING.md)，
+GitHub CI 复用 `script/verify_ci.sh`，配置 Node、protoc 和 Python gRPC 依赖，先构建调试程序，
+再执行 Rust 与 Python/Node 测试，成功或失败均保留检查日志。
+推送 `main` 仅触发检查；推送正式版本标签触发 Stable 发布，协议访问前置条件见文首说明。
+部署和版本晋升步骤见 [RELEASING.md](RELEASING.md)，
 发布范围与验收要求见 [发布方案](docs/发布方案.md)。
 
 默认用 `docker run` 部署。使用 `root` 管理员登录后，首页默认显示点表工作台；从“平台维护”导航进入 `/update`，可查看自动更新策略及手动检查、安装更新，

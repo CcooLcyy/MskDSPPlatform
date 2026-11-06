@@ -23,7 +23,7 @@ env:
 
 jobs:
   publish:
-    # CI 程序包由 GitLab 上传平台，远程入口仅允许 Stable。
+    # 本工作流仅发布 Stable；CI 检查不调用远程发布入口。
     if: inputs.channel == 'stable'
     env:
       PLATFORM_SOURCE_READ_TOKEN: ${{ github.token }}

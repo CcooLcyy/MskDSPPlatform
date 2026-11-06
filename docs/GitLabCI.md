@@ -1,6 +1,13 @@
 # GitLab CI
 
-入口为 `.gitlab-ci.yml`，作业定义放在 `.gitlab/ci/ci.yml`。推送 `main` 或在
+自 2026-11-06 起，本平台主仓库改由 GitHub 管理，原 GitLab 平台项目归档并停用 CI。
+本文保留原流水线、环境配置和验收记录，以下内容不再是当前操作入口。
+GitHub 在 `main` 推送、PR 或手动运行时执行检查，保留 Stable 正式标签发布，无 Beta 新发布入口；
+当前仅迁移检查配置，原镜像构建、程序包打包及平台上传链路停用，不生产自动更新候选包。
+协议子模块仍在内网 GitLab，GitHub 托管 runner 不可达且尚缺 `PLATFORM_PROTO_READ_TOKEN`，
+本轮未迁移协议依赖。当前入口、检查门禁和前置条件见 [发布说明](../RELEASING.md)。
+
+原入口为 `.gitlab-ci.yml`，作业定义放在 `.gitlab/ci/ci.yml`。推送 `main` 或在
 `main` 手动运行流水线，执行检查、构建、打包及平台 CI 包入库；合并请求仅执行检查。
 发布版本、镜像标签、离线 ZIP 和程序热更新包沿用现有发布工具的格式。
 
