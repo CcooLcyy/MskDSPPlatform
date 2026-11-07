@@ -54,11 +54,12 @@ PR 只检查，不发布。版本来源、配置、打包范围见 [发布方案
 平台自身 CI 包使用平台软件仓库，Stable 仍支持 R2 远程更新；产品和权限边界见 [软件仓库](docs/软件仓库.md)。
 
 平台入库默认关闭。启用时创建 GitHub Environment `platform-ci`，部署分支限制为 `main`，
-配置环境变量 `PLATFORM_GRPC_ENDPOINT`（托管 runner 可达的 TLS gRPC `host:port`）
+配置环境变量 `PLATFORM_GRPC_ENDPOINT`（托管 runner 可达的 gRPC `host:port`）
 和环境 Secret `PLATFORM_UPLOAD_TOKEN`（平台自身 CI 上传专用令牌），再将仓库
 Actions Variable `PLATFORM_CI_UPLOAD_ENABLED` 设为 `true`。
-当前公开明文 gRPC 端口无法作为 TLS 上传入口。平台启用本地 CI 自动更新后，
-程序包入库将使其进入下一轮更新检查。
+当前平台使用 `60.208.15.90:50000`，环境变量 `PLATFORM_GRPC_PLAINTEXT` 设为 `1`。
+该公网明文配置只允许此地址和端口，上传令牌仍参与认证。
+平台启用本地 CI 自动更新后，程序包入库将使其进入下一轮更新检查。
 
 仓库 Actions Secrets：`R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`。
 仅发布作业使用这些凭据，运行设备只访问公开 HTTPS 地址。

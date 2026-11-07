@@ -22,6 +22,9 @@ from script.update_common import validate_commit
 from datetime import datetime, timezone
 
 
+PUBLIC_CI_ENDPOINT = "60.208.15.90:50000"
+
+
 class UploadError(ValueError):
     """只包含可安全输出的诊断，不传播 RPC 详细信息。"""
 
@@ -60,14 +63,14 @@ def validate_endpoint(endpoint: str, *, plaintext: bool) -> str:
             or parsed.path or parsed.query or parsed.fragment or "\\" in endpoint
             or any(char.isspace() or ord(char) < 32 for char in endpoint)):
         raise UploadError("gRPC 地址必须为无凭据的 host:port")
-    if plaintext:
+    if plaintext and endpoint != PUBLIC_CI_ENDPOINT:
         try:
             address = ipaddress.ip_address(parsed.hostname)
         except ValueError:
-            raise UploadError("明文上传只允许显式内网或回环 IP 地址") from None
+            raise UploadError("明文上传只允许内网、回环或指定的平台 CI 入口") from None
         networks = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "::1/128", "fc00::/7")
         if not any(address in ipaddress.ip_network(network) for network in networks):
-            raise UploadError("明文上传只允许显式内网或回环 IP 地址")
+            raise UploadError("明文上传只允许内网、回环或指定的平台 CI 入口")
     return endpoint
 
 

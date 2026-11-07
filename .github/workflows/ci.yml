@@ -141,5 +141,6 @@ jobs:
       - name: 上传并确认平台入库
         env:
           PLATFORM_GRPC_ENDPOINT: ${{ vars.PLATFORM_GRPC_ENDPOINT }}
+          PLATFORM_GRPC_PLAINTEXT: ${{ vars.PLATFORM_GRPC_PLAINTEXT }}
           PLATFORM_UPLOAD_TOKEN: ${{ secrets.PLATFORM_UPLOAD_TOKEN }}
         run: python script/upload_platform.py --metadata package/metadata.json --archive package/binary.tar.gz

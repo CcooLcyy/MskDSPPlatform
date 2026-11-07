@@ -54,11 +54,13 @@ class UploadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 upload.package_metadata(data | {"build_time": "2026-12-31T16:00:01Z"}, binary)
 
-    def test_plaintext_is_explicit_and_restricted_to_private_addresses(self):
-        for endpoint in ("example.com:50000", "8.8.8.8:50000", "http://172.17.0.1:50000", "user:secret@127.0.0.1:1"):
+    def test_plaintext_is_restricted_to_private_addresses_and_platform_ci_endpoint(self):
+        for endpoint in ("example.com:50000", "8.8.8.8:50000", "60.208.15.90:50001",
+                         "http://172.17.0.1:50000", "user:secret@127.0.0.1:1"):
             with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
                 upload.validate_endpoint(endpoint, plaintext=True)
         self.assertEqual(upload.validate_endpoint("172.17.0.1:50000", plaintext=True), "172.17.0.1:50000")
+        self.assertEqual(upload.validate_endpoint("60.208.15.90:50000", plaintext=True), "60.208.15.90:50000")
         self.assertEqual(upload.validate_endpoint("platform.test:443", plaintext=False), "platform.test:443")
 
     def test_cli_has_no_token_argument_and_hides_credentials(self):
