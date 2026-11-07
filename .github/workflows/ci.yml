@@ -45,3 +45,101 @@ jobs:
           path: package/logs/
           if-no-files-found: warn
           retention-days: 14
+
+  build-package:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      upload-artifact-id: ${{ steps.upload-input.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 初始化固定协议
+        run: python script/init_platform_proto.py
+      - name: 冻结 CI 构建身份
+        id: metadata
+        run: python script/github_ci.py metadata --output package/metadata.json --github-output "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: 构建 Linux amd64 离线镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          outputs: type=docker,dest=package/image.tar
+          provenance: false
+          tags: ${{ steps.metadata.outputs.image }}
+          build-args: |
+            VERSION=${{ steps.metadata.outputs.version }}
+            CHANNEL=ci
+            COMMIT=${{ steps.metadata.outputs.commit }}
+            BUILD_TIME=${{ steps.metadata.outputs.build_time }}
+            SOURCE=${{ steps.metadata.outputs.source }}
+          cache-from: type=gha,scope=platform-ci-amd64
+          cache-to: type=gha,mode=max,scope=platform-ci-amd64
+      - name: 校验镜像身份并生成交付包
+        run: |
+          python script/gitlab_package.py prepare-platform --metadata package/metadata.json --image-tar package/image.tar
+          python script/gitlab_package.py offline-platform --metadata package/metadata.json
+          (cd package && sha256sum metadata.json binary.tar.gz > SHA256SUMS)
+      - name: 保留离线部署包
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: release/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: 保留平台入库所需程序包
+        id: upload-input
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-upload-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            package/metadata.json
+            package/binary.tar.gz
+            package/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  upload-platform:
+    needs: build-package
+    if: vars.PLATFORM_CI_UPLOAD_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: platform-ci
+    concurrency:
+      group: platform-ci-upload
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 初始化固定协议和上传依赖
+        run: |
+          python script/init_platform_proto.py
+          python -m pip install grpcio grpcio-tools
+      - name: 下载本次构建的程序包
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build-package.outputs.upload-artifact-id }}
+          path: package/
+      - name: 复核程序包摘要和远端 main
+        run: |
+          (cd package && sha256sum --strict -c SHA256SUMS)
+          python script/github_ci.py verify-head --metadata package/metadata.json
+      - name: 上传并确认平台入库
+        env:
+          PLATFORM_GRPC_ENDPOINT: ${{ vars.PLATFORM_GRPC_ENDPOINT }}
+          PLATFORM_UPLOAD_TOKEN: ${{ secrets.PLATFORM_UPLOAD_TOKEN }}
+        run: python script/upload_platform.py --metadata package/metadata.json --archive package/binary.tar.gz

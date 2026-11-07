@@ -17,5 +17,8 @@ platform-proto/.git
 !script/
 !script/runtime.py
 !script/update_common.py
+!script/local_software_source.py
+!script/grpc_network.py
 !deploy/
 !deploy/config.toml
+!deploy/updater.json

@@ -7,8 +7,9 @@
 复用 `script/verify_ci.sh`，配置 Node、protoc、Python gRPC 依赖，先构建调试程序再执行测试，
 检查日志作为产物保留。Stable 正式标签发布入口保留，Beta 新发布入口已退役。
 
-本轮没有迁移原 GitLab 镜像构建、程序包打包和 gRPC 上传链路；GitHub CI 仅检查，
-不会生产平台自动更新候选包。历史入库包及平台更新能力保留。
+推送 `main` 或在 `main` 手动运行 CI 时，检查通过后构建 Linux amd64 镜像和程序包。
+离线 ZIP、二进制包与 SHA256 作为 Actions 产物保留 14 天。
+平台入库作业下载同次构建的程序包，校验摘要并确认构建提交仍为远端 `main` 最新提交。
 `platform-proto` 已迁至 GitHub 公开仓库，CI 和 Stable 构建按父仓库固定提交匿名读取，
 无需 `PLATFORM_PROTO_READ_TOKEN` 或内网 GitLab 连通性。迁移本身不代表检查通过，
 检查结果以对应 GitHub Actions 运行为准。
@@ -32,18 +33,18 @@
 基础版本 `0.0.1`，目标平台 `linux/amd64`。Stable 流程保留，尚未首发。
 
 原 GitLab 构建、测试、离线包和平台上传配置的历史说明见
-[GitLab CI](docs/GitLabCI.md)。当前 GitHub 的 CI 工作流仅做检查；GHCR、GitHub Release
-及 R2 发布保留用于 Stable。历史 CI R2 目录已于 2026-10-18 清空，备份及执行记录见
+[GitLab CI](docs/GitLabCI.md)。GHCR、GitHub Release 及 R2 用于 Stable 发布。
+历史 CI R2 目录已于 2026-10-18 清空，备份及执行记录见
 [R2 历史 CI 清理](docs/R2历史CI清理.md)。
 
 ## 两个发布通道
 
 | 通道 | 触发 | GHCR 标签 | 交付入口 | R2 清单 |
 | --- | --- | --- | --- | --- |
-| CI 检查 | GitHub 推送 main、PR 或手动运行 | 不推送 | 检查日志；不生成更新候选包 | 不更新 |
+| CI | 推送 main 或在 main 手动运行，PR 仅检查 | 不推送 | Actions 产物，启用上传后入库 | 不更新 |
 | Stable | 推送 v0.0.1，或手动指定已存在标签 | stable、latest | v0.0.1 正式发布 | mskdsp-platform/stable/latest.json |
 
-镜像仓库 `ghcr.io/ccoolcyy/mskdsp-platform`。历史 CI 离线归档使用唯一标签，例如
+镜像仓库 `ghcr.io/ccoolcyy/mskdsp-platform`。CI 离线归档使用唯一标签，例如
 `0.0.1-ci.20261013t080000.42.1-sha.0123456`；程序版本保留 SemVer 中的 `+sha.`。
 PR 只检查，不发布。版本来源、配置、打包范围见 [发布方案](docs/发布方案.md)。
 
@@ -51,6 +52,13 @@ PR 只检查，不发布。版本来源、配置、打包范围见 [发布方案
 
 平台构建需要固定版本的 `platform-proto` 公开协议子模块，来源为 `https://github.com/CcooLcyy/MskDSPPlatformProto.git`。构建机须能访问 GitHub，无需协议读取 Secret；检出脚本 `script/init_platform_proto.py` 会先同步子模块地址，再检出固定提交。
 平台自身 CI 包使用平台软件仓库，Stable 仍支持 R2 远程更新；产品和权限边界见 [软件仓库](docs/软件仓库.md)。
+
+平台入库默认关闭。启用时创建 GitHub Environment `platform-ci`，部署分支限制为 `main`，
+配置环境变量 `PLATFORM_GRPC_ENDPOINT`（托管 runner 可达的 TLS gRPC `host:port`）
+和环境 Secret `PLATFORM_UPLOAD_TOKEN`（平台自身 CI 上传专用令牌），再将仓库
+Actions Variable `PLATFORM_CI_UPLOAD_ENABLED` 设为 `true`。
+当前公开明文 gRPC 端口无法作为 TLS 上传入口。平台启用本地 CI 自动更新后，
+程序包入库将使其进入下一轮更新检查。
 
 仓库 Actions Secrets：`R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`。
 仅发布作业使用这些凭据，运行设备只访问公开 HTTPS 地址。
@@ -70,7 +78,7 @@ GHCR 与 GitHub Release 使用 `GITHUB_TOKEN`；工作流明确授予发布所�
 
 ## 默认部署：docker run
 
-历史 CI 离线包由原 GitLab `offline-bundle` 作业生成，该入口已停用；Stable 从 GitHub Release
+CI 从 GitHub Actions 的 `build-package` 作业下载离线交付产物，Stable 从 GitHub Release
 下载 ZIP、`latest.json` 和 `SHA256SUMS`。校验后解压：
 
 ```bash
@@ -145,7 +153,7 @@ cargo test --locked --all-targets
 docker build --platform linux/amd64 -t mskdsp-platform:dev .
 ```
 
-GitHub CI 配置运行工具测试、Rust 格式检查、编译及测试；当前不执行镜像构建、打包或平台入库。
+GitHub CI 配置运行工具测试、Rust 格式检查、编译及测试。通过检查的 `main` 构建生成离线交付产物。
 容器运行和程序更新恢复烟测不在自动发布流程中；保留 `script/smoke_container.py`
 和 `script/smoke_runtime.py` 供手动验证。
 当前平台已提供管理员登录及 SQLite 点表库；原生 TLS、诊断上传及多用户权限仍待实现。点表旧 JSON 在事务迁移成功后清理；数据库备份、容量及旧程序回滚限制见 [Modbus 点表管理](docs/Modbus点表管理.md)。

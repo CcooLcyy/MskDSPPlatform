@@ -2,7 +2,9 @@
 
 ## 已确认目标与范围
 
-GitLab 完成构建、测试和打包后只向平台上传程序更新包；平台保存历史版本，由 Python 管理进程在平台就绪后每 60 秒检查一次，发现新版本自动安装。CI 上传动作本身不发布、不安装、不重启；安装由独立的定时任务或管理员手动动作发起。此次只实现 CI、Linux amd64；上下位机软件发布语义保持兼容。
+GitHub Actions 在 `main` 检查通过后构建 Linux amd64 镜像并打包，上传启用条件见 [发布说明](../RELEASING.md)。
+平台保存已入库的历史版本，Python 管理进程在平台就绪后每 60 秒检查一次，发现新版本自动安装。
+安装由定时任务或管理员手动发起。
 
 ## 数据及接口契约
 
@@ -10,7 +12,7 @@ GitLab 完成构建、测试和打包后只向平台上传程序更新包；平�
 
 PackageMetadata 在现有字段之后兼容增加 build_time=14、channel=15；Rust JSON 字段缺省为空，保留旧包读取兼容。程序包使用现有单根 mskdsp-platform 文件的 binary.tar.gz，size/sha256 为压缩包大小和摘要。上传完整性确认后保存到 software/packages/mskdsp-platform/<版本>/linux-amd64/<文件名>，SQLite 保存元数据；不能将平台包发布到上下位机公共更新目录。
 
-软件配置增加 ci_upload_token_sha256；CI 专用令牌仅允许上述四个上传 RPC，且只能操作平台自身 CI 包，不能发布、撤回或操作上下位机包。管理员发布令牌保留旧权限。令牌原文仅存受保护的 GitLab CI 变量，平台只保存摘要，不输出到日志或命令参数。
+软件配置增加 ci_upload_token_sha256；CI 专用令牌仅允许上述四个上传 RPC，且只能操作平台自身 CI 包，不能发布、撤回或操作上下位机包。管理员发布令牌保留旧权限。上传令牌配置在 GitHub Environment Secret 中，平台只保存摘要。
 
 ## 平台检查及安装
 
