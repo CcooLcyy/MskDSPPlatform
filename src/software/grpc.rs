@@ -103,14 +103,18 @@ impl PublishGrpcService {
             UploadPermission::TestbenchPublisher if !testbench => Err(Status::permission_denied(
                 "测试上位机发布令牌仅允许操作测试上位机安装包",
             )),
-            UploadPermission::Publisher if testbench => {
-                Err(Status::permission_denied("测试上位机安装包需要独立的发布令牌"))
-            }
+            UploadPermission::Publisher if testbench => Err(Status::permission_denied(
+                "测试上位机安装包需要独立的发布令牌",
+            )),
             _ => Ok(()),
         }
     }
 
-    async fn authorize_release(&self, permission: UploadPermission, id: &str) -> Result<(), Status> {
+    async fn authorize_release(
+        &self,
+        permission: UploadPermission,
+        id: &str,
+    ) -> Result<(), Status> {
         if permission == UploadPermission::PlatformCi {
             return Err(Status::permission_denied(
                 "CI 上传令牌不允许发布或撤回软件版本",
@@ -167,7 +171,8 @@ impl PublishGrpcService {
                     return Err(Status::invalid_argument("同一上传流不能混用上传 ID"));
                 }
             } else {
-                self.authorize_upload(permission, &message.upload_id).await?;
+                self.authorize_upload(permission, &message.upload_id)
+                    .await?;
                 upload_id = Some(message.upload_id.clone());
             }
             progress = Some(
@@ -260,7 +265,8 @@ impl SoftwarePublishService for PublishGrpcService {
     ) -> Result<Response<proto::PublishReleaseResponse>, Status> {
         let permission = self.authenticate(&request).map_err(|failure| *failure)?;
         let message = request.into_inner();
-        self.authorize_release(permission, &message.package_id).await?;
+        self.authorize_release(permission, &message.package_id)
+            .await?;
         self.require_public_base_url().map_err(|failure| *failure)?;
         let package = self
             .store
@@ -278,7 +284,8 @@ impl SoftwarePublishService for PublishGrpcService {
     ) -> Result<Response<proto::WithdrawReleaseResponse>, Status> {
         let permission = self.authenticate(&request).map_err(|failure| *failure)?;
         let message = request.into_inner();
-        self.authorize_release(permission, &message.package_id).await?;
+        self.authorize_release(permission, &message.package_id)
+            .await?;
         let package = self
             .store
             .withdraw(&message.package_id, &message.channel)

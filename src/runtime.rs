@@ -119,7 +119,10 @@ impl PlatformRuntime {
         )
         .with_ci_upload_token(self.config.software.ci_upload_token_sha256.clone())
         .with_testbench_publisher_token(
-            self.config.software.testbench_publisher_token_sha256.clone(),
+            self.config
+                .software
+                .testbench_publisher_token_sha256
+                .clone(),
         );
         let software_catalog = crate::software::grpc::CatalogGrpcService::new(software.clone());
 

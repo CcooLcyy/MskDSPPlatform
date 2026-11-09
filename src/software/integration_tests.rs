@@ -696,7 +696,9 @@ async fn grpc_upload_and_http_download_preserve_package_and_manifest_contracts()
         .await
         .unwrap();
     assert_eq!(
-        http_request(http_address, "GET", manifest_path, None).await.0,
+        http_request(http_address, "GET", manifest_path, None)
+            .await
+            .0,
         204
     );
     assert_eq!(http_request(http_address, "GET", &path, None).await.0, 200);
