@@ -657,13 +657,29 @@ async fn grpc_upload_and_http_download_preserve_package_and_manifest_contracts()
             expected
         );
     }
-    client
-        .publish_release(testbench_authenticated(proto::PublishReleaseRequest {
+    // 测试上位机的 gRPC 发布和目录独立于 HTTP 下载地址。
+    let publisher_without_http = PublishGrpcService::new(store, String::new(), String::new())
+        .with_testbench_publisher_token(format!("{:x}", Sha256::digest(TESTBENCH_TOKEN)));
+    proto::software_publish_service_server::SoftwarePublishService::publish_release(
+        &publisher_without_http,
+        testbench_authenticated(proto::PublishReleaseRequest {
             package_id: testbench.id.clone(),
             channel: "stable".into(),
-        }))
+        }),
+    )
+    .await
+    .unwrap();
+    let catalog = catalog_client
+        .list_packages(proto::ListPackagesRequest {
+            product: metadata.product.clone(),
+            channel: "stable".into(),
+            platform: metadata.platform.clone(),
+        })
         .await
-        .unwrap();
+        .unwrap()
+        .into_inner();
+    assert_eq!(catalog.packages.len(), 1);
+    assert_eq!(catalog.packages[0].id, testbench.id);
     let (status, _, body) = http_request(http_address, "GET", manifest_path, None).await;
     assert_eq!(status, 200);
     let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();

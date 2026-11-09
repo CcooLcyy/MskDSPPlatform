@@ -267,7 +267,9 @@ impl SoftwarePublishService for PublishGrpcService {
         let message = request.into_inner();
         self.authorize_release(permission, &message.package_id)
             .await?;
-        self.require_public_base_url().map_err(|failure| *failure)?;
+        if permission != UploadPermission::TestbenchPublisher {
+            self.require_public_base_url().map_err(|failure| *failure)?;
+        }
         let package = self
             .store
             .publish(&message.package_id, &message.channel)
