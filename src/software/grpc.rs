@@ -21,7 +21,7 @@ const STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 enum UploadPermission {
     Publisher,
     PlatformCi,
-    TestbenchPublisher,
+    TestbenchPublisher(&'static str),
 }
 
 #[derive(Clone)]
@@ -30,6 +30,7 @@ pub struct PublishGrpcService {
     token_sha256: String,
     ci_upload_token_sha256: String,
     testbench_publisher_token_sha256: String,
+    testbench_ci_publisher_token_sha256: String,
     public_base_url: String,
 }
 
@@ -40,6 +41,7 @@ impl PublishGrpcService {
             token_sha256,
             ci_upload_token_sha256: String::new(),
             testbench_publisher_token_sha256: String::new(),
+            testbench_ci_publisher_token_sha256: String::new(),
             public_base_url,
         }
     }
@@ -51,6 +53,11 @@ impl PublishGrpcService {
 
     pub fn with_testbench_publisher_token(mut self, token_sha256: String) -> Self {
         self.testbench_publisher_token_sha256 = token_sha256;
+        self
+    }
+
+    pub fn with_testbench_ci_publisher_token(mut self, token_sha256: String) -> Self {
+        self.testbench_ci_publisher_token_sha256 = token_sha256;
         self
     }
 
@@ -80,8 +87,11 @@ impl PublishGrpcService {
         if matches(&self.ci_upload_token_sha256) {
             return Ok(UploadPermission::PlatformCi);
         }
+        if matches(&self.testbench_ci_publisher_token_sha256) {
+            return Ok(UploadPermission::TestbenchPublisher("ci"));
+        }
         if matches(&self.testbench_publisher_token_sha256) {
-            return Ok(UploadPermission::TestbenchPublisher);
+            return Ok(UploadPermission::TestbenchPublisher("stable"));
         }
         if matches(&self.token_sha256) {
             return Ok(UploadPermission::Publisher);
@@ -100,9 +110,13 @@ impl PublishGrpcService {
                     Status::permission_denied("CI 上传令牌仅允许操作平台自身的 main CI 包")
                 })
             }
-            UploadPermission::TestbenchPublisher if !testbench => Err(Status::permission_denied(
-                "测试上位机发布令牌仅允许操作测试上位机安装包",
-            )),
+            UploadPermission::TestbenchPublisher(channel)
+                if !testbench || super::testbench_channel(&metadata.channel) != Some(channel) =>
+            {
+                Err(Status::permission_denied(
+                    "测试上位机发布令牌仅允许操作对应通道的测试上位机安装包",
+                ))
+            }
             UploadPermission::Publisher if testbench => Err(Status::permission_denied(
                 "测试上位机安装包需要独立的发布令牌",
             )),
@@ -114,10 +128,17 @@ impl PublishGrpcService {
         &self,
         permission: UploadPermission,
         id: &str,
+        channel: &str,
     ) -> Result<(), Status> {
         if permission == UploadPermission::PlatformCi {
             return Err(Status::permission_denied(
                 "CI 上传令牌不允许发布或撤回软件版本",
+            ));
+        }
+        if matches!(permission, UploadPermission::TestbenchPublisher(allowed) if channel != allowed)
+        {
+            return Err(Status::permission_denied(
+                "测试上位机发布令牌仅允许发布或撤回对应通道",
             ));
         }
         let package = self.store.get_package(id).await.map_err(store_status)?;
@@ -265,9 +286,9 @@ impl SoftwarePublishService for PublishGrpcService {
     ) -> Result<Response<proto::PublishReleaseResponse>, Status> {
         let permission = self.authenticate(&request).map_err(|failure| *failure)?;
         let message = request.into_inner();
-        self.authorize_release(permission, &message.package_id)
+        self.authorize_release(permission, &message.package_id, &message.channel)
             .await?;
-        if permission != UploadPermission::TestbenchPublisher {
+        if !matches!(permission, UploadPermission::TestbenchPublisher(_)) {
             self.require_public_base_url().map_err(|failure| *failure)?;
         }
         let package = self
@@ -286,7 +307,7 @@ impl SoftwarePublishService for PublishGrpcService {
     ) -> Result<Response<proto::WithdrawReleaseResponse>, Status> {
         let permission = self.authenticate(&request).map_err(|failure| *failure)?;
         let message = request.into_inner();
-        self.authorize_release(permission, &message.package_id)
+        self.authorize_release(permission, &message.package_id, &message.channel)
             .await?;
         let package = self
             .store

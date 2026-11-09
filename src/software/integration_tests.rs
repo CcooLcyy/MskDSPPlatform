@@ -24,11 +24,14 @@ const CI_TOKEN: &str = "local-ci-upload-token-with-at-least-32-bytes";
 const TESTBENCH_TOKEN: &str = "local-testbench-token-with-at-least-32-bytes";
 
 fn testbench_authenticated<T>(message: T) -> Request<T> {
+    with_token(message, TESTBENCH_TOKEN)
+}
+
+fn with_token<T>(message: T, token: &str) -> Request<T> {
     let mut request = Request::new(message);
-    request.metadata_mut().insert(
-        "authorization",
-        format!("Bearer {TESTBENCH_TOKEN}").parse().unwrap(),
-    );
+    request
+        .metadata_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
     request
 }
 
@@ -649,7 +652,7 @@ async fn grpc_upload_and_http_download_preserve_package_and_manifest_contracts()
                 package_id: testbench.id.clone(),
                 channel: "ci".into(),
             }),
-            tonic::Code::InvalidArgument,
+            tonic::Code::PermissionDenied,
         ),
     ] {
         assert_eq!(
@@ -718,4 +721,228 @@ async fn grpc_upload_and_http_download_preserve_package_and_manifest_contracts()
         204
     );
     assert_eq!(http_request(http_address, "GET", &path, None).await.0, 200);
+}
+
+#[tokio::test]
+async fn testbench_ci_and_stable_publication_are_isolated() {
+    use proto::software_publish_service_server::SoftwarePublishService;
+
+    const CI_TOKEN: &str = "local-testbench-ci-token-with-at-least-32-bytes";
+    let temporary = tempfile::tempdir().unwrap();
+    let store = SoftwareStore::new(temporary.path().to_owned(), 4096).unwrap();
+    let publisher = PublishGrpcService::new(store.clone(), String::new(), String::new())
+        .with_testbench_publisher_token(format!("{:x}", Sha256::digest(TESTBENCH_TOKEN)))
+        .with_testbench_ci_publisher_token(format!("{:x}", Sha256::digest(CI_TOKEN)));
+
+    let metadata = |version: &str, channel: &str| proto::PackageMetadata {
+        product: super::TESTBENCH_PRODUCT.into(),
+        version: version.into(),
+        platform: "windows-x86_64-nsis".into(),
+        file_name: "setup.exe".into(),
+        size: 3,
+        sha256: format!("{:x}", Sha256::digest(b"abc")),
+        signature: "signed".into(),
+        channel: channel.into(),
+        ..Default::default()
+    };
+    for (version, channel, token, expected) in [
+        ("2.0.0", "stable", CI_TOKEN, tonic::Code::PermissionDenied),
+        (
+            "2.0.0-ci.10.2",
+            "ci",
+            TESTBENCH_TOKEN,
+            tonic::Code::PermissionDenied,
+        ),
+        ("2.0.0-ci.10.2", "", CI_TOKEN, tonic::Code::PermissionDenied),
+        (
+            "2.0.0-ci.10.2",
+            "stable",
+            TESTBENCH_TOKEN,
+            tonic::Code::InvalidArgument,
+        ),
+        ("2.0.0", "ci", CI_TOKEN, tonic::Code::InvalidArgument),
+        (
+            "2.0.0-ci.10.0",
+            "ci",
+            CI_TOKEN,
+            tonic::Code::InvalidArgument,
+        ),
+        (
+            "2.0.0-ci.10.2+build",
+            "ci",
+            CI_TOKEN,
+            tonic::Code::InvalidArgument,
+        ),
+    ] {
+        let error = publisher
+            .create_upload(with_token(
+                proto::CreateUploadRequest {
+                    metadata: Some(metadata(version, channel)),
+                },
+                token,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), expected, "{version} {channel}");
+    }
+
+    let mut ids = Vec::new();
+    for (version, channel, token, other_token) in [
+        ("2.0.0", "stable", TESTBENCH_TOKEN, CI_TOKEN),
+        ("2.0.0-ci.10.2", "ci", CI_TOKEN, TESTBENCH_TOKEN),
+        ("2.0.0-ci.10.1", "ci", CI_TOKEN, TESTBENCH_TOKEN),
+    ] {
+        let upload = publisher
+            .create_upload(with_token(
+                proto::CreateUploadRequest {
+                    metadata: Some(metadata(version, channel)),
+                },
+                token,
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .upload
+            .unwrap();
+        assert_eq!(
+            publisher
+                .get_upload(with_token(
+                    proto::GetUploadRequest {
+                        upload_id: upload.id.clone(),
+                    },
+                    other_token
+                ))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        store
+            .append_chunk(&upload.id, 0, b"abc".to_vec())
+            .await
+            .unwrap();
+        let complete = proto::CompleteUploadRequest {
+            upload_id: upload.id,
+        };
+        assert_eq!(
+            publisher
+                .complete_upload(with_token(complete.clone(), other_token))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        let package = publisher
+            .complete_upload(with_token(complete, token))
+            .await
+            .unwrap()
+            .into_inner()
+            .package
+            .unwrap();
+        let publish = proto::PublishReleaseRequest {
+            package_id: package.id.clone(),
+            channel: channel.into(),
+        };
+        let withdraw = proto::WithdrawReleaseRequest {
+            package_id: package.id.clone(),
+            channel: channel.into(),
+        };
+        let wrong_channel = if channel == "ci" { "stable" } else { "ci" };
+        for (denied_token, denied_channel) in [(other_token, channel), (token, wrong_channel)] {
+            assert_eq!(
+                publisher
+                    .publish_release(with_token(
+                        proto::PublishReleaseRequest {
+                            channel: denied_channel.into(),
+                            ..publish.clone()
+                        },
+                        denied_token
+                    ))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::PermissionDenied
+            );
+            assert_eq!(
+                publisher
+                    .withdraw_release(with_token(
+                        proto::WithdrawReleaseRequest {
+                            channel: denied_channel.into(),
+                            ..withdraw.clone()
+                        },
+                        denied_token
+                    ))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::PermissionDenied
+            );
+        }
+        let published = publisher.publish_release(with_token(publish, token)).await;
+        if version.ends_with(".10.1") {
+            assert_eq!(
+                published.unwrap_err().code(),
+                tonic::Code::FailedPrecondition
+            );
+        } else {
+            assert_eq!(
+                published.unwrap().into_inner().package.unwrap().channels,
+                vec![channel]
+            );
+            ids.push(package.id);
+        }
+    }
+
+    let catalog = CatalogGrpcService::new(store.clone());
+    use proto::software_catalog_service_server::SoftwareCatalogService;
+    for (channel, id, version) in [
+        ("stable", &ids[0], "2.0.0"),
+        ("ci", &ids[1], "2.0.0-ci.10.2"),
+    ] {
+        let response = catalog
+            .list_packages(Request::new(proto::ListPackagesRequest {
+                product: super::TESTBENCH_PRODUCT.into(),
+                channel: channel.into(),
+                platform: "windows-x86_64-nsis".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(response.packages.len(), 1);
+        assert_eq!(&response.packages[0].id, id);
+        let manifest = store
+            .manifest(
+                super::TESTBENCH_PRODUCT,
+                channel,
+                None,
+                "https://updates.example.com",
+            )
+            .await
+            .unwrap();
+        assert_eq!(manifest["version"], version);
+    }
+    assert!(store.publish(&ids[1], "stable").await.is_err());
+    assert!(store.withdraw(&ids[0], "ci").await.is_err());
+    publisher
+        .withdraw_release(with_token(
+            proto::WithdrawReleaseRequest {
+                package_id: ids[1].clone(),
+                channel: "ci".into(),
+            },
+            CI_TOKEN,
+        ))
+        .await
+        .unwrap();
+    assert!(
+        store
+            .get_package(&ids[1])
+            .await
+            .unwrap()
+            .channels
+            .is_empty()
+    );
+    assert_eq!(
+        store.get_package(&ids[0]).await.unwrap().channels,
+        vec!["stable"]
+    );
 }

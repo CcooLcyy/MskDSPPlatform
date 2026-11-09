@@ -810,10 +810,11 @@ fn validate(m: &PackageMetadata, limit: u64) -> Result<(), StoreError> {
         if semver::Version::parse(&m.version).is_err()
             || m.platform != "windows-x86_64-nsis"
             || m.signature.trim().is_empty()
-            || !matches!(m.channel.as_str(), "" | "stable")
+            || super::testbench_channel(&m.channel).is_none()
         {
             return Err(StoreError::Invalid(
-                "测试上位机须使用合法 SemVer、Windows x64 NSIS 架构、更新签名和 Stable 通道".into(),
+                "测试上位机须使用合法 SemVer、Windows x64 NSIS 架构、更新签名和 CI 或 Stable 通道"
+                    .into(),
             ));
         }
     } else if !matches!(m.platform.as_str(), "linux-arm64" | "linux-x64")
@@ -822,6 +823,44 @@ fn validate(m: &PackageMetadata, limit: u64) -> Result<(), StoreError> {
     {
         return Err(StoreError::Invalid(
             "下位机架构、包版本或镜像摘要无效".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_new_testbench_version(m: &PackageMetadata) -> Result<(), StoreError> {
+    let invalid = || {
+        StoreError::Invalid(
+            "测试上位机 Stable 版本须为 x.y.z，CI 版本须为 x.y.z-ci.<运行编号>.<尝试编号>".into(),
+        )
+    };
+    let version = semver::Version::parse(&m.version).map_err(|_| invalid())?;
+    let positive = |number: &str| number.parse::<u64>().is_ok_and(|value| value > 0);
+    let valid = if m.channel == "ci" {
+        let mut parts = version.pre.as_str().split('.');
+        parts.next() == Some("ci")
+            && parts.next().is_some_and(positive)
+            && parts.next().is_some_and(positive)
+            && parts.next().is_none()
+    } else {
+        version.pre.is_empty()
+    };
+    if valid && version.build.is_empty() {
+        Ok(())
+    } else {
+        Err(invalid())
+    }
+}
+
+fn validate_testbench_release_channel(
+    m: &PackageMetadata,
+    channel: &str,
+) -> Result<(), StoreError> {
+    if m.product == super::TESTBENCH_PRODUCT
+        && super::testbench_channel(&m.channel) != Some(channel)
+    {
+        return Err(StoreError::Invalid(
+            "测试上位机仅可在安装包所属通道发布或撤回".into(),
         ));
     }
     Ok(())
@@ -1088,9 +1127,7 @@ impl SoftwareStore {
                     "平台候选包不支持发布或撤回，请到程序更新页手动升级".into(),
                 ));
             }
-            if package.metadata.product == super::TESTBENCH_PRODUCT && channel != "stable" {
-                return Err(StoreError::Invalid("测试上位机仅支持 Stable 通道".into()));
-            }
+            validate_testbench_release_channel(&package.metadata, &channel)?;
             s.db.execute(
                 "DELETE FROM channels WHERE channel=?1 AND package_id=?2",
                 params![channel, id],
@@ -1224,6 +1261,10 @@ impl Inner {
                 ));
             }
             return self.refresh(&id);
+        }
+        // 历史 Stable 元数据仍可续传，版本格式限制只用于创建新上传任务。
+        if m.product == super::TESTBENCH_PRODUCT {
+            validate_new_testbench_version(&m)?;
         }
         let count: u64 = self
             .db
@@ -1421,11 +1462,25 @@ impl Inner {
         if p.metadata.platform == "linux-x64" && channel != "ci" {
             return Err(StoreError::Invalid("下位机 x64 仅支持 CI 通道".into()));
         }
-        if p.metadata.product == super::TESTBENCH_PRODUCT && channel != "stable" {
-            return Err(StoreError::Invalid("测试上位机仅支持 Stable 通道".into()));
-        }
+        validate_testbench_release_channel(&p.metadata, channel)?;
         verify(&self.package_path(&p.metadata)?, &p.metadata)?;
         let tx = self.db.transaction().map_err(storage)?;
+        if p.metadata.product == super::TESTBENCH_PRODUCT && channel == "ci" {
+            let current: Option<String> = tx.query_row(
+                "SELECT p.version FROM channels c JOIN packages p ON p.id=c.package_id WHERE c.product=?1 AND c.channel=?2 AND c.platform=?3",
+                params![p.metadata.product, channel, p.metadata.platform],
+                |row| row.get(0),
+            ).optional().map_err(storage)?;
+            if let Some(current) = current {
+                let current = semver::Version::parse(&current).map_err(storage)?;
+                let candidate = semver::Version::parse(&p.metadata.version).map_err(storage)?;
+                if candidate < current {
+                    return Err(StoreError::Conflict(
+                        "测试上位机 CI 通道已推荐更新的版本".into(),
+                    ));
+                }
+            }
+        }
         if p.metadata.product == "mskdsp-upper" {
             tx.execute("DELETE FROM channels WHERE product=?1 AND channel=?2 AND package_id IN (SELECT id FROM packages WHERE version<>?3)",params![p.metadata.product,channel,p.metadata.version]).map_err(storage)?;
         }
@@ -1446,8 +1501,10 @@ impl Inner {
         base: &str,
     ) -> Result<serde_json::Value, StoreError> {
         channel_valid(channel)?;
-        if product == super::TESTBENCH_PRODUCT && channel != "stable" {
-            return Err(StoreError::Invalid("测试上位机仅支持 Stable 通道".into()));
+        if product == super::TESTBENCH_PRODUCT && !matches!(channel, "ci" | "stable") {
+            return Err(StoreError::Invalid(
+                "测试上位机仅支持 CI 和 Stable 通道".into(),
+            ));
         }
         let mut stmt = self
             .db

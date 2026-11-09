@@ -133,7 +133,7 @@
   <script type="module">
 const $ = id => document.getElementById(id);
 const productNames = {'mskdsp-upper':'上位机', 'mskdsp-lower':'下位机', 'mskdsp-testbench':'测试上位机', 'mskdsp-platform':'平台软件'};
-const releaseChannels = product => product === 'mskdsp-testbench' ? ['stable'] : ['ci','stable'];
+const releaseChannels = ['ci','stable'];
 let packages = [], busy = true, authenticated = false, catalogLoaded = false;
 let platformStatus = null, platformError = '', authorizationLost = false;
 const sections = new Map();
@@ -218,7 +218,8 @@ async function mutate(pkg, channel, operation) {
   finally { setBusy(false); }
 }
 function allowedChannels(pkg) {
-  return pkg.metadata.platform === 'linux-x64' && pkg.metadata.product === 'mskdsp-lower' ? ['ci'] : releaseChannels(pkg.metadata.product);
+  if (pkg.metadata.product === 'mskdsp-testbench') return [pkg.metadata.channel === 'ci' ? 'ci' : 'stable'];
+  return pkg.metadata.platform === 'linux-x64' && pkg.metadata.product === 'mskdsp-lower' ? ['ci'] : releaseChannels;
 }
 function packageChannels(pkg) {
   const channels = element('div', undefined, 'channels');
@@ -301,7 +302,7 @@ function createSections() {
     }
     const search = control('搜索版本', 'search', 'input', null, 'version-search');
     search.type = 'search'; search.placeholder = '输入版本号'; search.autocomplete = 'off';
-    const channelOptions = product === 'mskdsp-platform' ? [['','全部候选包'],['ci','CI 来源'],['stable','Stable 来源']] : [['','全部状态'],['unpublished','待发布 / 已撤回'],...releaseChannels(product).map(channel => [channel,channel === 'ci' ? 'CI' : 'Stable'])];
+    const channelOptions = product === 'mskdsp-platform' ? [['','全部候选包'],['ci','CI 来源'],['stable','Stable 来源']] : [['','全部状态'],['unpublished','待发布 / 已撤回'],...releaseChannels.map(channel => [channel,channel === 'ci' ? 'CI' : 'Stable'])];
     const channel = control(product === 'mskdsp-platform' ? '入库通道' : '发布通道', 'channel', 'select', channelOptions);
     const architecture = control('架构', 'architecture', 'select', [['','全部架构']]);
     const view = control('显示方式', 'view', 'select', [['list','紧凑列表'],['cards','版本卡片']], 'view-picker'); view.value = 'list';
@@ -323,7 +324,7 @@ function createSections() {
 function renderRecommendations(section, records) {
   section.summary.replaceChildren();
   const grid = element('div', undefined, 'recommendations');
-  for (const channel of releaseChannels(section.product).reverse()) {
+  for (const channel of [...releaseChannels].reverse()) {
     const box = element('div', undefined, 'channel-summary'); box.append(element('strong', channel.toUpperCase()));
     const refs = records.filter(pkg => pkg.channels.includes(channel));
     const values = element('div');

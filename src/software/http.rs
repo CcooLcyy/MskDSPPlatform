@@ -53,7 +53,7 @@ pub fn router(auth: HttpState, store: SoftwareStore, public_base_url: String) ->
         .merge(page)
         .route("/mskdsp-upper/{channel}/latest.json", get(upper_manifest))
         .route(
-            "/mskdsp-testbench/stable/latest.json",
+            "/mskdsp-testbench/{channel}/latest.json",
             get(testbench_manifest),
         )
         .route("/mskdsp-lower/{channel}/latest.json", get(lower_manifest))
@@ -161,10 +161,16 @@ async fn publish(
         Err(response) => return *response,
     };
     if state.public_base_url.is_empty() {
-        return error(
-            StatusCode::PRECONDITION_FAILED,
-            "尚未配置软件下载公开地址，暂时不能发布",
-        );
+        match state.store.get_package(&id).await {
+            Ok(package) if package.metadata.product == super::TESTBENCH_PRODUCT => {}
+            Ok(_) => {
+                return error(
+                    StatusCode::PRECONDITION_FAILED,
+                    "尚未配置软件下载公开地址，暂时不能发布",
+                );
+            }
+            Err(failure) => return storage_error(failure),
+        }
     }
     match state.store.publish(&id, &channel).await {
         Ok(package) => Json(package).into_response(),
@@ -227,8 +233,14 @@ async fn upper_manifest(
     manifest(state, "mskdsp-upper", &channel, None).await
 }
 
-async fn testbench_manifest(State(state): State<SoftwareState>) -> Response {
-    manifest(state, super::TESTBENCH_PRODUCT, "stable", None).await
+async fn testbench_manifest(
+    State(state): State<SoftwareState>,
+    Path(channel): Path<String>,
+) -> Response {
+    if !matches!(channel.as_str(), "ci" | "stable") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    manifest(state, super::TESTBENCH_PRODUCT, &channel, None).await
 }
 
 async fn lower_manifest(

@@ -9,7 +9,7 @@ protocol_version = "platform.v1"
 environment = "container"
 
 [software]
-# 根据实际外部访问入口配置；留空时不允许发布版本。
+# 根据实际外部访问入口配置；测试上位机可使用 gRPC 独立发布。
 public_base_url = ""
 # 上下位机高熵发布令牌的 SHA256，留空关闭对应 gRPC 写接口。
 publisher_token_sha256 = ""
@@ -17,6 +17,8 @@ publisher_token_sha256 = ""
 ci_upload_token_sha256 = ""
 # 独立的测试上位机发布令牌 SHA256，仅操作测试上位机安装包和 Stable 通道。
 testbench_publisher_token_sha256 = ""
+# 独立的测试上位机 CI 发布令牌 SHA256，仅操作该产品的 CI 通道。
+testbench_ci_publisher_token_sha256 = ""
 max_package_bytes = 8589934592
 upload_retention_seconds = 86400
 

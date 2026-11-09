@@ -75,16 +75,21 @@ assert.equal(p.calls[0].path,'/api/v1/auth/me');assert.equal(p.calls.filter(c=>c
 const empty=await open({records:[]});for(const product of ['upper','lower','testbench','platform'])assert((await empty.expand(product)).empty.textContent.includes('暂无安装包'));
         ''')
 
-    def test_testbench_actions_and_filters_only_offer_stable(self):
+    def test_testbench_actions_keep_ci_and_stable_separate(self):
         self.run_scenario(r'''
 const pkg=record({id:'testbench',metadata:{product:'mskdsp-testbench'}});
-const p=await open({records:[pkg,record()]}),section=await p.expand('testbench');
-assert.deepEqual(section.channel.children.map(n=>n.value),['','unpublished','stable']);
-assert(section.summary.textContent.includes('STABLE'));assert(!section.summary.textContent.includes('CI'));
-const select=flatten(section.list.children).find(n=>n.tag==='select');
-assert.deepEqual(select.children.map(n=>n.value),['stable']);
+const ci=record({id:'testbench-ci',metadata:{product:'mskdsp-testbench',channel:'ci',version:'1.2.3-ci.10.2'}});
+const p=await open({records:[pkg,ci,record()]}),section=await p.expand('testbench');
+assert.deepEqual(section.channel.children.map(n=>n.value),['','unpublished','ci','stable']);
+assert(section.summary.textContent.includes('STABLE'));assert(section.summary.textContent.includes('CI'));
+const selects=flatten(section.list.children).filter(n=>n.tag==='select');
+assert.deepEqual(selects.map(select=>select.children.map(n=>n.value).join(',')).sort(),['ci','stable']);
 await p.api.mutate(pkg,'ci','publish');assert.equal(p.confirms.length,0);
+await p.api.mutate(ci,'stable','publish');assert.equal(p.confirms.length,0);
+await p.api.mutate(ci,'ci','publish');assert(section.summary.textContent.includes('1.2.3-ci.10.2'));
 await p.api.mutate(pkg,'stable','publish');assert(section.summary.textContent.includes('1.2.3'));
+section.channel.value='stable';section.channel.events.change();assert.equal(section.count.textContent,'1 个安装包');
+assert(!section.list.textContent.includes('1.2.3-ci.10.2'));
 assert(!p.section('upper').summary.textContent.includes('1.2.3'));
         ''')
 
