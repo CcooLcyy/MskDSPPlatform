@@ -759,7 +759,7 @@ pub(crate) fn platform_ci_identity(m: &PackageMetadata) -> Result<(), StoreError
 fn validate(m: &PackageMetadata, limit: u64) -> Result<(), StoreError> {
     if !matches!(
         m.product.as_str(),
-        "mskdsp-upper" | "mskdsp-lower" | "mskdsp-platform"
+        "mskdsp-upper" | "mskdsp-lower" | "mskdsp-platform" | super::TESTBENCH_PRODUCT
     ) || !safe_component(&m.version)
         || !safe_component(&m.platform)
         || !safe_component(&m.file_name)
@@ -805,6 +805,16 @@ fn validate(m: &PackageMetadata, limit: u64) -> Result<(), StoreError> {
         ) || m.signature.trim().is_empty()
         {
             return Err(StoreError::Invalid("上位机架构不支持或缺少签名".into()));
+        }
+    } else if m.product == super::TESTBENCH_PRODUCT {
+        if semver::Version::parse(&m.version).is_err()
+            || m.platform != "windows-x86_64-nsis"
+            || m.signature.trim().is_empty()
+            || !matches!(m.channel.as_str(), "" | "stable")
+        {
+            return Err(StoreError::Invalid(
+                "测试上位机须使用合法 SemVer、Windows x64 NSIS 架构、更新签名和 Stable 通道".into(),
+            ));
         }
     } else if !matches!(m.platform.as_str(), "linux-arm64" | "linux-x64")
         || !safe_component(&m.package_version)
@@ -1072,10 +1082,14 @@ impl SoftwareStore {
         let channel = channel.to_owned();
         self.run(move |s| {
             channel_valid(&channel)?;
-            if s.package(&id)?.metadata.product == "mskdsp-platform" {
+            let package = s.package(&id)?;
+            if package.metadata.product == "mskdsp-platform" {
                 return Err(StoreError::Invalid(
                     "平台候选包不支持发布或撤回，请到程序更新页手动升级".into(),
                 ));
+            }
+            if package.metadata.product == super::TESTBENCH_PRODUCT && channel != "stable" {
+                return Err(StoreError::Invalid("测试上位机仅支持 Stable 通道".into()));
             }
             s.db.execute(
                 "DELETE FROM channels WHERE channel=?1 AND package_id=?2",
@@ -1407,6 +1421,9 @@ impl Inner {
         if p.metadata.platform == "linux-x64" && channel != "ci" {
             return Err(StoreError::Invalid("下位机 x64 仅支持 CI 通道".into()));
         }
+        if p.metadata.product == super::TESTBENCH_PRODUCT && channel != "stable" {
+            return Err(StoreError::Invalid("测试上位机仅支持 Stable 通道".into()));
+        }
         verify(&self.package_path(&p.metadata)?, &p.metadata)?;
         let tx = self.db.transaction().map_err(storage)?;
         if p.metadata.product == "mskdsp-upper" {
@@ -1429,18 +1446,9 @@ impl Inner {
         base: &str,
     ) -> Result<serde_json::Value, StoreError> {
         channel_valid(channel)?;
-        let url =
-            url::Url::parse(base).map_err(|_| StoreError::Invalid("公共下载地址无效".into()))?;
-        if !matches!(url.scheme(), "http" | "https")
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(StoreError::Invalid("公共下载地址无效".into()));
+        if product == super::TESTBENCH_PRODUCT && channel != "stable" {
+            return Err(StoreError::Invalid("测试上位机仅支持 Stable 通道".into()));
         }
-        let base = url.as_str().trim_end_matches('/');
         let mut stmt = self
             .db
             .prepare(
@@ -1456,9 +1464,24 @@ impl Inner {
             .into_iter()
             .map(|id| self.package(&id))
             .collect::<Result<Vec<_>, _>>()?;
+        if product == super::TESTBENCH_PRODUCT && packages.is_empty() {
+            return Err(StoreError::NotFound("通道尚未发布版本".into()));
+        }
+        let url =
+            url::Url::parse(base).map_err(|_| StoreError::Invalid("公共下载地址无效".into()))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(StoreError::Invalid("公共下载地址无效".into()));
+        }
+        let base = url.as_str().trim_end_matches('/');
         let download =
             |p: &Package, name: &str| format!("{base}/software/packages/{}/{name}", p.id);
-        if product == "mskdsp-upper" {
+        if matches!(product, "mskdsp-upper" | super::TESTBENCH_PRODUCT) {
             let p = packages
                 .first()
                 .ok_or_else(|| StoreError::NotFound("通道尚未发布版本".into()))?;

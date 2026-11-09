@@ -117,7 +117,10 @@ impl PlatformRuntime {
             self.config.software.publisher_token_sha256.clone(),
             public_base_url,
         )
-        .with_ci_upload_token(self.config.software.ci_upload_token_sha256.clone());
+        .with_ci_upload_token(self.config.software.ci_upload_token_sha256.clone())
+        .with_testbench_publisher_token(
+            self.config.software.testbench_publisher_token_sha256.clone(),
+        );
         let software_catalog = crate::software::grpc::CatalogGrpcService::new(software.clone());
 
         info!(address = %http_listener.local_addr()?, "HTTP 服务监听完成");

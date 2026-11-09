@@ -21,6 +21,7 @@ const STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 enum UploadPermission {
     Publisher,
     PlatformCi,
+    TestbenchPublisher,
 }
 
 #[derive(Clone)]
@@ -28,6 +29,7 @@ pub struct PublishGrpcService {
     store: SoftwareStore,
     token_sha256: String,
     ci_upload_token_sha256: String,
+    testbench_publisher_token_sha256: String,
     public_base_url: String,
 }
 
@@ -37,12 +39,18 @@ impl PublishGrpcService {
             store,
             token_sha256,
             ci_upload_token_sha256: String::new(),
+            testbench_publisher_token_sha256: String::new(),
             public_base_url,
         }
     }
 
     pub fn with_ci_upload_token(mut self, token_sha256: String) -> Self {
         self.ci_upload_token_sha256 = token_sha256;
+        self
+    }
+
+    pub fn with_testbench_publisher_token(mut self, token_sha256: String) -> Self {
+        self.testbench_publisher_token_sha256 = token_sha256;
         self
     }
 
@@ -59,7 +67,7 @@ impl PublishGrpcService {
             })
             .ok_or_else(|| Box::new(Status::unauthenticated("软件发布凭据无效")))?;
         let digest = format!("{:x}", Sha256::digest(token.as_bytes()));
-        // 摘要恒时比较；配置碰撞也优先采用 CI 限权，避免意外赋予发布权限。
+        // 摘要恒时比较，限权令牌优先于上下位机发布令牌。
         let matches = |expected: &str| {
             expected.len() == 64
                 && expected.bytes().all(|b| b.is_ascii_hexdigit())
@@ -72,6 +80,9 @@ impl PublishGrpcService {
         if matches(&self.ci_upload_token_sha256) {
             return Ok(UploadPermission::PlatformCi);
         }
+        if matches(&self.testbench_publisher_token_sha256) {
+            return Ok(UploadPermission::TestbenchPublisher);
+        }
         if matches(&self.token_sha256) {
             return Ok(UploadPermission::Publisher);
         }
@@ -82,29 +93,36 @@ impl PublishGrpcService {
         permission: UploadPermission,
         metadata: &models::PackageMetadata,
     ) -> Result<(), Status> {
-        if permission == UploadPermission::PlatformCi {
-            super::store::platform_ci_identity(metadata).map_err(|_| {
-                Status::permission_denied("CI 上传令牌仅允许操作平台自身的 main CI 包")
-            })?;
+        let testbench = metadata.product == super::TESTBENCH_PRODUCT;
+        match permission {
+            UploadPermission::PlatformCi => {
+                super::store::platform_ci_identity(metadata).map_err(|_| {
+                    Status::permission_denied("CI 上传令牌仅允许操作平台自身的 main CI 包")
+                })
+            }
+            UploadPermission::TestbenchPublisher if !testbench => Err(Status::permission_denied(
+                "测试上位机发布令牌仅允许操作测试上位机安装包",
+            )),
+            UploadPermission::Publisher if testbench => {
+                Err(Status::permission_denied("测试上位机安装包需要独立的发布令牌"))
+            }
+            _ => Ok(()),
         }
-        Ok(())
     }
 
-    fn require_publisher(permission: UploadPermission) -> Result<(), Status> {
-        if permission != UploadPermission::Publisher {
+    async fn authorize_release(&self, permission: UploadPermission, id: &str) -> Result<(), Status> {
+        if permission == UploadPermission::PlatformCi {
             return Err(Status::permission_denied(
                 "CI 上传令牌不允许发布或撤回软件版本",
             ));
         }
-        Ok(())
+        let package = self.store.get_package(id).await.map_err(store_status)?;
+        Self::authorize_metadata(permission, &package.metadata)
     }
 
     async fn authorize_upload(&self, permission: UploadPermission, id: &str) -> Result<(), Status> {
-        if permission == UploadPermission::PlatformCi {
-            let metadata = self.store.upload_metadata(id).await.map_err(store_status)?;
-            Self::authorize_metadata(permission, &metadata)?;
-        }
-        Ok(())
+        let metadata = self.store.upload_metadata(id).await.map_err(store_status)?;
+        Self::authorize_metadata(permission, &metadata)
     }
 
     fn require_public_base_url(&self) -> Result<(), Box<Status>> {
@@ -149,10 +167,9 @@ impl PublishGrpcService {
                     return Err(Status::invalid_argument("同一上传流不能混用上传 ID"));
                 }
             } else {
+                self.authorize_upload(permission, &message.upload_id).await?;
                 upload_id = Some(message.upload_id.clone());
             }
-            self.authorize_upload(permission, &message.upload_id)
-                .await?;
             progress = Some(
                 self.store
                     .append_chunk(&message.upload_id, message.offset, message.data)
@@ -241,9 +258,10 @@ impl SoftwarePublishService for PublishGrpcService {
         &self,
         request: Request<proto::PublishReleaseRequest>,
     ) -> Result<Response<proto::PublishReleaseResponse>, Status> {
-        Self::require_publisher(self.authenticate(&request).map_err(|failure| *failure)?)?;
-        self.require_public_base_url().map_err(|failure| *failure)?;
+        let permission = self.authenticate(&request).map_err(|failure| *failure)?;
         let message = request.into_inner();
+        self.authorize_release(permission, &message.package_id).await?;
+        self.require_public_base_url().map_err(|failure| *failure)?;
         let package = self
             .store
             .publish(&message.package_id, &message.channel)
@@ -258,8 +276,9 @@ impl SoftwarePublishService for PublishGrpcService {
         &self,
         request: Request<proto::WithdrawReleaseRequest>,
     ) -> Result<Response<proto::WithdrawReleaseResponse>, Status> {
-        Self::require_publisher(self.authenticate(&request).map_err(|failure| *failure)?)?;
+        let permission = self.authenticate(&request).map_err(|failure| *failure)?;
         let message = request.into_inner();
+        self.authorize_release(permission, &message.package_id).await?;
         let package = self
             .store
             .withdraw(&message.package_id, &message.channel)

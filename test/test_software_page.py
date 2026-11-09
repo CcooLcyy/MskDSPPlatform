@@ -68,11 +68,24 @@ class SoftwarePageTests(unittest.TestCase):
 
     def test_fixed_sections_and_read_only_platform_status(self):
         self.run_scenario(r'''
-const p=await open();assert(p.api.sections);assert.equal(p.api.sections.size,3);assert.equal(p.document.getElementById('product'),null);
-for(const product of ['upper','lower','platform'])assert.equal(p.section(product).history.open,false);
+const p=await open();assert(p.api.sections);assert.equal(p.api.sections.size,4);assert.equal(p.document.getElementById('product'),null);
+for(const product of ['upper','lower','testbench','platform'])assert.equal(p.section(product).history.open,false);
 assert(p.section('upper').summary.textContent.includes('暂无推荐版本'));assert(p.section('platform').summary.textContent.includes('0.1.0'));assert(p.section('platform').summary.textContent.includes('0.2.0'));
 assert.equal(p.calls[0].path,'/api/v1/auth/me');assert.equal(p.calls.filter(c=>c.path==='/api/update/status').length,1);assert(p.calls.every(c=>!c.options.method||c.options.method==='GET'));
-const empty=await open({records:[]});for(const product of ['upper','lower','platform'])assert((await empty.expand(product)).empty.textContent.includes('暂无安装包'));
+const empty=await open({records:[]});for(const product of ['upper','lower','testbench','platform'])assert((await empty.expand(product)).empty.textContent.includes('暂无安装包'));
+        ''')
+
+    def test_testbench_actions_and_filters_only_offer_stable(self):
+        self.run_scenario(r'''
+const pkg=record({id:'testbench',metadata:{product:'mskdsp-testbench'}});
+const p=await open({records:[pkg,record()]}),section=await p.expand('testbench');
+assert.deepEqual(section.channel.children.map(n=>n.value),['','unpublished','stable']);
+assert(section.summary.textContent.includes('STABLE'));assert(!section.summary.textContent.includes('CI'));
+const select=flatten(section.list.children).find(n=>n.tag==='select');
+assert.deepEqual(select.children.map(n=>n.value),['stable']);
+await p.api.mutate(pkg,'ci','publish');assert.equal(p.confirms.length,0);
+await p.api.mutate(pkg,'stable','publish');assert(section.summary.textContent.includes('1.2.3'));
+assert(!p.section('upper').summary.textContent.includes('1.2.3'));
         ''')
 
     def test_local_filters_summary_and_focus_survive_refresh(self):

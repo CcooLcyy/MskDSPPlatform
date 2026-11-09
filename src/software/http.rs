@@ -52,6 +52,10 @@ pub fn router(auth: HttpState, store: SoftwareStore, public_base_url: String) ->
         .merge(admin)
         .merge(page)
         .route("/mskdsp-upper/{channel}/latest.json", get(upper_manifest))
+        .route(
+            "/mskdsp-testbench/stable/latest.json",
+            get(testbench_manifest),
+        )
         .route("/mskdsp-lower/{channel}/latest.json", get(lower_manifest))
         .route("/mskdsp-lower-x64/ci/latest.json", get(lower_x64_manifest))
         .route("/software/packages/{id}/{name}", get(download))
@@ -193,7 +197,8 @@ async fn manifest(
     channel: &str,
     platform: Option<&str>,
 ) -> Response {
-    let mut response = if state.public_base_url.is_empty() {
+    let testbench = product == super::TESTBENCH_PRODUCT;
+    let mut response = if state.public_base_url.is_empty() && !testbench {
         error(StatusCode::PRECONDITION_FAILED, "尚未配置软件下载公开地址")
     } else {
         match state
@@ -202,6 +207,10 @@ async fn manifest(
             .await
         {
             Ok(manifest) => Json(manifest).into_response(),
+            Err(StoreError::NotFound(_)) if testbench => StatusCode::NO_CONTENT.into_response(),
+            Err(StoreError::Invalid(_)) if testbench && state.public_base_url.is_empty() => {
+                error(StatusCode::PRECONDITION_FAILED, "尚未配置软件下载公开地址")
+            }
             Err(failure) => storage_error(failure),
         }
     };
@@ -216,6 +225,10 @@ async fn upper_manifest(
     Path(channel): Path<String>,
 ) -> Response {
     manifest(state, "mskdsp-upper", &channel, None).await
+}
+
+async fn testbench_manifest(State(state): State<SoftwareState>) -> Response {
+    manifest(state, super::TESTBENCH_PRODUCT, "stable", None).await
 }
 
 async fn lower_manifest(

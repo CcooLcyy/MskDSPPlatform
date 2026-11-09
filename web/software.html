@@ -122,17 +122,18 @@
       </header>
     <div class="app-content">
       <main class="page-content">
-        <div class="page-heading"><div><h1>软件管理</h1><p class="page-summary">分别查看上位机、下位机与平台软件，展开历史后管理各安装包。</p></div><button id="refresh" type="button" disabled>刷新列表</button></div>
+        <div class="page-heading"><div><h1>软件管理</h1><p class="page-summary">分别查看上位机、下位机、测试上位机与平台软件，展开历史后管理各安装包。</p></div><button id="refresh" type="button" disabled>刷新列表</button></div>
         <div id="message" class="status-banner" role="status" aria-live="polite">正在读取版本…</div>
         <div id="software-sections"></div>
-        <footer class="software-footer">平台候选包只保存历史，不公开下载，也不会自动更新。上下位机发布会切换所选通道的推荐版本；撤回仅移除当前通道引用。</footer>
+        <footer class="software-footer">平台候选包只保存历史，不公开下载，也不会自动更新。发布会切换所选通道的推荐版本；撤回仅移除当前通道引用。</footer>
         <noscript>请启用 JavaScript 以查看和管理软件版本。</noscript>
       </main>
     </div>
   </div>
   <script type="module">
 const $ = id => document.getElementById(id);
-const productNames = {'mskdsp-upper':'上位机', 'mskdsp-lower':'下位机', 'mskdsp-platform':'平台软件'};
+const productNames = {'mskdsp-upper':'上位机', 'mskdsp-lower':'下位机', 'mskdsp-testbench':'测试上位机', 'mskdsp-platform':'平台软件'};
+const releaseChannels = product => product === 'mskdsp-testbench' ? ['stable'] : ['ci','stable'];
 let packages = [], busy = true, authenticated = false, catalogLoaded = false;
 let platformStatus = null, platformError = '', authorizationLost = false;
 const sections = new Map();
@@ -217,7 +218,7 @@ async function mutate(pkg, channel, operation) {
   finally { setBusy(false); }
 }
 function allowedChannels(pkg) {
-  return pkg.metadata.platform === 'linux-x64' && pkg.metadata.product === 'mskdsp-lower' ? ['ci'] : ['ci','stable'];
+  return pkg.metadata.platform === 'linux-x64' && pkg.metadata.product === 'mskdsp-lower' ? ['ci'] : releaseChannels(pkg.metadata.product);
 }
 function packageChannels(pkg) {
   const channels = element('div', undefined, 'channels');
@@ -300,7 +301,7 @@ function createSections() {
     }
     const search = control('搜索版本', 'search', 'input', null, 'version-search');
     search.type = 'search'; search.placeholder = '输入版本号'; search.autocomplete = 'off';
-    const channelOptions = product === 'mskdsp-platform' ? [['','全部候选包'],['ci','CI 来源'],['stable','Stable 来源']] : [['','全部状态'],['unpublished','待发布 / 已撤回'],['ci','CI'],['stable','Stable']];
+    const channelOptions = product === 'mskdsp-platform' ? [['','全部候选包'],['ci','CI 来源'],['stable','Stable 来源']] : [['','全部状态'],['unpublished','待发布 / 已撤回'],...releaseChannels(product).map(channel => [channel,channel === 'ci' ? 'CI' : 'Stable'])];
     const channel = control(product === 'mskdsp-platform' ? '入库通道' : '发布通道', 'channel', 'select', channelOptions);
     const architecture = control('架构', 'architecture', 'select', [['','全部架构']]);
     const view = control('显示方式', 'view', 'select', [['list','紧凑列表'],['cards','版本卡片']], 'view-picker'); view.value = 'list';
@@ -322,7 +323,7 @@ function createSections() {
 function renderRecommendations(section, records) {
   section.summary.replaceChildren();
   const grid = element('div', undefined, 'recommendations');
-  for (const channel of ['stable','ci']) {
+  for (const channel of releaseChannels(section.product).reverse()) {
     const box = element('div', undefined, 'channel-summary'); box.append(element('strong', channel.toUpperCase()));
     const refs = records.filter(pkg => pkg.channels.includes(channel));
     const values = element('div');

@@ -10,10 +10,12 @@ environment = "development"
 [software]
 # 安装包公开下载地址；发布前必须配置，生产环境使用 HTTPS。
 public_base_url = ""
-# 高熵发布令牌的 SHA256，留空关闭软件发布写接口，不能填写明文令牌。
+# 上下位机高熵发布令牌的 SHA256，留空关闭对应 gRPC 写接口。
 publisher_token_sha256 = ""
 # CI 专用高熵上传令牌的 SHA256；仅平台 main CI 包上传，不能发布或撤回。
 ci_upload_token_sha256 = ""
+# 独立的测试上位机发布令牌 SHA256，仅操作测试上位机安装包和 Stable 通道。
+testbench_publisher_token_sha256 = ""
 max_package_bytes = 8589934592
 upload_retention_seconds = 86400
 

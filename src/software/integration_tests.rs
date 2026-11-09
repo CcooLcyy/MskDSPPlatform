@@ -21,6 +21,16 @@ use tonic::{Request, transport::Server};
 
 const TOKEN: &str = "local-integration-token-with-at-least-32-bytes";
 const CI_TOKEN: &str = "local-ci-upload-token-with-at-least-32-bytes";
+const TESTBENCH_TOKEN: &str = "local-testbench-token-with-at-least-32-bytes";
+
+fn testbench_authenticated<T>(message: T) -> Request<T> {
+    let mut request = Request::new(message);
+    request.metadata_mut().insert(
+        "authorization",
+        format!("Bearer {TESTBENCH_TOKEN}").parse().unwrap(),
+    );
+    request
+}
 
 fn ci_authenticated<T>(message: T) -> Request<T> {
     let mut request = Request::new(message);
@@ -357,7 +367,8 @@ async fn grpc_upload_and_http_download_preserve_package_and_manifest_contracts()
         store.clone(),
         format!("{:x}", Sha256::digest(TOKEN.as_bytes())),
         public_base_url.clone(),
-    );
+    )
+    .with_testbench_publisher_token(format!("{:x}", Sha256::digest(TESTBENCH_TOKEN)));
     let catalog = CatalogGrpcService::new(store.clone());
     let _running = RunningServices {
         http: tokio::spawn(async move {
@@ -538,4 +549,155 @@ async fn grpc_upload_and_http_download_preserve_package_and_manifest_contracts()
             .unwrap()
             .ever_published
     );
+
+    let manifest_path = "/mskdsp-testbench/stable/latest.json";
+    let metadata = proto::PackageMetadata {
+        product: super::TESTBENCH_PRODUCT.into(),
+        version: "2.0.0".into(),
+        platform: "windows-x86_64-nsis".into(),
+        file_name: "mskdsp-testbench_2.0.0_x64-setup.exe".into(),
+        size: bytes.len() as u64,
+        sha256: digest,
+        signature: "testbench-updater-signature".into(),
+        notes: "Testbench release notes".into(),
+        channel: "stable".into(),
+        ..Default::default()
+    };
+    let create = proto::CreateUploadRequest {
+        metadata: Some(metadata.clone()),
+    };
+    let error = client
+        .create_upload(authenticated(create.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    for invalid_metadata in [
+        proto::PackageMetadata {
+            signature: String::new(),
+            ..metadata.clone()
+        },
+        proto::PackageMetadata {
+            platform: "windows-x86_64".into(),
+            ..metadata.clone()
+        },
+    ] {
+        let error = client
+            .create_upload(testbench_authenticated(proto::CreateUploadRequest {
+                metadata: Some(invalid_metadata),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    }
+    let upload = client
+        .create_upload(testbench_authenticated(create))
+        .await
+        .unwrap()
+        .into_inner()
+        .upload
+        .unwrap();
+    let stream_chunk = proto::UploadPackageRequest {
+        upload_id: upload.id.clone(),
+        offset: 0,
+        data: bytes.to_vec(),
+    };
+    let error = client
+        .upload_package(authenticated(tokio_stream::iter([stream_chunk.clone()])))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    client
+        .upload_package(testbench_authenticated(tokio_stream::iter([stream_chunk])))
+        .await
+        .unwrap();
+    let testbench = client
+        .complete_upload(testbench_authenticated(proto::CompleteUploadRequest {
+            upload_id: upload.id,
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .package
+        .unwrap();
+    let path = format!("/software/packages/{}/{}", testbench.id, metadata.file_name);
+    assert_eq!(http_request(http_address, "GET", &path, None).await.0, 404);
+    let (status, headers, body) = http_request(http_address, "GET", manifest_path, None).await;
+    assert_eq!(status, 204);
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("cache-control: no-store")
+    );
+    assert!(body.is_empty());
+    for (request, expected) in [
+        (
+            authenticated(proto::PublishReleaseRequest {
+                package_id: testbench.id.clone(),
+                channel: "stable".into(),
+            }),
+            tonic::Code::PermissionDenied,
+        ),
+        (
+            testbench_authenticated(proto::PublishReleaseRequest {
+                package_id: package.id,
+                channel: "stable".into(),
+            }),
+            tonic::Code::PermissionDenied,
+        ),
+        (
+            testbench_authenticated(proto::PublishReleaseRequest {
+                package_id: testbench.id.clone(),
+                channel: "ci".into(),
+            }),
+            tonic::Code::InvalidArgument,
+        ),
+    ] {
+        assert_eq!(
+            client.publish_release(request).await.unwrap_err().code(),
+            expected
+        );
+    }
+    client
+        .publish_release(testbench_authenticated(proto::PublishReleaseRequest {
+            package_id: testbench.id.clone(),
+            channel: "stable".into(),
+        }))
+        .await
+        .unwrap();
+    let (status, _, body) = http_request(http_address, "GET", manifest_path, None).await;
+    assert_eq!(status, 200);
+    let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(manifest["version"], metadata.version);
+    assert_eq!(manifest["notes"], metadata.notes);
+    assert!(manifest["pub_date"].is_string());
+    assert_eq!(
+        manifest["platforms"],
+        serde_json::json!({
+            "windows-x86_64-nsis": {
+                "url": format!("{public_base_url}{path}"),
+                "signature": metadata.signature,
+            }
+        })
+    );
+    let (status, _, downloaded) = http_request(http_address, "GET", &path, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(downloaded, bytes);
+    let withdraw = proto::WithdrawReleaseRequest {
+        package_id: testbench.id,
+        channel: "stable".into(),
+    };
+    let error = client
+        .withdraw_release(authenticated(withdraw.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    client
+        .withdraw_release(testbench_authenticated(withdraw))
+        .await
+        .unwrap();
+    assert_eq!(
+        http_request(http_address, "GET", manifest_path, None).await.0,
+        204
+    );
+    assert_eq!(http_request(http_address, "GET", &path, None).await.0, 200);
 }
