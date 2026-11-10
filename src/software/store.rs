@@ -831,17 +831,19 @@ fn validate(m: &PackageMetadata, limit: u64) -> Result<(), StoreError> {
 fn validate_new_testbench_version(m: &PackageMetadata) -> Result<(), StoreError> {
     let invalid = || {
         StoreError::Invalid(
-            "测试上位机 Stable 版本须为 x.y.z，CI 版本须为 x.y.z-ci.<运行编号>.<尝试编号>".into(),
+            "测试上位机 Stable 版本须为 x.y.z，CI 版本须为 x.y.z-ci.<17 位北京时间戳>或兼容的双数字格式"
+                .into(),
         )
     };
     let version = semver::Version::parse(&m.version).map_err(|_| invalid())?;
     let positive = |number: &str| number.parse::<u64>().is_ok_and(|value| value > 0);
     let valid = if m.channel == "ci" {
         let mut parts = version.pre.as_str().split('.');
-        parts.next() == Some("ci")
-            && parts.next().is_some_and(positive)
-            && parts.next().is_some_and(positive)
-            && parts.next().is_none()
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some("ci"), Some(timestamp), None, None) => timestamp.len() == 17 && positive(timestamp),
+            (Some("ci"), Some(build), Some(attempt), None) => positive(build) && positive(attempt),
+            _ => false,
+        }
     } else {
         version.pre.is_empty()
     };

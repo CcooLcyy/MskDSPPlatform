@@ -762,6 +762,18 @@ async fn testbench_ci_and_stable_publication_are_isolated() {
         ),
         ("2.0.0", "ci", CI_TOKEN, tonic::Code::InvalidArgument),
         (
+            "2.0.0-ci.2026111014302512",
+            "ci",
+            CI_TOKEN,
+            tonic::Code::InvalidArgument,
+        ),
+        (
+            "2.0.0-ci.2026111014302512x",
+            "ci",
+            CI_TOKEN,
+            tonic::Code::InvalidArgument,
+        ),
+        (
             "2.0.0-ci.10.0",
             "ci",
             CI_TOKEN,
@@ -786,10 +798,17 @@ async fn testbench_ci_and_stable_publication_are_isolated() {
         assert_eq!(error.code(), expected, "{version} {channel}");
     }
 
+    let timestamp_ci = "2.0.0-ci.20261110143025124";
     let mut ids = Vec::new();
     for (version, channel, token, other_token) in [
         ("2.0.0", "stable", TESTBENCH_TOKEN, CI_TOKEN),
-        ("2.0.0-ci.10.2", "ci", CI_TOKEN, TESTBENCH_TOKEN),
+        (
+            "2.0.0-ci.20261110143025123.1",
+            "ci",
+            CI_TOKEN,
+            TESTBENCH_TOKEN,
+        ),
+        (timestamp_ci, "ci", CI_TOKEN, TESTBENCH_TOKEN),
         ("2.0.0-ci.10.1", "ci", CI_TOKEN, TESTBENCH_TOKEN),
     ] {
         let upload = publisher
@@ -897,7 +916,7 @@ async fn testbench_ci_and_stable_publication_are_isolated() {
     use proto::software_catalog_service_server::SoftwareCatalogService;
     for (channel, id, version) in [
         ("stable", &ids[0], "2.0.0"),
-        ("ci", &ids[1], "2.0.0-ci.10.2"),
+        ("ci", &ids[2], timestamp_ci),
     ] {
         let response = catalog
             .list_packages(Request::new(proto::ListPackagesRequest {
@@ -921,12 +940,12 @@ async fn testbench_ci_and_stable_publication_are_isolated() {
             .unwrap();
         assert_eq!(manifest["version"], version);
     }
-    assert!(store.publish(&ids[1], "stable").await.is_err());
+    assert!(store.publish(&ids[2], "stable").await.is_err());
     assert!(store.withdraw(&ids[0], "ci").await.is_err());
     publisher
         .withdraw_release(with_token(
             proto::WithdrawReleaseRequest {
-                package_id: ids[1].clone(),
+                package_id: ids[2].clone(),
                 channel: "ci".into(),
             },
             CI_TOKEN,
@@ -935,7 +954,7 @@ async fn testbench_ci_and_stable_publication_are_isolated() {
         .unwrap();
     assert!(
         store
-            .get_package(&ids[1])
+            .get_package(&ids[2])
             .await
             .unwrap()
             .channels
