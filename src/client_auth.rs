@@ -143,15 +143,32 @@ impl ClientAuth {
     }
 
     pub async fn authenticate(&self, token: &str) -> Result<ClientSession, ClientAuthError> {
+        self.check_session(token, false).await
+    }
+
+    pub(crate) async fn refresh_session(
+        &self,
+        token: &str,
+    ) -> Result<ClientSession, ClientAuthError> {
+        self.check_session(token, true).await
+    }
+
+    async fn check_session(
+        &self,
+        token: &str,
+        refresh: bool,
+    ) -> Result<ClientSession, ClientAuthError> {
         if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(ClientAuthError::Unauthorized);
         }
-        let (account, expires_in) = self
-            .0
-            .store
-            .authenticate_client_session(token_digest(token))
-            .await
-            .map_err(account_error)?;
+        let digest = token_digest(token);
+        let store = &self.0.store;
+        let (account, expires_in) = if refresh {
+            store.refresh_client_session(digest).await
+        } else {
+            store.authenticate_client_session(digest).await
+        }
+        .map_err(account_error)?;
         Ok(ClientSession {
             account,
             expires_in,

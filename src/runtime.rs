@@ -92,7 +92,7 @@ impl PlatformRuntime {
             .merge(crate::remote::http::router(
                 http_state.clone(),
                 devices,
-                accounts,
+                accounts.clone(),
                 remote_hub,
             ))
             .merge(crate::template_http::router(
@@ -175,6 +175,10 @@ impl PlatformRuntime {
             self.config.software.upload_retention_seconds,
             shutdown_tx.subscribe(),
         ));
+        maintenance.spawn(run_client_session_maintenance(
+            accounts,
+            shutdown_tx.subscribe(),
+        ));
         let result = run_services(
             http_service,
             grpc_service,
@@ -189,6 +193,29 @@ impl PlatformRuntime {
         result?;
         info!("MskDSPPlatform 基础服务已停止");
         Ok(())
+    }
+}
+
+async fn run_client_session_maintenance(
+    store: crate::accounts::AccountStore,
+    shutdown: watch::Receiver<bool>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(30));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let stopping = wait_for_shutdown(shutdown);
+    tokio::pin!(stopping);
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut stopping => break,
+            _ = interval.tick() => {
+                match store.purge_inactive_client_sessions().await {
+                    Ok(count) if count > 0 => info!(count, "已回收失联或失效的上位机登录会话"),
+                    Ok(_) => {}
+                    Err(error) => warn!(%error, "回收上位机登录会话失败，将在下次维护重试"),
+                }
+            }
+        }
     }
 }
 

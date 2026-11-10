@@ -114,8 +114,8 @@ async fn verification_concurrency_and_session_capacity_are_bounded() {
     let now = chrono::Utc::now().timestamp_millis();
     let insert =
         "WITH RECURSIVE slots(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM slots WHERE n+1<?1)
-        INSERT INTO client_sessions_v1(token_hash,account_id,auth_version,issued_at,expires_at)
-        SELECT printf('%064x',n),?2,?3,?4,?5 FROM slots";
+        INSERT INTO client_sessions_v1(token_hash,account_id,auth_version,issued_at,expires_at,last_seen_at)
+        SELECT printf('%064x',n),?2,?3,?4,?5,?4 FROM slots";
     connection
         .execute(
             insert,

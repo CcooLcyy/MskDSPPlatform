@@ -531,11 +531,29 @@ async fn same_account_multiple_instances_and_cross_account_same_instance_can_con
     assert_eq!(server.sessions.count().await, 5);
 }
 
+// Hello 和心跳延续租约，短暂断线可用原令牌重连，失联过期后拒绝重连。
 #[tokio::test]
 async fn heartbeat_goodbye_and_response_cancellation_clean_up() {
     let mut server = TestServer::start().await;
     let login = server.register("field-one").await;
+    let db = rusqlite::Connection::open(server._directory.path().join("accounts.sqlite3")).unwrap();
+    let age_session = |milliseconds: i64| {
+        let old = chrono::Utc::now().timestamp_millis() - milliseconds;
+        db.execute("UPDATE client_sessions_v1 SET last_seen_at=?1", [old])
+            .unwrap();
+        old
+    };
+    let last_seen = || {
+        db.query_row("SELECT last_seen_at FROM client_sessions_v1", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+
+    let before_hello = age_session(60_000);
     let (sender, mut stream) = server.online(&login, "computer-1").await;
+    assert!(last_seen() > before_hello);
+    let before_heartbeat = age_session(60_000);
     sender
         .send(AgentMessage {
             payload: Some(agent_message::Payload::Heartbeat(agent::Heartbeat {
@@ -548,6 +566,7 @@ async fn heartbeat_goodbye_and_response_cancellation_clean_up() {
         stream.message().await.unwrap().unwrap().payload,
         Some(server_message::Payload::HeartbeatAck(_))
     ));
+    assert!(last_seen() > before_heartbeat);
     sender
         .send(AgentMessage {
             payload: Some(agent_message::Payload::Goodbye(agent::Goodbye {
@@ -558,7 +577,15 @@ async fn heartbeat_goodbye_and_response_cancellation_clean_up() {
         .unwrap();
     assert!(stream.message().await.unwrap().is_none());
     wait_count(&server.sessions, 0).await;
+    let before_reconnect = age_session(60_000);
+    server
+        .client
+        .get_session(session_request(&login.access_token))
+        .await
+        .unwrap();
+    assert_eq!(last_seen(), before_reconnect);
     let (sender, mut stream) = server.online(&login, "computer-1").await;
+    assert!(last_seen() > before_reconnect);
     drop(sender);
     assert!(stream.message().await.unwrap().is_none());
     wait_count(&server.sessions, 0).await;
@@ -566,6 +593,14 @@ async fn heartbeat_goodbye_and_response_cancellation_clean_up() {
     drop(stream);
     drop(sender);
     wait_count(&server.sessions, 0).await;
+    age_session(121_000);
+    server
+        .denied(
+            "computer-1",
+            Some(&login.access_token),
+            Code::Unauthenticated,
+        )
+        .await;
 }
 
 #[tokio::test]

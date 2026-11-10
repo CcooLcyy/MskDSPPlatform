@@ -215,8 +215,8 @@ async fn concurrent_logins_after_restart_respect_shared_capacity() {
     let now = chrono::Utc::now().timestamp_millis();
     db.execute(
         "WITH RECURSIVE slots(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM slots WHERE n<13)
-         INSERT INTO client_sessions_v1(token_hash,account_id,auth_version,issued_at,expires_at)
-         SELECT printf('%064x',n),?1,?2,?3,?4 FROM slots",
+         INSERT INTO client_sessions_v1(token_hash,account_id,auth_version,issued_at,expires_at,last_seen_at)
+         SELECT printf('%064x',n),?1,?2,?3,?4,?3 FROM slots",
         rusqlite::params![
             login.account.id,
             login.account.auth_version,
@@ -244,6 +244,75 @@ async fn concurrent_logins_after_restart_respect_shared_capacity() {
             .unwrap(),
         16
     );
+
+    let remaining = one.or(two).unwrap();
+    db.execute(
+        "UPDATE client_sessions_v1 SET last_seen_at=?1 WHERE token_hash=?2",
+        rusqlite::params![
+            chrono::Utc::now().timestamp_millis() - 121_000,
+            token_digest(&login.access_token)
+        ],
+    )
+    .unwrap();
+    assert!(matches!(
+        auth.authenticate(&login.access_token).await,
+        Err(ClientAuthError::Unauthorized)
+    ));
+    assert!(
+        auth.login("persistent-user", "field-password-123")
+            .await
+            .is_ok()
+    );
+    assert!(auth.authenticate(&remaining.access_token).await.is_ok());
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM client_sessions_v1 WHERE token_hash=?1",
+            [token_digest(&login.access_token)],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+// 旧会话升级后可重连，后续平台重启不会重置失联计时。
+#[tokio::test]
+async fn legacy_session_receives_one_reconnect_window_on_upgrade() {
+    let (directory, _store, auth) = fixture().await;
+    let login = auth
+        .login("persistent-user", "field-password-123")
+        .await
+        .unwrap();
+    let path = directory.path().join("accounts.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE client_sessions_legacy (
+            token_hash TEXT PRIMARY KEY NOT NULL CHECK(length(token_hash)=64),
+            account_id TEXT NOT NULL,
+            auth_version INTEGER NOT NULL CHECK(auth_version>0),
+            issued_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL CHECK(expires_at>issued_at)
+         );
+         INSERT INTO client_sessions_legacy
+            SELECT token_hash,account_id,auth_version,issued_at-180000,expires_at
+            FROM client_sessions_v1;
+         DROP TABLE client_sessions_v1;
+         ALTER TABLE client_sessions_legacy RENAME TO client_sessions_v1;",
+    )
+    .unwrap();
+    let upgraded = ClientAuth::new(AccountStore::open(path.clone()).await.unwrap(), 28_800);
+    assert!(upgraded.authenticate(&login.access_token).await.is_ok());
+
+    db.execute(
+        "UPDATE client_sessions_v1 SET last_seen_at=?1",
+        [chrono::Utc::now().timestamp_millis() - 121_000],
+    )
+    .unwrap();
+    let restarted = ClientAuth::new(AccountStore::open(path).await.unwrap(), 28_800);
+    assert!(matches!(
+        restarted.authenticate(&login.access_token).await,
+        Err(ClientAuthError::Unauthorized)
+    ));
 }
 
 // 已有账号库首次启用会话辅助表时，不改变账号库版本或原有账号数据。

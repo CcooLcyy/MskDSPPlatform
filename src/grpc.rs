@@ -227,7 +227,7 @@ impl AgentGrpcService {
         cancellation: &CancellationToken,
     ) -> Result<(), Status> {
         self.client_auth
-            .authenticate(token)
+            .refresh_session(token)
             .await
             .map_err(|error| client_status(error, true))?;
         send_message(
@@ -260,7 +260,7 @@ impl AgentGrpcService {
                     let Some(message) = message? else { return Ok(()) };
                     match message.payload {
                         Some(agent_message::Payload::Heartbeat(_)) => {
-                            self.client_auth.authenticate(token).await
+                            self.client_auth.refresh_session(token).await
                                 .map_err(|error| client_status(error, true))?;
                             heartbeat_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(60));
                             send_message(outbound, ServerMessage {

@@ -172,7 +172,7 @@ impl AccountStore {
             connection
                 .pragma_update(None, "journal_mode", "WAL")
                 .map_err(storage_error)?;
-            sessions::initialize(&connection)?;
+            sessions::initialize(&mut connection)?;
             Ok(Self(Arc::new(Mutex::new(connection))))
         })
         .await
