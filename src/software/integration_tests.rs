@@ -914,10 +914,7 @@ async fn testbench_ci_and_stable_publication_are_isolated() {
 
     let catalog = CatalogGrpcService::new(store.clone());
     use proto::software_catalog_service_server::SoftwareCatalogService;
-    for (channel, id, version) in [
-        ("stable", &ids[0], "2.0.0"),
-        ("ci", &ids[2], timestamp_ci),
-    ] {
+    for (channel, id, version) in [("stable", &ids[0], "2.0.0"), ("ci", &ids[2], timestamp_ci)] {
         let response = catalog
             .list_packages(Request::new(proto::ListPackagesRequest {
                 product: super::TESTBENCH_PRODUCT.into(),

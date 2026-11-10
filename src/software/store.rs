@@ -840,7 +840,9 @@ fn validate_new_testbench_version(m: &PackageMetadata) -> Result<(), StoreError>
     let valid = if m.channel == "ci" {
         let mut parts = version.pre.as_str().split('.');
         match (parts.next(), parts.next(), parts.next(), parts.next()) {
-            (Some("ci"), Some(timestamp), None, None) => timestamp.len() == 17 && positive(timestamp),
+            (Some("ci"), Some(timestamp), None, None) => {
+                timestamp.len() == 17 && positive(timestamp)
+            }
             (Some("ci"), Some(build), Some(attempt), None) => positive(build) && positive(attempt),
             _ => false,
         }
