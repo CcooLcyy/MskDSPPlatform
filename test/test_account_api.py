@@ -33,8 +33,12 @@ class AccountApiTests(unittest.TestCase):
         database = self.folder / "data/accounts/accounts.sqlite3"
         with closing(sqlite3.connect(database)) as db:
             now = int(time.time() * 1000)
-            db.execute("INSERT INTO client_sessions_v1 VALUES (?, ?, ?, ?, ?)",
-                       ["a" * 64, account["id"], 1, now, now + 60000])
+            db.execute(
+                "INSERT INTO client_sessions_v1 "
+                "(token_hash, account_id, auth_version, issued_at, expires_at, last_seen_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ["a" * 64, account["id"], 1, now, now + 60000, now],
+            )
             db.commit()
         for headers, expected in ((dict(action, Cookie=""), 401),
                                   ({"X-MskDSP-Action": "wrong"}, 403),
