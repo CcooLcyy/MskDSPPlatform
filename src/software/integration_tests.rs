@@ -962,3 +962,220 @@ async fn testbench_ci_and_stable_publication_are_isolated() {
         vec!["stable"]
     );
 }
+
+#[tokio::test]
+async fn testbench_case_releases_use_independent_credentials_and_channels() {
+    use proto::{
+        software_catalog_service_server::SoftwareCatalogService,
+        software_publish_service_server::SoftwarePublishService,
+    };
+    use tokio_stream::StreamExt;
+
+    const CASES_STABLE: &str = "local-cases-stable-integration-token";
+    const CASES_CI: &str = "local-cases-ci-integration-token";
+    let temporary = tempfile::tempdir().unwrap();
+    let store = SoftwareStore::new(temporary.path().to_owned(), 4096).unwrap();
+    let digest = |token: &str| format!("{:x}", Sha256::digest(token));
+    let publisher = PublishGrpcService::new(store.clone(), digest(TOKEN), String::new())
+        .with_ci_upload_token(digest(CI_TOKEN))
+        .with_testbench_publisher_token(digest(TESTBENCH_TOKEN))
+        .with_testbench_cases_publisher_tokens(digest(CASES_STABLE), digest(CASES_CI));
+    let product = super::TESTBENCH_CASES_PRODUCT;
+    let platform = super::TESTBENCH_CASES_PLATFORM;
+    let data = b"signed ZIP bytes";
+    let metadata = |version: &str, channel: &str| proto::PackageMetadata {
+        product: product.into(),
+        version: version.into(),
+        platform: platform.into(),
+        file_name: format!("{product}_{version}.zip"),
+        size: data.len() as u64,
+        sha256: format!("{:x}", Sha256::digest(data)),
+        signature: "signature fixture".into(),
+        source_sha: "a".repeat(40),
+        channel: channel.into(),
+        ..Default::default()
+    };
+    let stable = metadata("1.0.0", "stable");
+    for token in [TOKEN, CI_TOKEN, TESTBENCH_TOKEN, CASES_CI] {
+        let request = proto::CreateUploadRequest {
+            metadata: Some(stable.clone()),
+        };
+        let error = publisher
+            .create_upload(with_token(request, token))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    }
+    let desktop = proto::PackageMetadata {
+        product: super::TESTBENCH_PRODUCT.into(),
+        platform: "windows-x86_64-nsis".into(),
+        file_name: "setup.exe".into(),
+        ..stable.clone()
+    };
+    let error = publisher
+        .create_upload(with_token(
+            proto::CreateUploadRequest {
+                metadata: Some(desktop),
+            },
+            CASES_STABLE,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::PermissionDenied);
+    for invalid in [
+        proto::PackageMetadata {
+            platform: "windows-x86_64-nsis".into(),
+            ..stable.clone()
+        },
+        proto::PackageMetadata {
+            file_name: "other.zip".into(),
+            ..stable.clone()
+        },
+        proto::PackageMetadata {
+            source_sha: "a".repeat(7),
+            ..stable.clone()
+        },
+        proto::PackageMetadata {
+            signature: String::new(),
+            ..stable.clone()
+        },
+        metadata("1.0.0-ci.1.1", "stable"),
+        metadata("0.0.0-ci.10.0", "ci"),
+        metadata("0.0.0-ci.20261110143025123", "ci"),
+        metadata("0.0.0-ci.10.1+sha.a", "ci"),
+    ] {
+        let token = if invalid.channel == "ci" {
+            CASES_CI
+        } else {
+            CASES_STABLE
+        };
+        let error = publisher
+            .create_upload(with_token(
+                proto::CreateUploadRequest {
+                    metadata: Some(invalid),
+                },
+                token,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    }
+    let implicit_channel = publisher
+        .create_upload(with_token(
+            proto::CreateUploadRequest {
+                metadata: Some(metadata("1.0.0", "")),
+            },
+            CASES_STABLE,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(implicit_channel.code(), tonic::Code::PermissionDenied);
+
+    let mut ids = Vec::new();
+    for (version, channel, token, other_token) in [
+        ("1.0.0", "stable", CASES_STABLE, CASES_CI),
+        ("1.1.0", "stable", CASES_STABLE, CASES_CI),
+        ("0.0.0-ci.10.2", "ci", CASES_CI, CASES_STABLE),
+        ("0.0.0-ci.10.1", "ci", CASES_CI, CASES_STABLE),
+    ] {
+        let request = proto::CreateUploadRequest {
+            metadata: Some(metadata(version, channel)),
+        };
+        let upload_id = publisher
+            .create_upload(with_token(request, token))
+            .await
+            .unwrap()
+            .into_inner()
+            .upload
+            .unwrap()
+            .id;
+        let denied = publisher
+            .get_upload(with_token(
+                proto::GetUploadRequest {
+                    upload_id: upload_id.clone(),
+                },
+                other_token,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        store
+            .append_chunk(&upload_id, 0, data.to_vec())
+            .await
+            .unwrap();
+        let complete = proto::CompleteUploadRequest { upload_id };
+        let denied = publisher
+            .complete_upload(with_token(complete.clone(), other_token))
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        let id = publisher
+            .complete_upload(with_token(complete, token))
+            .await
+            .unwrap()
+            .into_inner()
+            .package
+            .unwrap()
+            .id;
+        let publish = proto::PublishReleaseRequest {
+            package_id: id.clone(),
+            channel: channel.into(),
+        };
+        let denied = publisher
+            .publish_release(with_token(publish.clone(), other_token))
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        let withdraw = proto::WithdrawReleaseRequest {
+            package_id: id.clone(),
+            channel: channel.into(),
+        };
+        let denied = publisher
+            .withdraw_release(with_token(withdraw, other_token))
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        let result = publisher.publish_release(with_token(publish, token)).await;
+        if version == "0.0.0-ci.10.1" {
+            assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
+        } else {
+            assert_eq!(
+                result.unwrap().into_inner().package.unwrap().channels,
+                vec![channel]
+            );
+            ids.push(id);
+        }
+    }
+
+    // 管理员可用同一存储接口回退 Stable，CI 的推荐保持独立。
+    assert!(store.publish(&ids[2], "stable").await.is_err());
+    store.publish(&ids[0], "stable").await.unwrap();
+    let catalog = CatalogGrpcService::new(store);
+    for (channel, id) in [("stable", &ids[0]), ("ci", &ids[2])] {
+        let response = catalog
+            .list_packages(Request::new(proto::ListPackagesRequest {
+                product: product.into(),
+                platform: platform.into(),
+                channel: channel.into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(response.packages.len(), 1);
+        assert_eq!(&response.packages[0].id, id);
+        let metadata = response.packages[0].metadata.as_ref().unwrap();
+        assert_eq!(metadata.signature, "signature fixture");
+        assert_eq!(metadata.source_sha, "a".repeat(40));
+        let mut download = catalog
+            .download_package(Request::new(proto::DownloadPackageRequest {
+                package_id: id.clone(),
+                offset: 0,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let chunk = download.next().await.unwrap().unwrap();
+        assert_eq!(chunk.data.as_slice(), data);
+        assert!(chunk.eof);
+    }
+}

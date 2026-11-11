@@ -759,7 +759,11 @@ pub(crate) fn platform_ci_identity(m: &PackageMetadata) -> Result<(), StoreError
 fn validate(m: &PackageMetadata, limit: u64) -> Result<(), StoreError> {
     if !matches!(
         m.product.as_str(),
-        "mskdsp-upper" | "mskdsp-lower" | "mskdsp-platform" | super::TESTBENCH_PRODUCT
+        "mskdsp-upper"
+            | "mskdsp-lower"
+            | "mskdsp-platform"
+            | super::TESTBENCH_PRODUCT
+            | super::TESTBENCH_CASES_PRODUCT
     ) || !safe_component(&m.version)
         || !safe_component(&m.platform)
         || !safe_component(&m.file_name)
@@ -810,13 +814,15 @@ fn validate(m: &PackageMetadata, limit: u64) -> Result<(), StoreError> {
         if semver::Version::parse(&m.version).is_err()
             || m.platform != "windows-x86_64-nsis"
             || m.signature.trim().is_empty()
-            || super::testbench_channel(&m.channel).is_none()
+            || super::scoped_package_channel(&m.product, &m.channel).is_none()
         {
             return Err(StoreError::Invalid(
                 "测试上位机须使用合法 SemVer、Windows x64 NSIS 架构、更新签名和 CI 或 Stable 通道"
                     .into(),
             ));
         }
+    } else if m.product == super::TESTBENCH_CASES_PRODUCT {
+        validate_testbench_cases(m)?;
     } else if !matches!(m.platform.as_str(), "linux-arm64" | "linux-x64")
         || !safe_component(&m.package_version)
         || !m.image_id.strip_prefix("sha256:").is_some_and(hash_valid)
@@ -828,6 +834,10 @@ fn validate(m: &PackageMetadata, limit: u64) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn positive_number(number: &str) -> bool {
+    number.parse::<u64>().is_ok_and(|value| value > 0)
+}
+
 fn validate_new_testbench_version(m: &PackageMetadata) -> Result<(), StoreError> {
     let invalid = || {
         StoreError::Invalid(
@@ -836,14 +846,15 @@ fn validate_new_testbench_version(m: &PackageMetadata) -> Result<(), StoreError>
         )
     };
     let version = semver::Version::parse(&m.version).map_err(|_| invalid())?;
-    let positive = |number: &str| number.parse::<u64>().is_ok_and(|value| value > 0);
     let valid = if m.channel == "ci" {
         let mut parts = version.pre.as_str().split('.');
         match (parts.next(), parts.next(), parts.next(), parts.next()) {
             (Some("ci"), Some(timestamp), None, None) => {
-                timestamp.len() == 17 && positive(timestamp)
+                timestamp.len() == 17 && positive_number(timestamp)
             }
-            (Some("ci"), Some(build), Some(attempt), None) => positive(build) && positive(attempt),
+            (Some("ci"), Some(build), Some(attempt), None) => {
+                positive_number(build) && positive_number(attempt)
+            }
             _ => false,
         }
     } else {
@@ -856,15 +867,53 @@ fn validate_new_testbench_version(m: &PackageMetadata) -> Result<(), StoreError>
     }
 }
 
-fn validate_testbench_release_channel(
-    m: &PackageMetadata,
-    channel: &str,
-) -> Result<(), StoreError> {
-    if m.product == super::TESTBENCH_PRODUCT
-        && super::testbench_channel(&m.channel) != Some(channel)
+fn validate_testbench_cases(m: &PackageMetadata) -> Result<(), StoreError> {
+    if m.platform != super::TESTBENCH_CASES_PLATFORM
+        || m.file_name != format!("{}_{}.zip", super::TESTBENCH_CASES_PRODUCT, m.version)
+        || m.signature.trim().is_empty()
+        || m.source_sha.len() != 40
+        || !m
+            .source_sha
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
     {
         return Err(StoreError::Invalid(
-            "测试上位机仅可在安装包所属通道发布或撤回".into(),
+            "测试用例包须提供 python-zip 架构、与版本一致的 ZIP 文件名、签名及完整来源提交".into(),
+        ));
+    }
+    let invalid_version = || {
+        StoreError::Invalid(
+            "测试用例包须显式指定通道；Stable 版本须为 x.y.z，CI 版本须为 x.y.z-ci.<构建编号>.<尝试编号>"
+                .into(),
+        )
+    };
+    let version = semver::Version::parse(&m.version).map_err(|_| invalid_version())?;
+    let valid = match m.channel.as_str() {
+        "stable" => version.pre.is_empty(),
+        "ci" => {
+            let mut parts = version.pre.as_str().split('.');
+            match (parts.next(), parts.next(), parts.next(), parts.next()) {
+                (Some("ci"), Some(build), Some(attempt), None) => {
+                    positive_number(build) && positive_number(attempt)
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    };
+    if valid && version.build.is_empty() {
+        Ok(())
+    } else {
+        Err(invalid_version())
+    }
+}
+
+fn validate_scoped_release_channel(m: &PackageMetadata, channel: &str) -> Result<(), StoreError> {
+    if super::uses_scoped_publisher(&m.product)
+        && super::scoped_package_channel(&m.product, &m.channel) != Some(channel)
+    {
+        return Err(StoreError::Invalid(
+            "该产品仅可在软件包所属通道发布或撤回".into(),
         ));
     }
     Ok(())
@@ -1131,7 +1180,7 @@ impl SoftwareStore {
                     "平台候选包不支持发布或撤回，请到程序更新页手动升级".into(),
                 ));
             }
-            validate_testbench_release_channel(&package.metadata, &channel)?;
+            validate_scoped_release_channel(&package.metadata, &channel)?;
             s.db.execute(
                 "DELETE FROM channels WHERE channel=?1 AND package_id=?2",
                 params![channel, id],
@@ -1466,10 +1515,10 @@ impl Inner {
         if p.metadata.platform == "linux-x64" && channel != "ci" {
             return Err(StoreError::Invalid("下位机 x64 仅支持 CI 通道".into()));
         }
-        validate_testbench_release_channel(&p.metadata, channel)?;
+        validate_scoped_release_channel(&p.metadata, channel)?;
         verify(&self.package_path(&p.metadata)?, &p.metadata)?;
         let tx = self.db.transaction().map_err(storage)?;
-        if p.metadata.product == super::TESTBENCH_PRODUCT && channel == "ci" {
+        if super::uses_scoped_publisher(&p.metadata.product) && channel == "ci" {
             let current: Option<String> = tx.query_row(
                 "SELECT p.version FROM channels c JOIN packages p ON p.id=c.package_id WHERE c.product=?1 AND c.channel=?2 AND c.platform=?3",
                 params![p.metadata.product, channel, p.metadata.platform],
@@ -1480,7 +1529,7 @@ impl Inner {
                 let candidate = semver::Version::parse(&p.metadata.version).map_err(storage)?;
                 if candidate < current {
                     return Err(StoreError::Conflict(
-                        "测试上位机 CI 通道已推荐更新的版本".into(),
+                        "该产品的 CI 通道已推荐更新的版本".into(),
                     ));
                 }
             }

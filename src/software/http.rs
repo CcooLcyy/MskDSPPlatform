@@ -162,7 +162,7 @@ async fn publish(
     };
     if state.public_base_url.is_empty() {
         match state.store.get_package(&id).await {
-            Ok(package) if package.metadata.product == super::TESTBENCH_PRODUCT => {}
+            Ok(package) if super::uses_scoped_publisher(&package.metadata.product) => {}
             Ok(_) => {
                 return error(
                     StatusCode::PRECONDITION_FAILED,

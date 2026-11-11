@@ -2,7 +2,7 @@ pub mod proto {
     tonic::include_proto!("mskdsp.platform.software.v1");
 }
 
-use super::{models, store::SoftwareStore};
+use super::{TESTBENCH_CASES_PRODUCT, TESTBENCH_PRODUCT, models, store::SoftwareStore};
 use proto::software_catalog_service_server::SoftwareCatalogService;
 use proto::software_publish_service_server::SoftwarePublishService;
 use sha2::{Digest, Sha256};
@@ -21,7 +21,10 @@ const STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 enum UploadPermission {
     Publisher,
     PlatformCi,
-    TestbenchPublisher(&'static str),
+    ScopedPublisher {
+        product: &'static str,
+        channel: &'static str,
+    },
 }
 
 #[derive(Clone)]
@@ -31,6 +34,8 @@ pub struct PublishGrpcService {
     ci_upload_token_sha256: String,
     testbench_publisher_token_sha256: String,
     testbench_ci_publisher_token_sha256: String,
+    testbench_cases_publisher_token_sha256: String,
+    testbench_cases_ci_publisher_token_sha256: String,
     public_base_url: String,
 }
 
@@ -42,6 +47,8 @@ impl PublishGrpcService {
             ci_upload_token_sha256: String::new(),
             testbench_publisher_token_sha256: String::new(),
             testbench_ci_publisher_token_sha256: String::new(),
+            testbench_cases_publisher_token_sha256: String::new(),
+            testbench_cases_ci_publisher_token_sha256: String::new(),
             public_base_url,
         }
     }
@@ -58,6 +65,16 @@ impl PublishGrpcService {
 
     pub fn with_testbench_ci_publisher_token(mut self, token_sha256: String) -> Self {
         self.testbench_ci_publisher_token_sha256 = token_sha256;
+        self
+    }
+
+    pub fn with_testbench_cases_publisher_tokens(
+        mut self,
+        stable_token_sha256: String,
+        ci_token_sha256: String,
+    ) -> Self {
+        self.testbench_cases_publisher_token_sha256 = stable_token_sha256;
+        self.testbench_cases_ci_publisher_token_sha256 = ci_token_sha256;
         self
     }
 
@@ -87,11 +104,31 @@ impl PublishGrpcService {
         if matches(&self.ci_upload_token_sha256) {
             return Ok(UploadPermission::PlatformCi);
         }
-        if matches(&self.testbench_ci_publisher_token_sha256) {
-            return Ok(UploadPermission::TestbenchPublisher("ci"));
-        }
-        if matches(&self.testbench_publisher_token_sha256) {
-            return Ok(UploadPermission::TestbenchPublisher("stable"));
+        for (expected, product, channel) in [
+            (
+                &self.testbench_ci_publisher_token_sha256,
+                TESTBENCH_PRODUCT,
+                "ci",
+            ),
+            (
+                &self.testbench_publisher_token_sha256,
+                TESTBENCH_PRODUCT,
+                "stable",
+            ),
+            (
+                &self.testbench_cases_ci_publisher_token_sha256,
+                TESTBENCH_CASES_PRODUCT,
+                "ci",
+            ),
+            (
+                &self.testbench_cases_publisher_token_sha256,
+                TESTBENCH_CASES_PRODUCT,
+                "stable",
+            ),
+        ] {
+            if matches(expected) {
+                return Ok(UploadPermission::ScopedPublisher { product, channel });
+            }
         }
         if matches(&self.token_sha256) {
             return Ok(UploadPermission::Publisher);
@@ -103,23 +140,24 @@ impl PublishGrpcService {
         permission: UploadPermission,
         metadata: &models::PackageMetadata,
     ) -> Result<(), Status> {
-        let testbench = metadata.product == super::TESTBENCH_PRODUCT;
         match permission {
             UploadPermission::PlatformCi => {
                 super::store::platform_ci_identity(metadata).map_err(|_| {
                     Status::permission_denied("CI 上传令牌仅允许操作平台自身的 main CI 包")
                 })
             }
-            UploadPermission::TestbenchPublisher(channel)
-                if !testbench || super::testbench_channel(&metadata.channel) != Some(channel) =>
+            UploadPermission::ScopedPublisher { product, channel }
+                if metadata.product != product
+                    || super::scoped_package_channel(&metadata.product, &metadata.channel)
+                        != Some(channel) =>
             {
                 Err(Status::permission_denied(
-                    "测试上位机发布令牌仅允许操作对应通道的测试上位机安装包",
+                    "发布令牌仅允许操作对应产品和通道的软件包",
                 ))
             }
-            UploadPermission::Publisher if testbench => Err(Status::permission_denied(
-                "测试上位机安装包需要独立的发布令牌",
-            )),
+            UploadPermission::Publisher if super::uses_scoped_publisher(&metadata.product) => {
+                Err(Status::permission_denied("此产品需要独立的发布令牌"))
+            }
             _ => Ok(()),
         }
     }
@@ -135,10 +173,10 @@ impl PublishGrpcService {
                 "CI 上传令牌不允许发布或撤回软件版本",
             ));
         }
-        if matches!(permission, UploadPermission::TestbenchPublisher(allowed) if channel != allowed)
+        if matches!(permission, UploadPermission::ScopedPublisher { channel: allowed, .. } if channel != allowed)
         {
             return Err(Status::permission_denied(
-                "测试上位机发布令牌仅允许发布或撤回对应通道",
+                "发布令牌仅允许发布或撤回对应通道",
             ));
         }
         let package = self.store.get_package(id).await.map_err(store_status)?;
@@ -288,7 +326,7 @@ impl SoftwarePublishService for PublishGrpcService {
         let message = request.into_inner();
         self.authorize_release(permission, &message.package_id, &message.channel)
             .await?;
-        if !matches!(permission, UploadPermission::TestbenchPublisher(_)) {
+        if !matches!(permission, UploadPermission::ScopedPublisher { .. }) {
             self.require_public_base_url().map_err(|failure| *failure)?;
         }
         let package = self

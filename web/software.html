@@ -132,7 +132,7 @@
   </div>
   <script type="module">
 const $ = id => document.getElementById(id);
-const productNames = {'mskdsp-upper':'上位机', 'mskdsp-lower':'下位机', 'mskdsp-testbench':'测试上位机', 'mskdsp-platform':'平台软件'};
+const productNames = {'mskdsp-upper':'上位机', 'mskdsp-lower':'下位机', 'mskdsp-testbench':'测试上位机', 'mskdsp-testbench-cases':'测试用例包', 'mskdsp-platform':'平台软件'};
 const releaseChannels = ['ci','stable'];
 let packages = [], busy = true, authenticated = false, catalogLoaded = false;
 let platformStatus = null, platformError = '', authorizationLost = false;
@@ -219,6 +219,7 @@ async function mutate(pkg, channel, operation) {
 }
 function allowedChannels(pkg) {
   if (pkg.metadata.product === 'mskdsp-testbench') return [pkg.metadata.channel === 'ci' ? 'ci' : 'stable'];
+  if (pkg.metadata.product === 'mskdsp-testbench-cases') return releaseChannels.filter(channel => channel === pkg.metadata.channel);
   return pkg.metadata.platform === 'linux-x64' && pkg.metadata.product === 'mskdsp-lower' ? ['ci'] : releaseChannels;
 }
 function packageChannels(pkg) {

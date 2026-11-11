@@ -68,18 +68,21 @@ class SoftwarePageTests(unittest.TestCase):
 
     def test_fixed_sections_and_read_only_platform_status(self):
         self.run_scenario(r'''
-const p=await open();assert(p.api.sections);assert.equal(p.api.sections.size,4);assert.equal(p.document.getElementById('product'),null);
-for(const product of ['upper','lower','testbench','platform'])assert.equal(p.section(product).history.open,false);
+const products=['upper','lower','testbench','testbench-cases','platform'];
+const p=await open();assert(p.api.sections);assert.equal(p.api.sections.size,products.length);assert.equal(p.document.getElementById('product'),null);
+for(const product of products)assert.equal(p.section(product).history.open,false);
 assert(p.section('upper').summary.textContent.includes('暂无推荐版本'));assert(p.section('platform').summary.textContent.includes('0.1.0'));assert(p.section('platform').summary.textContent.includes('0.2.0'));
 assert.equal(p.calls[0].path,'/api/v1/auth/me');assert.equal(p.calls.filter(c=>c.path==='/api/update/status').length,1);assert(p.calls.every(c=>!c.options.method||c.options.method==='GET'));
-const empty=await open({records:[]});for(const product of ['upper','lower','testbench','platform'])assert((await empty.expand(product)).empty.textContent.includes('暂无安装包'));
+const empty=await open({records:[]});for(const product of products)assert((await empty.expand(product)).empty.textContent.includes('暂无安装包'));
         ''')
 
     def test_testbench_actions_keep_ci_and_stable_separate(self):
         self.run_scenario(r'''
-const pkg=record({id:'testbench',metadata:{product:'mskdsp-testbench'}});
-const ci=record({id:'testbench-ci',metadata:{product:'mskdsp-testbench',channel:'ci',version:'1.2.3-ci.10.2'}});
-const p=await open({records:[pkg,ci,record()]}),section=await p.expand('testbench');
+for(const [name,stableChannel,platform] of [['testbench','','windows-x86_64-nsis'],['testbench-cases','stable','python-zip']]) {
+const product=`mskdsp-${name}`;
+const pkg=record({id:name,metadata:{product,channel:stableChannel,platform}});
+const ci=record({id:`${name}-ci`,metadata:{product,channel:'ci',version:'1.2.3-ci.10.2',platform}});
+const p=await open({records:[pkg,ci,record()]}),section=await p.expand(name);
 assert.deepEqual(section.channel.children.map(n=>n.value),['','unpublished','ci','stable']);
 assert(section.summary.textContent.includes('STABLE'));assert(section.summary.textContent.includes('CI'));
 const selects=flatten(section.list.children).filter(n=>n.tag==='select');
@@ -91,6 +94,8 @@ await p.api.mutate(pkg,'stable','publish');assert(section.summary.textContent.in
 section.channel.value='stable';section.channel.events.change();assert.equal(section.count.textContent,'1 个安装包');
 assert(!section.list.textContent.includes('1.2.3-ci.10.2'));
 assert(!p.section('upper').summary.textContent.includes('1.2.3'));
+assert(!p.section(name==='testbench'?'testbench-cases':'testbench').summary.textContent.includes('1.2.3'));
+}
         ''')
 
     def test_local_filters_summary_and_focus_survive_refresh(self):

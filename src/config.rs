@@ -34,6 +34,8 @@ pub struct SoftwareConfig {
     pub ci_upload_token_sha256: String,
     pub testbench_publisher_token_sha256: String,
     pub testbench_ci_publisher_token_sha256: String,
+    pub testbench_cases_publisher_token_sha256: String,
+    pub testbench_cases_ci_publisher_token_sha256: String,
     pub max_package_bytes: u64,
     pub upload_retention_seconds: u64,
 }
@@ -46,6 +48,8 @@ impl Default for SoftwareConfig {
             ci_upload_token_sha256: String::new(),
             testbench_publisher_token_sha256: String::new(),
             testbench_ci_publisher_token_sha256: String::new(),
+            testbench_cases_publisher_token_sha256: String::new(),
+            testbench_cases_ci_publisher_token_sha256: String::new(),
             max_package_bytes: 8 * 1024 * 1024 * 1024,
             upload_retention_seconds: 86400,
         }
@@ -67,62 +71,41 @@ impl SoftwareConfig {
                 "软件仓库公开下载地址必须为无凭据、查询参数或片段的 HTTP/HTTPS 地址"
             );
         }
-        anyhow::ensure!(
-            self.publisher_token_sha256.is_empty()
-                || (self.publisher_token_sha256.len() == 64
-                    && self
-                        .publisher_token_sha256
-                        .bytes()
-                        .all(|c| c.is_ascii_hexdigit())),
-            "软件仓库发布令牌摘要必须为空或 64 位十六进制 SHA256"
-        );
-        anyhow::ensure!(
-            self.ci_upload_token_sha256.is_empty()
-                || (self.ci_upload_token_sha256.len() == 64
-                    && self
-                        .ci_upload_token_sha256
-                        .bytes()
-                        .all(|c| c.is_ascii_hexdigit())),
-            "平台 CI 上传令牌摘要必须为空或 64 位十六进制 SHA256"
-        );
-        anyhow::ensure!(
-            self.ci_upload_token_sha256.is_empty()
-                || !self
-                    .ci_upload_token_sha256
-                    .eq_ignore_ascii_case(&self.publisher_token_sha256),
-            "平台 CI 上传令牌必须与软件发布令牌分别配置"
-        );
-        let testbench_digest = &self.testbench_publisher_token_sha256;
-        anyhow::ensure!(
-            testbench_digest.is_empty()
-                || (testbench_digest.len() == 64
-                    && testbench_digest.bytes().all(|c| c.is_ascii_hexdigit())),
-            "测试上位机发布令牌摘要必须为空或 64 位十六进制 SHA256"
-        );
-        anyhow::ensure!(
-            testbench_digest.is_empty()
-                || (!testbench_digest.eq_ignore_ascii_case(&self.publisher_token_sha256)
-                    && !testbench_digest.eq_ignore_ascii_case(&self.ci_upload_token_sha256)),
-            "测试上位机发布令牌必须与软件发布令牌、平台 CI 上传令牌分别配置"
-        );
-        let testbench_ci_digest = &self.testbench_ci_publisher_token_sha256;
-        anyhow::ensure!(
-            testbench_ci_digest.is_empty()
-                || (testbench_ci_digest.len() == 64
-                    && testbench_ci_digest.bytes().all(|c| c.is_ascii_hexdigit())),
-            "测试上位机 CI 发布令牌摘要必须为空或 64 位十六进制 SHA256"
-        );
-        anyhow::ensure!(
-            testbench_ci_digest.is_empty()
-                || ![
-                    &self.publisher_token_sha256,
-                    &self.ci_upload_token_sha256,
-                    testbench_digest,
-                ]
-                .iter()
-                .any(|digest| testbench_ci_digest.eq_ignore_ascii_case(digest)),
-            "测试上位机 CI 发布令牌必须与其他发布或上传令牌分别配置"
-        );
+        let token_digests = [
+            ("软件仓库发布令牌", &self.publisher_token_sha256),
+            ("平台 CI 上传令牌", &self.ci_upload_token_sha256),
+            (
+                "测试上位机 Stable 发布令牌",
+                &self.testbench_publisher_token_sha256,
+            ),
+            (
+                "测试上位机 CI 发布令牌",
+                &self.testbench_ci_publisher_token_sha256,
+            ),
+            (
+                "测试用例包 Stable 发布令牌",
+                &self.testbench_cases_publisher_token_sha256,
+            ),
+            (
+                "测试用例包 CI 发布令牌",
+                &self.testbench_cases_ci_publisher_token_sha256,
+            ),
+        ];
+        for (index, (name, digest)) in token_digests.iter().enumerate() {
+            if digest.is_empty() {
+                continue;
+            }
+            anyhow::ensure!(
+                digest.len() == 64 && digest.bytes().all(|c| c.is_ascii_hexdigit()),
+                "{name}摘要必须为空或 64 位十六进制 SHA256"
+            );
+            for (other_name, other_digest) in &token_digests[..index] {
+                anyhow::ensure!(
+                    !digest.eq_ignore_ascii_case(other_digest),
+                    "{name}必须与{other_name}分别配置"
+                );
+            }
+        }
         anyhow::ensure!(
             (1..=8 * 1024 * 1024 * 1024).contains(&self.max_package_bytes),
             "软件安装包大小上限必须为 1 字节到 8 GiB"
@@ -218,6 +201,18 @@ mod software_tests {
                 .testbench_ci_publisher_token_sha256
                 .is_empty()
         );
+        assert!(
+            config
+                .software
+                .testbench_cases_publisher_token_sha256
+                .is_empty()
+        );
+        assert!(
+            config
+                .software
+                .testbench_cases_ci_publisher_token_sha256
+                .is_empty()
+        );
         config.software.validate().unwrap();
     }
 
@@ -302,6 +297,35 @@ mod software_tests {
             assert!(config.validate().is_err());
         }
         config.testbench_ci_publisher_token_sha256 = "01".repeat(32);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn testbench_cases_publisher_digests_must_be_distinct() {
+        let mut config = SoftwareConfig {
+            publisher_token_sha256: "ab".repeat(32),
+            ci_upload_token_sha256: "cd".repeat(32),
+            testbench_publisher_token_sha256: "ef".repeat(32),
+            testbench_ci_publisher_token_sha256: "01".repeat(32),
+            ..Default::default()
+        };
+        for invalid in [
+            "AB".repeat(32),
+            "CD".repeat(32),
+            "EF".repeat(32),
+            "01".repeat(32),
+            "plaintext".into(),
+        ] {
+            config.testbench_cases_publisher_token_sha256 = invalid.clone();
+            assert!(config.validate().is_err());
+            config.testbench_cases_publisher_token_sha256 = "23".repeat(32);
+            config.testbench_cases_ci_publisher_token_sha256 = invalid;
+            assert!(config.validate().is_err());
+            config.testbench_cases_ci_publisher_token_sha256.clear();
+        }
+        config.testbench_cases_ci_publisher_token_sha256 = "23".repeat(32);
+        assert!(config.validate().is_err());
+        config.testbench_cases_ci_publisher_token_sha256 = "45".repeat(32);
         config.validate().unwrap();
     }
 }
