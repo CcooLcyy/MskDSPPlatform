@@ -108,7 +108,11 @@ async fn cleanup_filters_by_age_identity_and_current_channel_references() {
         age(&store, package).await;
     }
 
-    let eligible = BTreeSet::from([unpublished_ci.id.clone(), previous_ci.id.clone()]);
+    let eligible = BTreeSet::from([
+        unpublished_ci.id.clone(),
+        previous_ci.id.clone(),
+        legacy.id.clone(),
+    ]);
     assert_eq!(candidates(&store).await, eligible);
     assert_eq!(store.cleanup_settings().await.unwrap(), None);
     assert!(store.cleanup_scheduled().await.unwrap().is_none());
@@ -117,11 +121,11 @@ async fn cleanup_filters_by_age_identity_and_current_channel_references() {
         .cleanup_once(30, eligible.into_iter().collect())
         .await
         .unwrap();
-    assert_eq!(result.deleted, 2);
-    assert_eq!(result.freed_bytes, 2 * CONTENT.len() as u64);
+    assert_eq!(result.deleted, 3);
+    assert_eq!(result.freed_bytes, 3 * CONTENT.len() as u64);
     assert_eq!(result.pending, 0);
 
-    for package in [&unpublished_ci, &previous_ci] {
+    for package in [&unpublished_ci, &previous_ci, &legacy] {
         let m = &package.metadata;
         let path = dir
             .path()
@@ -139,7 +143,6 @@ async fn cleanup_filters_by_age_identity_and_current_channel_references() {
     for package in [
         current_ci,
         previous_stable,
-        legacy,
         recent_ci,
         unknown,
         stable,
@@ -153,6 +156,74 @@ async fn cleanup_filters_by_age_identity_and_current_channel_references() {
         .await
         .unwrap();
     assert_ne!(reupload.id, unpublished_ci.id);
+}
+
+#[tokio::test]
+async fn seven_day_cleanup_includes_old_upper_ci_and_preserves_existing_stable() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SoftwareStore::new(dir.path().into(), 1024).unwrap();
+    let upper_ci = |version: &str| PackageMetadata {
+        product: "mskdsp-upper".into(),
+        version: version.into(),
+        platform: "windows-x86_64-nsis".into(),
+        file_name: "installer.exe".into(),
+        channel: "ci".into(),
+        source_ref: "main".into(),
+        source_sha: format!("ffc9f0b{}", "0".repeat(33)),
+        signature: "test-signature".into(),
+        ..metadata(CONTENT)
+    };
+    let old = upload(
+        &store,
+        upper_ci("0.8.0-ci.20261030t040804+sha.ffc9f0b"),
+        CONTENT,
+    )
+    .await;
+    let stable = upload(
+        &store,
+        upper_ci("0.8.0-ci.20261030t034035+sha.ffc9f0b"),
+        CONTENT,
+    )
+    .await;
+    age(&store, &old).await;
+    age(&store, &stable).await;
+    store.publish(&old.id, "ci").await.unwrap();
+    store.withdraw(&old.id, "ci").await.unwrap();
+    store.publish(&stable.id, "stable").await.unwrap();
+    // 模拟旧版本只保留曾发布标记与当前通道引用。
+    let old_id = old.id.clone();
+    store
+        .run(move |inner| {
+            inner
+                .db
+                .execute("DELETE FROM package_publications", [])
+                .map_err(storage)?;
+            inner
+                .db
+                .execute(
+                    "INSERT INTO package_publications VALUES(?1,'unknown')",
+                    [old_id],
+                )
+                .map_err(storage)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    drop(store);
+
+    let store = SoftwareStore::new(dir.path().into(), 1024).unwrap();
+    store.withdraw(&stable.id, "stable").await.unwrap();
+    let preview = store.preview_cleanup(7).await.unwrap();
+    let ids: Vec<_> = preview.packages.into_iter().map(|p| p.id).collect();
+    assert_eq!(ids, [old.id.clone()]);
+    let result = store
+        .set_cleanup_days(Some(7))
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.deleted, 1);
+    assert!(store.get_package(&stable.id).await.is_ok());
 }
 
 #[tokio::test]

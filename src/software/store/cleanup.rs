@@ -28,25 +28,19 @@ pub(super) const SCHEMA: &str = "
     );
     DROP TRIGGER IF EXISTS remember_package_publication_insert;
     DROP TRIGGER IF EXISTS remember_package_publication_update;
-    CREATE TRIGGER IF NOT EXISTS record_package_publication_insert
+    DROP TRIGGER IF EXISTS record_package_publication_insert;
+    DROP TRIGGER IF EXISTS record_package_publication_update;
+    DELETE FROM package_publications WHERE channel='unknown';
+    INSERT INTO package_publications(package_id,channel)
+    SELECT package_id,channel FROM channels WHERE true
+    ON CONFLICT(package_id,channel) DO NOTHING;
+    CREATE TRIGGER IF NOT EXISTS track_package_publication_insert
     AFTER INSERT ON channels BEGIN
-        INSERT INTO package_publications
-        SELECT id,'unknown' FROM packages
-        WHERE id=NEW.package_id AND ever_published=1
-          AND product NOT IN ('mskdsp-testbench','mskdsp-testbench-cases')
-          AND NOT EXISTS(SELECT 1 FROM package_publications WHERE package_id=NEW.package_id)
-        ON CONFLICT(package_id,channel) DO NOTHING;
         INSERT INTO package_publications VALUES(NEW.package_id,NEW.channel)
         ON CONFLICT(package_id,channel) DO NOTHING;
     END;
-    CREATE TRIGGER IF NOT EXISTS record_package_publication_update
+    CREATE TRIGGER IF NOT EXISTS track_package_publication_update
     AFTER UPDATE OF package_id ON channels BEGIN
-        INSERT INTO package_publications
-        SELECT id,'unknown' FROM packages
-        WHERE id=NEW.package_id AND ever_published=1
-          AND product NOT IN ('mskdsp-testbench','mskdsp-testbench-cases')
-          AND NOT EXISTS(SELECT 1 FROM package_publications WHERE package_id=NEW.package_id)
-        ON CONFLICT(package_id,channel) DO NOTHING;
         INSERT INTO package_publications VALUES(NEW.package_id,NEW.channel)
         ON CONFLICT(package_id,channel) DO NOTHING;
     END;
@@ -235,9 +229,6 @@ impl Inner {
                    AND NOT EXISTS(SELECT 1 FROM channels c WHERE c.package_id=p.id)
                    AND NOT EXISTS(SELECT 1 FROM package_publications h
                                   WHERE h.package_id=p.id AND h.channel<>'ci')
-                   AND (p.ever_published=0 OR p.product IN ('mskdsp-testbench','mskdsp-testbench-cases')
-                        OR EXISTS(SELECT 1 FROM package_publications h
-                                  WHERE h.package_id=p.id AND h.channel='ci'))
                  ORDER BY p.created,p.id",
             )
             .map_err(storage)?;
