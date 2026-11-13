@@ -39,9 +39,11 @@ impl PlatformRuntime {
             auth: AdminAuth::new(self.config.auth.clone())?,
         };
         let working_directory = std::env::current_dir().context("读取平台工作目录失败")?;
+        let runtime_directory =
+            std::env::var_os("MSKDSP_RUNTIME_DIR").filter(|directory| !directory.is_empty());
         let data_root = resolve_data_root(
             std::env::var_os("MSKDSP_PLATFORM_DATA_DIR"),
-            std::env::var_os("MSKDSP_RUNTIME_DIR"),
+            runtime_directory.clone(),
             &working_directory,
         );
         let templates_directory = data_root.join("modbus-templates");
@@ -63,7 +65,8 @@ impl PlatformRuntime {
         })
         .await
         .context("初始化软件仓库任务失败")?
-        .context("初始化软件仓库失败")?;
+        .context("初始化软件仓库失败")?
+        .with_runtime_directory(runtime_directory.map(|path| working_directory.join(path)));
         let accounts = crate::accounts::AccountStore::open(
             data_root.join("accounts").join("accounts.sqlite3"),
         )
@@ -247,6 +250,13 @@ async fn run_software_maintenance(
                     Ok(count) if count > 0 => info!(count, "软件仓库过期上传已清理"),
                     Ok(_) => {},
                     Err(error) => warn!(error = %error, "清理软件仓库过期上传失败，将在下次维护重试"),
+                }
+                match store.cleanup_scheduled().await {
+                    Ok(Some(result)) if result.deleted > 0 || result.freed_bytes > 0 || result.pending > 0 => {
+                        info!(deleted = result.deleted, freed_bytes = result.freed_bytes, pending = result.pending, "CI 安装包维护完成");
+                    }
+                    Ok(_) => {}
+                    Err(error) => warn!(error = %error, "CI 安装包维护失败，将在下次维护重试"),
                 }
             }
         }

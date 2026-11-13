@@ -851,8 +851,12 @@ class RuntimeHandler(BaseHTTPRequestHandler):
         connection = http.client.HTTPConnection(self.server.manager.child_http, timeout=10)
         sent = False
         try:
-            # 点表与上位机一致支持 10 MiB，其他代理请求沿用原有上限。
             path = urlsplit(self.path).path
+            if self.command == "POST" and path in (
+                "/api/v1/software/cleanup", "/api/v1/software/cleanup/settings",
+            ):
+                connection.timeout = 55
+            # 点表与上位机一致支持 10 MiB，其他代理请求沿用原有上限。
             template_request = path == "/api/v1/modbus-templates" or path.startswith("/api/v1/modbus-templates/")
             raw = self.body((10 if template_request else 1) * 1024 * 1024)
             blocked = HOP_HEADERS | {part.strip().lower() for part in self.headers.get("Connection", "").split(",")}

@@ -146,7 +146,7 @@ pub(super) async fn download(
         .await
         .map_err(|_| Status::deadline_exceeded("查询安装包超过请求总时限"))?
         .map_err(store_status)?;
-    let descriptor = timeout_at(
+    let (descriptor, file) = timeout_at(
         deadline,
         store.download_file(&request.package_id, &package.metadata.file_name),
     )
@@ -159,7 +159,7 @@ pub(super) async fn download(
     if request.offset > descriptor.size {
         return Err(Status::out_of_range("安装包下载偏移超过文件大小"));
     }
-    let mut file = limited_io(deadline, limits, File::open(&descriptor.path)).await?;
+    let mut file = File::from_std(file);
     verify_file(&mut file, &descriptor, request.offset, deadline, limits)
         .await
         .map_err(|error| {
@@ -192,7 +192,6 @@ mod tests {
         tokio::fs::write(&path, &data).await.unwrap();
         let file = File::open(&path).await.unwrap();
         let descriptor = DownloadFile {
-            path,
             size: data.len() as u64,
             sha256: format!("{:x}", Sha256::digest(&data)),
             file_name: "package.bin".into(),

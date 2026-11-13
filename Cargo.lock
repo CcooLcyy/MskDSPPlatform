@@ -774,6 +774,7 @@ dependencies = [
  "chrono",
  "prost",
  "rusqlite",
+ "rustix",
  "semver",
  "serde",
  "serde_json",

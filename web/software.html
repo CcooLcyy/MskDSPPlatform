@@ -41,6 +41,14 @@
     #message { margin-bottom:14px; }
     #software-sections { display:grid; gap:14px; min-width:0; }
     .software-section { padding:18px 20px; min-width:0; }
+    .cleanup-panel { margin-bottom:14px; }
+    .cleanup-panel .hint { margin:0; }
+    .cleanup-controls { display:flex; flex-wrap:wrap; gap:12px 28px; margin:12px 0; }
+    .cleanup-controls .actions { align-items:end; }
+    .cleanup-controls select { min-width:110px; }
+    .cleanup-status { margin:8px 0; }
+    .cleanup-preview .package-table-wrap { max-height:320px; margin-bottom:10px; }
+    .cleanup-preview thead { position:sticky; top:0; }
     .software-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
     .software-heading h2 { font-size:18px; margin:0; }
     .software-heading .hint { margin:0; font-size:12px; }
@@ -124,6 +132,31 @@
       <main class="page-content">
         <div class="page-heading"><div><h1>软件管理</h1><p class="page-summary">分别查看上位机、下位机、测试上位机与平台软件，展开历史后管理各安装包。</p></div><button id="refresh" type="button" disabled>刷新列表</button></div>
         <div id="message" class="status-banner" role="status" aria-live="polite">正在读取版本…</div>
+        <section id="cleanup-panel" class="panel software-section cleanup-panel" aria-labelledby="cleanup-title" hidden>
+          <div class="software-heading"><h2 id="cleanup-title">CI 安装包清理</h2></div>
+          <p class="hint">按入库时间清理历史 CI 包，保留当前推荐及无法确认通道的包。保存保留期限后立即执行一次，之后每小时检查。</p>
+          <div class="cleanup-controls">
+            <div class="actions">
+              <label>自动清理<select id="cleanup-auto-days" disabled></select></label>
+              <button id="cleanup-save" type="button" disabled>保存设置</button>
+            </div>
+            <div class="actions">
+              <label>手动清理<select id="cleanup-manual-days" disabled></select></label>
+              <button id="cleanup-preview" type="button" disabled>预览清理</button>
+            </div>
+          </div>
+          <p id="cleanup-settings-status" class="status-banner cleanup-status" role="status" hidden></p>
+          <p id="cleanup-manual-status" class="status-banner cleanup-status" role="status" hidden></p>
+          <div id="cleanup-preview-result" class="cleanup-preview" hidden>
+            <div class="package-table-wrap">
+              <table class="package-table" aria-label="待清理的安装包">
+                <thead><tr><th scope="col">软件</th><th scope="col">版本</th><th scope="col">架构</th><th scope="col">大小</th><th scope="col">入库时间</th></tr></thead>
+                <tbody id="cleanup-preview-packages"></tbody>
+              </table>
+            </div>
+            <button id="cleanup-execute" class="danger" type="button" disabled>清理预览中的安装包</button>
+          </div>
+        </section>
         <div id="software-sections"></div>
         <footer class="software-footer">平台候选包只保存历史，不公开下载，也不会自动更新。发布会切换所选通道的推荐版本；撤回仅移除当前通道引用。</footer>
         <noscript>请启用 JavaScript 以查看和管理软件版本。</noscript>
@@ -134,8 +167,12 @@
 const $ = id => document.getElementById(id);
 const productNames = {'mskdsp-upper':'上位机', 'mskdsp-lower':'下位机', 'mskdsp-testbench':'测试上位机', 'mskdsp-testbench-cases':'测试用例包', 'mskdsp-platform':'平台软件'};
 const releaseChannels = ['ci','stable'];
+const cleanupUrl = '/api/v1/software/cleanup';
+const cleanupTimeoutMs = 60000;
+const retentionDays = [7, 30, 45, 60, 90];
 let packages = [], busy = true, authenticated = false, catalogLoaded = false;
 let platformStatus = null, platformError = '', authorizationLost = false;
+let cleanupSettingsLoaded = false, cleanupPreview = null;
 const sections = new Map();
 const text = value => typeof value === 'string' ? value : '';
 function message(value, failed = false) {
@@ -150,13 +187,18 @@ function element(tag, value, className) {
 }
 function setBusy(value) {
   busy = value;
-  $('refresh').disabled = value || !authenticated;
-  $('logout').disabled = value || !authenticated;
-  document.querySelectorAll('[data-package-control]').forEach(node => { node.disabled = value || !authenticated || node.getAttribute('data-unavailable') === 'true'; });
+  const disabled = value || !authenticated;
+  $('refresh').disabled = disabled;
+  $('logout').disabled = disabled;
+  $('cleanup-panel').hidden = !authenticated;
+  $('cleanup-auto-days').disabled = $('cleanup-save').disabled = disabled || !cleanupSettingsLoaded;
+  $('cleanup-manual-days').disabled = $('cleanup-preview').disabled = disabled;
+  $('cleanup-execute').disabled = disabled || !cleanupPreview?.packages.length;
+  document.querySelectorAll('[data-package-control]').forEach(node => { node.disabled = disabled || node.getAttribute('data-unavailable') === 'true'; });
 }
-async function request(path, options = {}) {
+async function request(path, options = {}, timeoutMs = 15000) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(path, {credentials:'same-origin', cache:'no-store', ...options, signal:controller.signal});
     if (response.status === 401) {
@@ -191,6 +233,130 @@ function timeNode(value) {
 function timeField(list, label, value) {
   const cell = element('dd'); cell.append(timeNode(value)); list.append(element('dt', label), cell);
 }
+function cleanupStatus(id, value, failed = false) {
+  const status = $(id);
+  status.textContent = value;
+  status.hidden = !value;
+  status.classList.toggle('error', failed);
+}
+function applyCleanupSetting(setting) {
+  if (setting?.days !== null && !retentionDays.includes(setting?.days)) throw new Error('清理设置格式无法识别');
+  $('cleanup-auto-days').value = setting.days === null ? '' : String(setting.days);
+  cleanupSettingsLoaded = true;
+}
+async function readCleanupSetting() {
+  try {
+    const setting = await request(cleanupUrl);
+    if (!authenticated) return;
+    applyCleanupSetting(setting);
+    cleanupStatus('cleanup-settings-status', '');
+  } catch (error) {
+    cleanupSettingsLoaded = false;
+    if (authorizationLost) throw error;
+    cleanupStatus('cleanup-settings-status', `清理设置读取失败。${error.message}`, true);
+  }
+}
+function postCleanup(path, payload, timeoutMs) {
+  return request(`${cleanupUrl}${path}`, {
+    method:'POST', headers:{'Content-Type':'application/json', 'X-MskDSP-Action':'software'}, body:JSON.stringify(payload)
+  }, timeoutMs);
+}
+function cleanupResult(result) {
+  if (!Number.isInteger(result?.deleted) || result.deleted < 0 || !Number.isFinite(result.freed_bytes) || result.freed_bytes < 0) throw new Error('清理结果格式无法识别');
+  const pending = result.pending > 0 ? `有 ${result.pending} 个文件等待重试。` : '';
+  return `已清理 ${result.deleted} 个安装包，释放 ${size(result.freed_bytes)}。${pending}`;
+}
+async function refreshAfterCleanup(statusId, result, failed = false) {
+  try {
+    await loadCatalog();
+    if (authenticated) cleanupStatus(statusId, result, failed);
+  } catch (error) {
+    if (authenticated) cleanupStatus(statusId, `${result} 软件列表刷新失败。${error.message}`, true);
+  }
+}
+function clearCleanupPreview() {
+  cleanupPreview = null;
+  $('cleanup-preview-packages').replaceChildren();
+  $('cleanup-preview-result').hidden = true;
+  $('cleanup-execute').disabled = true;
+  cleanupStatus('cleanup-manual-status', '');
+}
+async function saveCleanupSetting() {
+  if (busy || !authenticated || !cleanupSettingsLoaded) return;
+  const value = $('cleanup-auto-days').value;
+  const days = value === '' ? null : Number(value);
+  if (days !== null && !retentionDays.includes(days)) return;
+  setBusy(true);
+  cleanupStatus('cleanup-settings-status', days === null ? '正在关闭自动清理…' : '正在保存设置并清理…');
+  try {
+    const setting = await postCleanup('/settings', {days}, cleanupTimeoutMs);
+    applyCleanupSetting(setting);
+    if (days === null) {
+      cleanupStatus('cleanup-settings-status', '自动清理已关闭。');
+      return;
+    }
+    clearCleanupPreview();
+    const result = setting.cleanup_error ? `本次清理失败。${setting.cleanup_error}` : cleanupResult(setting.result);
+    await refreshAfterCleanup('cleanup-settings-status', `已保存 ${setting.days} 天保留期限。${result}`, Boolean(setting.cleanup_error));
+  } catch (error) {
+    if (authenticated) cleanupStatus('cleanup-settings-status', error.message || '清理设置保存失败', true);
+  } finally { setBusy(false); }
+}
+async function previewCleanup() {
+  if (busy || !authenticated) return;
+  const days = Number($('cleanup-manual-days').value);
+  if (!retentionDays.includes(days)) return;
+  clearCleanupPreview();
+  setBusy(true);
+  cleanupStatus('cleanup-manual-status', '正在查找可清理的安装包…');
+  try {
+    const preview = await postCleanup('/preview', {days});
+    if (!Array.isArray(preview?.packages) || !Number.isFinite(preview.total_bytes) || preview.total_bytes < 0 || !preview.packages.every(pkg => pkg && text(pkg.id) && Object.hasOwn(productNames, pkg.product) && typeof pkg.version === 'string' && typeof pkg.platform === 'string' && Number.isFinite(pkg.size) && pkg.size >= 0 && typeof pkg.created_at === 'string')) throw new Error('清理预览格式无法识别');
+    cleanupPreview = {...preview, days};
+    cleanupStatus('cleanup-manual-status', preview.packages.length ? `预览到 ${preview.packages.length} 个安装包，预计释放 ${size(preview.total_bytes)}。` : '没有符合清理条件的安装包。');
+    if (!preview.packages.length) return;
+    const rows = preview.packages.map(pkg => {
+      const row = element('tr'), date = element('td', undefined, 'date-cell');
+      date.append(timeNode(pkg.created_at));
+      row.append(element('td', productNames[pkg.product]), element('td', pkg.version, 'version-cell'), element('td', pkg.platform, 'architecture-cell'), element('td', size(pkg.size)), date);
+      return row;
+    });
+    for (const row of rows) $('cleanup-preview-packages').append(row);
+    $('cleanup-preview-result').hidden = false;
+  } catch (error) {
+    if (authenticated) cleanupStatus('cleanup-manual-status', error.message || '读取清理预览失败', true);
+  } finally { setBusy(false); }
+}
+async function executeCleanup() {
+  if (busy || !authenticated || !cleanupPreview?.packages.length) return;
+  const {days, packages: candidates, total_bytes: totalBytes} = cleanupPreview;
+  if (!window.confirm(`确认删除预览中的 ${candidates.length} 个安装包？预计释放 ${size(totalBytes)}。此操作无法撤销。`)) return;
+  clearCleanupPreview();
+  setBusy(true);
+  cleanupStatus('cleanup-manual-status', '正在清理安装包…');
+  try {
+    const result = await postCleanup('', {days, package_ids:candidates.map(pkg => pkg.id)}, cleanupTimeoutMs);
+    await refreshAfterCleanup('cleanup-manual-status', cleanupResult(result));
+  } catch (error) {
+    if (authenticated) await refreshAfterCleanup('cleanup-manual-status', error.message || '清理安装包失败', true);
+  } finally { setBusy(false); }
+}
+function createCleanupControls() {
+  const off = element('option', '关闭'); off.value = '';
+  $('cleanup-auto-days').append(off);
+  for (const id of ['cleanup-auto-days', 'cleanup-manual-days']) {
+    for (const days of retentionDays) {
+      const option = element('option', `${days} 天`);
+      option.value = String(days);
+      $(id).append(option);
+    }
+  }
+  $('cleanup-manual-days').value = '30';
+  $('cleanup-manual-days').addEventListener('change', clearCleanupPreview);
+  $('cleanup-save').addEventListener('click', saveCleanupSetting);
+  $('cleanup-preview').addEventListener('click', previewCleanup);
+  $('cleanup-execute').addEventListener('click', executeCleanup);
+}
 async function mutate(pkg, channel, operation) {
   if (busy || !authenticated) return;
   if (pkg.metadata.product === 'mskdsp-platform') { message('平台候选包请到平台维护页手动升级。', true); return; }
@@ -211,6 +377,7 @@ async function mutate(pkg, channel, operation) {
     await request(`/api/v1/software/packages/${encodeURIComponent(pkg.id)}/${operation}`, {
       method:'POST', headers:{'Content-Type':'application/json', 'X-MskDSP-Action':'software'}, body:JSON.stringify({channel})
     });
+    clearCleanupPreview();
     await loadCatalog();
     if (!authenticated) return;
     message(operation === 'publish' ? '版本已发布，通道更新清单已切换。' : '版本已从所选通道撤回。');
@@ -460,19 +627,21 @@ async function readPlatformStatus() {
   renderPlatformSummary();
 }
 async function loadAll() {
-  const results = await Promise.allSettled([loadCatalog(), readPlatformStatus()]);
+  const results = await Promise.allSettled([loadCatalog(), readPlatformStatus(), readCleanupSetting()]);
   render();
   const failed = results.find(result => result.status === 'rejected');
   if (failed) throw failed.reason;
 }
 async function refresh() {
   if (busy || !authenticated) return;
+  clearCleanupPreview();
   setBusy(true);
   try { await loadAll(); if (authenticated) message(platformError ? '软件目录已刷新，平台状态暂不可用。' : '软件目录与平台状态已刷新。'); }
   catch (error) { message(error.message || '读取软件目录失败', true); }
   finally { setBusy(false); }
 }
 createSections();
+createCleanupControls();
 $('refresh').addEventListener('click', refresh);
 $('logout').addEventListener('click', async () => {
   if (busy || !authenticated) return;

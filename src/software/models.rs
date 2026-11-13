@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct PackageMetadata {
@@ -52,7 +51,6 @@ pub struct Package {
 
 #[derive(Debug, Clone)]
 pub struct DownloadFile {
-    pub path: PathBuf,
     pub size: u64,
     pub sha256: String,
     pub file_name: String,

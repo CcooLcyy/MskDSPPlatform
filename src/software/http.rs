@@ -36,6 +36,19 @@ pub fn router(auth: HttpState, store: SoftwareStore, public_base_url: String) ->
         .route("/api/v1/software/packages/{id}/publish", post(publish))
         .route("/api/v1/software/packages/{id}/withdraw", post(withdraw))
         .layer(DefaultBodyLimit::max(4096))
+        .merge(
+            Router::new()
+                .route(
+                    "/api/v1/software/cleanup",
+                    get(cleanup_settings).post(cleanup),
+                )
+                .route(
+                    "/api/v1/software/cleanup/settings",
+                    post(save_cleanup_settings),
+                )
+                .route("/api/v1/software/cleanup/preview", post(preview_cleanup))
+                .layer(DefaultBodyLimit::max(512 * 1024)),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin))
         .layer(middleware::from_fn(auth::no_cache));
     let page = Router::new()
@@ -122,6 +135,114 @@ fn action(headers: &HeaderMap) -> Result<(), Box<Response>> {
 #[serde(deny_unknown_fields)]
 struct Channel {
     channel: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CleanupSetting {
+    #[serde(deserialize_with = "Deserialize::deserialize")]
+    days: Option<u16>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CleanupDays {
+    days: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CleanupRequest {
+    days: u16,
+    package_ids: Vec<String>,
+}
+
+fn cleanup_body<T>(
+    headers: &HeaderMap,
+    value: Result<Json<T>, JsonRejection>,
+) -> Result<T, Box<Response>> {
+    action(headers)?;
+    value
+        .map(|Json(value)| value)
+        .map_err(|failure| Box::new(error(failure.status(), "清理请求参数不正确")))
+}
+
+async fn cleanup_settings(State(state): State<SoftwareState>) -> Response {
+    match state.store.cleanup_settings().await {
+        Ok(days) => Json(json!({"days": days})).into_response(),
+        Err(failure) => storage_error(failure),
+    }
+}
+
+async fn save_cleanup_settings(
+    State(state): State<SoftwareState>,
+    headers: HeaderMap,
+    value: Result<Json<CleanupSetting>, JsonRejection>,
+) -> Response {
+    let setting = match cleanup_body(&headers, value) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    let (result, cleanup_error) = match state.store.set_cleanup_days(setting.days).await {
+        Ok(Some(Ok(result))) => (Some(result), None),
+        Ok(None) => (None, None),
+        Ok(Some(Err(failure))) => {
+            warn!(error = %failure, "已保存 CI 清理设置，首轮清理失败");
+            (None, Some("请稍后手动重试，或等待下一轮自动清理。"))
+        }
+        Err(failure) => return storage_error(failure),
+    };
+    tracing::info!(
+        days = ?setting.days,
+        deleted = result.as_ref().map_or(0, |value| value.deleted),
+        "管理员已保存 CI 安装包清理设置"
+    );
+    Json(json!({"days": setting.days, "result": result, "cleanup_error": cleanup_error}))
+        .into_response()
+}
+
+async fn preview_cleanup(
+    State(state): State<SoftwareState>,
+    headers: HeaderMap,
+    value: Result<Json<CleanupDays>, JsonRejection>,
+) -> Response {
+    let request = match cleanup_body(&headers, value) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    match state.store.preview_cleanup(request.days).await {
+        Ok(preview) => Json(preview).into_response(),
+        Err(failure) => storage_error(failure),
+    }
+}
+
+async fn cleanup(
+    State(state): State<SoftwareState>,
+    headers: HeaderMap,
+    value: Result<Json<CleanupRequest>, JsonRejection>,
+) -> Response {
+    let request = match cleanup_body(&headers, value) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    match state
+        .store
+        .cleanup_once(request.days, request.package_ids)
+        .await
+    {
+        Ok(result) => {
+            tracing::info!(
+                days = request.days,
+                deleted = result.deleted,
+                freed_bytes = result.freed_bytes,
+                pending = result.pending,
+                "管理员已执行 CI 安装包清理"
+            );
+            Json(result).into_response()
+        }
+        Err(StoreError::Conflict(message)) => error(StatusCode::CONFLICT, &message),
+        Err(failure) => storage_error(failure),
+    }
 }
 
 async fn list(State(state): State<SoftwareState>) -> Response {
@@ -310,7 +431,7 @@ async fn download(
             Err(failure) => storage_error(failure),
         };
     }
-    let file = match state.store.download_file(&id, &name).await {
+    let (file, input) = match state.store.download_file(&id, &name).await {
         Ok(file) => file,
         Err(failure) => return storage_error(failure),
     };
@@ -339,13 +460,7 @@ async fn download(
         Err(()) => return unsatisfiable(response_headers, file.size),
     };
     let (status, start, count) = select_range(&mut response_headers, selected, file.size);
-    let mut input = match tokio::fs::File::open(&file.path).await {
-        Ok(input) => input,
-        Err(failure) => {
-            warn!(error = %failure, "软件包文件读取失败");
-            return error(StatusCode::INTERNAL_SERVER_ERROR, "软件包文件暂时不可用");
-        }
-    };
+    let mut input = tokio::fs::File::from_std(input);
     if input.metadata().await.map_or(true, |metadata| {
         !metadata.is_file() || metadata.len() != file.size
     }) {

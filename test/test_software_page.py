@@ -28,14 +28,27 @@ function record(fields={}){const {metadata={},...rest}=fields;return {id:'upper-
 const lower=f=>record({id:'lower',...f,metadata:{product:'mskdsp-lower',version:'0.4.0',platform:'linux-arm64',file_name:'lower.tar.gz',...f?.metadata}});
 const platform=f=>record({id:'platform',...f,metadata:{product:'mskdsp-platform',version:'0.0.1-ci.20261018t094236.6.98+sha.aaaaaaa',platform:'linux-amd64',file_name:'platform.tar.gz',channel:'ci',source_ref:'main',source_sha:'a'.repeat(40),build_time:'2026-10-18T09:42:36Z',...f?.metadata}});
 const response=(status,body)=>({ok:status>=200&&status<300,status,json:async()=>body});
-async function open({records=[record(),lower(),platform()],user={username:'operator',role:'admin'},rejectAt='',failList=false,statusCode=200,statusBody={enabled:true,state:'available',current_version:'0.1.0',latest_version:'0.2.0',message:'等待管理员确认'}}={}){
+async function open({records=[record(),lower(),platform()],user={username:'operator',role:'admin'},rejectAt='',failList=false,statusCode=200,statusBody={enabled:true,state:'available',current_version:'0.1.0',latest_version:'0.2.0',message:'等待管理员确认'},cleanupDays=null,cleanupCandidates=[]}={}){
  const ids={};for(const m of HTML.matchAll(/<([a-z]+)[^>]*\bid="([^"]+)"/g)){const n=new Element(m[1]);n.id=m[2];ids[n.id]=n;}if(ids.view)ids.view.value='list';
- const calls=[],redirects=[],confirms=[],state={records,failList,rejectAt,statusCode,statusBody,allowConfirm:true,publishFailure:false,hold:false,finish:null};
+ const calls=[],redirects=[],confirms=[],state={records,failList,rejectAt,statusCode,statusBody,allowConfirm:true,publishFailure:false,hold:false,finish:null,cleanupDays,cleanupCandidates,cleanupError:null,cleanupConflict:false,pendingCleanup:0};
  const all=()=>flatten(Object.values(ids));const document={activeElement:null,getElementById:id=>all().find(n=>n.id===id)||null,createElement:t=>new Element(t),querySelectorAll:()=>all().filter(n=>n.getAttribute('data-package-control')!==null)};currentDocument=document;
  const context=vm.createContext({AbortController,setTimeout,clearTimeout,document,window:{confirm:v=>{confirms.push(v);return state.allowConfirm;}},location:{assign:v=>redirects.push(v)},fetch:async(path,options)=>{
   calls.push({path,options});if(path===state.rejectAt)return response(401,{error:'请重新登录'});
   if(path==='/api/v1/auth/me')return response(200,user);if(path==='/api/v1/auth/logout')return response(204,null);
   if(path==='/api/update/status'){if(state.statusCode===0)throw new Error('维护接口离线');return response(state.statusCode,state.statusBody);}
+  if(path.startsWith('/api/v1/software/cleanup')) {
+   if(options.method!=='POST')return response(200,{days:state.cleanupDays});
+   const {days,package_ids}=JSON.parse(options.body);
+   const sum=items=>items.reduce((total,pkg)=>total+pkg.size,0);
+   const remove=items=>{state.records=state.records.filter(pkg=>!items.some(item=>item.id===pkg.id));return {deleted:items.length,freed_bytes:sum(items),pending:state.pendingCleanup};};
+   if(path.endsWith('/preview'))return response(200,{packages:state.cleanupCandidates,total_bytes:sum(state.cleanupCandidates)});
+   if(path.endsWith('/settings')){
+    state.cleanupDays=days;
+    return response(200,{days,result:days===null||state.cleanupError?null:remove(state.cleanupCandidates),cleanup_error:state.cleanupError});
+   }
+   if(state.cleanupConflict)return response(409,{error:'清理候选包已变化，请重新预览'});
+   return response(200,remove(state.cleanupCandidates.filter(pkg=>package_ids.includes(pkg.id))));
+  }
   if(options.method==='POST'){
    if(state.publishFailure)return response(412,{error:'尚未配置公开地址'});if(state.hold)await new Promise(r=>{state.finish=r;});
    const channel=JSON.parse(options.body).channel,target=decodeURIComponent(path.split('/').at(-2)),chosen=state.records.find(p=>p.id===target),publish=path.endsWith('/publish');
@@ -155,6 +168,54 @@ assert(!flatten(p.section('upper').list.children).some(n=>n.tag==='button'&&n.te
 const p=await open();await p.expand('upper');p.state.publishFailure=true;await p.api.mutate(p.state.records[0],'stable','publish');assert.equal(p.ids.message.textContent,'尚未配置公开地址');assert(p.ids.message.classes.has('error'));p.state.publishFailure=false;p.state.failList=true;await p.api.refresh();assert.equal(p.ids.message.textContent,'网络离线');assert.equal(p.ids.refresh.disabled,false);assert.equal(p.section('upper').count.textContent,'1 个安装包');const posts=p.calls.filter(c=>c.options.method==='POST').length;p.state.failList=false;await p.api.refresh();assert.equal(p.calls.filter(c=>c.options.method==='POST').length,posts);
 const denied=await open({user:{username:'viewer',role:'viewer'}});assert.equal(denied.calls.length,1);assert(denied.ids.refresh.disabled);for(const rejectAt of ['/api/v1/auth/me','/api/v1/software/packages']){const expired=await open({rejectAt});assert.deepEqual(expired.redirects,['/login']);assert(expired.ids.refresh.disabled);}await p.ids.logout.events.click();assert.equal(p.calls.at(-1).path,'/api/v1/auth/logout');assert.equal(p.calls.at(-1).options.headers['X-MskDSP-Action'],'auth');assert.deepEqual(p.redirects,['/login']);
 const initialFailure=await open({failList:true});assert(initialFailure.section('platform').summary.textContent.includes('0.1.0'));assert((await initialFailure.expand('upper')).empty.textContent.includes('暂不可用'));
+        ''')
+
+    def test_cleanup_setting_is_saved_explicitly_and_reports_immediate_result(self):
+        self.run_scenario(r'''
+const pkg=record(), candidate={id:pkg.id,size:2048};
+const p=await open({records:[pkg],cleanupDays:45,cleanupCandidates:[candidate]});
+const {ids,calls,state}=p, auto=ids['cleanup-auto-days'], manual=ids['cleanup-manual-days'];
+assert.deepEqual(auto.children.map(option=>option.value),['','7','30','45','60','90']);
+assert.deepEqual(manual.children.map(option=>option.value),['7','30','45','60','90']);
+assert.equal(auto.value,'45');assert.equal(manual.value,'30');
+auto.value='7';assert(calls.every(call=>call.options.method!=='POST'));
+await ids['cleanup-save'].events.click();
+const save=calls.find(call=>call.options.method==='POST');
+assert.equal(save.path,'/api/v1/software/cleanup/settings');assert.equal(save.options.headers['X-MskDSP-Action'],'software');
+assert.deepEqual(JSON.parse(save.options.body),{days:7});assert.equal(state.cleanupDays,7);
+assert.equal(calls.at(-1).path,'/api/v1/software/packages');assert.equal(p.section('upper').total.textContent,'0 个安装包');
+assert.match(ids['cleanup-settings-status'].textContent,/已清理 1 个安装包，释放 2.0 KiB/);
+state.cleanupError='仓库离线';auto.value='90';await ids['cleanup-save'].events.click();
+assert.equal(auto.value,'90');assert.match(ids['cleanup-settings-status'].textContent,/已保存 90 天保留期限。.*仓库离线/);assert(ids['cleanup-settings-status'].classes.has('error'));
+auto.value='';await ids['cleanup-save'].events.click();
+assert.deepEqual(JSON.parse(calls.at(-1).options.body),{days:null});assert.equal(state.cleanupDays,null);
+assert.equal(ids['cleanup-preview'].disabled,false);assert.equal(manual.value,'30');
+        ''')
+
+    def test_manual_cleanup_uses_confirmed_preview_without_changing_setting(self):
+        self.run_scenario(r'''
+const pkg=record({metadata:{version:'<img src=x onerror=alert(1)>'}}), other=lower();
+const candidate={id:pkg.id,product:pkg.metadata.product,version:pkg.metadata.version,platform:pkg.metadata.platform,size:2048,created_at:pkg.created_at};
+const p=await open({records:[pkg,other],cleanupCandidates:[candidate]}), {ids,calls,state}=p;
+const select=ids['cleanup-manual-days'], preview=ids['cleanup-preview'], execute=ids['cleanup-execute'];
+assert.equal(ids['cleanup-auto-days'].value,'');assert.equal(execute.disabled,true);
+await preview.events.click();assert.equal(execute.disabled,false);assert.deepEqual(JSON.parse(calls.at(-1).options.body),{days:30});
+assert.match(ids['cleanup-manual-status'].textContent,/预计释放 2.0 KiB/);
+const nodes=flatten(ids['cleanup-preview-packages'].children);
+assert(nodes.some(node=>node.tag==='td'&&node.textContent===pkg.metadata.version));
+assert(nodes.some(node=>node.tag==='time'&&node.getAttribute('datetime')===pkg.created_at));
+select.value='7';select.events.change();assert.equal(execute.disabled,true);
+await execute.events.click();assert.equal(calls.at(-1).path,'/api/v1/software/cleanup/preview');
+await preview.events.click();const count=calls.length;state.allowConfirm=false;
+await execute.events.click();assert.equal(calls.length,count);assert.match(p.confirms.at(-1),/预览中的 1 个安装包/);
+state.allowConfirm=true;state.cleanupConflict=true;await execute.events.click();
+assert.equal(calls.at(-1).path,'/api/v1/software/packages');assert.equal(execute.disabled,true);
+assert.match(ids['cleanup-manual-status'].textContent,/请重新预览/);assert(ids['cleanup-manual-status'].classes.has('error'));
+state.cleanupConflict=false;state.pendingCleanup=1;await preview.events.click();await execute.events.click();assert.equal(execute.disabled,true);
+const removal=calls.at(-2);assert.equal(removal.path,'/api/v1/software/cleanup');
+assert.deepEqual(JSON.parse(removal.options.body),{days:7,package_ids:[pkg.id]});
+assert.equal(calls.at(-1).path,'/api/v1/software/packages');assert.equal(state.cleanupDays,null);
+assert.deepEqual(state.records.map(pkg=>pkg.id),[other.id]);assert.match(ids['cleanup-manual-status'].textContent,/已清理 1 个安装包.*1 个文件等待重试/);
         ''')
 
 if __name__=='__main__': unittest.main()

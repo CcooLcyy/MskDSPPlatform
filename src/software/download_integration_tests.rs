@@ -208,12 +208,16 @@ async fn grpc_download_rejects_truncated_and_same_length_corrupted_packages() {
         let data = b"original-file";
         let package = upload(&store, metadata("mskdsp-upper", data), data).await;
         store.publish(&package.id, "ci").await.unwrap();
-        let file = store
-            .download_file(&package.id, &package.metadata.file_name)
-            .await
-            .unwrap();
+        let m = &package.metadata;
+        let path = directory
+            .path()
+            .join("packages")
+            .join(&m.product)
+            .join(&m.version)
+            .join(&m.platform)
+            .join(&m.file_name);
         std::fs::write(
-            file.path,
+            path,
             if truncated {
                 &b"short"[..]
             } else {

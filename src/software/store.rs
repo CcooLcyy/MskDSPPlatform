@@ -10,7 +10,7 @@ mod tests {
         reject_links(&canonical.join("not-created-yet")).unwrap();
         SoftwareStore::new(canonical, 64).unwrap();
     }
-    fn metadata(bytes: &[u8]) -> PackageMetadata {
+    pub(super) fn metadata(bytes: &[u8]) -> PackageMetadata {
         PackageMetadata {
             product: "mskdsp-lower".into(),
             version: "1.0.0".into(),
@@ -23,7 +23,7 @@ mod tests {
             ..Default::default()
         }
     }
-    fn platform_metadata(bytes: &[u8]) -> PackageMetadata {
+    pub(super) fn platform_metadata(bytes: &[u8]) -> PackageMetadata {
         PackageMetadata {
             product: "mskdsp-platform".into(),
             platform: "linux-amd64".into(),
@@ -268,7 +268,7 @@ mod tests {
                 .is_ok()
         );
     }
-    async fn upload(store: &SoftwareStore, m: PackageMetadata, data: &[u8]) -> Package {
+    pub(super) async fn upload(store: &SoftwareStore, m: PackageMetadata, data: &[u8]) -> Package {
         let task = store.create_upload(m).await.unwrap();
         store
             .append_chunk(&task.id, 0, data.to_vec())
@@ -615,6 +615,10 @@ mod tests {
     }
 }
 
+mod cleanup;
+#[cfg(test)]
+mod cleanup_tests;
+
 use super::models::{DownloadFile, Package, PackageMetadata, StoreError, Upload};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -633,6 +637,7 @@ const TASK_LIMIT: u64 = 32;
 #[derive(Clone)]
 pub struct SoftwareStore {
     inner: Arc<Mutex<Inner>>,
+    runtime_directory: Option<PathBuf>,
 }
 struct Inner {
     root: PathBuf,
@@ -1086,6 +1091,7 @@ impl SoftwareStore {
               CREATE UNIQUE INDEX IF NOT EXISTS active_upload_identity ON uploads(product,version,platform) WHERE state IN ('uploading','completed');
               PRAGMA user_version=1; COMMIT;").map_err(storage)?;
         }
+        db.execute_batch(cleanup::SCHEMA).map_err(storage)?;
         let mut inner = Inner {
             root,
             db,
@@ -1117,6 +1123,7 @@ impl SoftwareStore {
         }
         Ok(Self {
             inner: Arc::new(Mutex::new(inner)),
+            runtime_directory: None,
         })
     }
     async fn run<T, F>(&self, f: F) -> Result<T, StoreError>
@@ -1204,7 +1211,11 @@ impl SoftwareStore {
         self.run(move |s| s.manifest(&product, &channel, platform.as_deref(), &base))
             .await
     }
-    pub async fn download_file(&self, id: &str, name: &str) -> Result<DownloadFile, StoreError> {
+    pub async fn download_file(
+        &self,
+        id: &str,
+        name: &str,
+    ) -> Result<(DownloadFile, File), StoreError> {
         let id = id.to_owned();
         let name = name.to_owned();
         self.run(move |s| {
@@ -1213,17 +1224,24 @@ impl SoftwareStore {
                 return Err(StoreError::NotFound("安装包文件不存在".into()));
             }
             let path = s.package_path(&p.metadata)?;
-            reject_links(&path)?;
-            let meta = fs::metadata(&path).map_err(storage)?;
-            if !meta.is_file() || meta.len() != p.metadata.size {
+            let valid_size =
+                |metadata: fs::Metadata| metadata.is_file() && metadata.len() == p.metadata.size;
+            if !fs::metadata(&path).is_ok_and(&valid_size) {
                 return Err(StoreError::Storage("安装包文件不完整".into()));
             }
-            Ok(DownloadFile {
-                path,
-                size: p.metadata.size,
-                sha256: p.metadata.sha256,
-                file_name: name,
-            })
+            // 在释放仓库锁前打开文件，清理不会中断已经开始的下载。
+            let file = File::open(&path).map_err(storage)?;
+            if !file.metadata().is_ok_and(valid_size) {
+                return Err(StoreError::Storage("安装包文件不完整".into()));
+            }
+            Ok((
+                DownloadFile {
+                    size: p.metadata.size,
+                    sha256: p.metadata.sha256,
+                    file_name: name,
+                },
+                file,
+            ))
         })
         .await
     }
@@ -1319,6 +1337,20 @@ impl Inner {
         if m.product == super::TESTBENCH_PRODUCT {
             validate_new_testbench_version(&m)?;
         }
+        if self
+            .db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pending_package_deletions
+                               WHERE product=?1 AND version=?2 AND platform=?3)",
+                params![m.product, m.version, m.platform],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(storage)?
+        {
+            return Err(StoreError::Conflict(
+                "同版本软件包正在清理，请稍后重试".into(),
+            ));
+        }
         let count: u64 = self
             .db
             .query_row(
@@ -1343,7 +1375,9 @@ impl Inner {
         sync_directories(&path, &self.root)?;
         let at = now();
         let result = self.db.execute(
-            "INSERT INTO uploads VALUES(?1,?2,?3,?4,?5,0,'uploading',NULL,?6,?6)",
+            "INSERT INTO uploads SELECT ?1,?2,?3,?4,?5,0,'uploading',NULL,?6,?6
+             WHERE NOT EXISTS(SELECT 1 FROM pending_package_deletions
+                              WHERE product=?3 AND version=?4 AND platform=?5)",
             params![
                 id,
                 serde_json::to_string(&m).map_err(storage)?,
@@ -1353,15 +1387,23 @@ impl Inner {
                 at
             ],
         );
-        if let Err(e) = result {
-            let _ = fs::remove_file(path);
-            if e.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
-                // 另一个独立连接可能先写入同一身份，重新读取其已提交元数据。
-                return self.create(m);
+        match result {
+            Ok(1) => self.upload(&id),
+            Ok(_) => {
+                let _ = fs::remove_file(path);
+                Err(StoreError::Conflict(
+                    "同版本软件包正在清理，请稍后重试".into(),
+                ))
             }
-            return Err(storage(e));
+            Err(e) => {
+                let _ = fs::remove_file(path);
+                if e.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
+                    // 另一个独立连接可能先写入同一身份，重新读取其已提交元数据。
+                    return self.create(m);
+                }
+                Err(storage(e))
+            }
         }
-        self.upload(&id)
     }
     fn append(&mut self, id: &str, offset: u64, data: Vec<u8>) -> Result<Upload, StoreError> {
         if data.is_empty() || data.len() > CHUNK_LIMIT {
