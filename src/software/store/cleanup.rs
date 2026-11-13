@@ -14,6 +14,7 @@ use std::{
 const PLATFORM_PRODUCT: &str = "mskdsp-platform";
 
 // 增量表与旧版软件仓库兼容，旧程序仍可读取包及通道。
+// 显式 UPSERT 避免外层通道 UPSERT 覆盖触发器的 OR IGNORE 冲突策略。
 pub(super) const SCHEMA: &str = "
     BEGIN IMMEDIATE;
     CREATE TABLE IF NOT EXISTS package_cleanup_settings(
@@ -25,23 +26,29 @@ pub(super) const SCHEMA: &str = "
         channel TEXT NOT NULL,
         PRIMARY KEY(package_id,channel)
     );
-    CREATE TRIGGER IF NOT EXISTS remember_package_publication_insert
+    DROP TRIGGER IF EXISTS remember_package_publication_insert;
+    DROP TRIGGER IF EXISTS remember_package_publication_update;
+    CREATE TRIGGER IF NOT EXISTS record_package_publication_insert
     AFTER INSERT ON channels BEGIN
-        INSERT OR IGNORE INTO package_publications
+        INSERT INTO package_publications
         SELECT id,'unknown' FROM packages
         WHERE id=NEW.package_id AND ever_published=1
           AND product NOT IN ('mskdsp-testbench','mskdsp-testbench-cases')
-          AND NOT EXISTS(SELECT 1 FROM package_publications WHERE package_id=NEW.package_id);
-        INSERT OR IGNORE INTO package_publications VALUES(NEW.package_id,NEW.channel);
+          AND NOT EXISTS(SELECT 1 FROM package_publications WHERE package_id=NEW.package_id)
+        ON CONFLICT(package_id,channel) DO NOTHING;
+        INSERT INTO package_publications VALUES(NEW.package_id,NEW.channel)
+        ON CONFLICT(package_id,channel) DO NOTHING;
     END;
-    CREATE TRIGGER IF NOT EXISTS remember_package_publication_update
+    CREATE TRIGGER IF NOT EXISTS record_package_publication_update
     AFTER UPDATE OF package_id ON channels BEGIN
-        INSERT OR IGNORE INTO package_publications
+        INSERT INTO package_publications
         SELECT id,'unknown' FROM packages
         WHERE id=NEW.package_id AND ever_published=1
           AND product NOT IN ('mskdsp-testbench','mskdsp-testbench-cases')
-          AND NOT EXISTS(SELECT 1 FROM package_publications WHERE package_id=NEW.package_id);
-        INSERT OR IGNORE INTO package_publications VALUES(NEW.package_id,NEW.channel);
+          AND NOT EXISTS(SELECT 1 FROM package_publications WHERE package_id=NEW.package_id)
+        ON CONFLICT(package_id,channel) DO NOTHING;
+        INSERT INTO package_publications VALUES(NEW.package_id,NEW.channel)
+        ON CONFLICT(package_id,channel) DO NOTHING;
     END;
     CREATE TABLE IF NOT EXISTS pending_package_deletions(
         id TEXT PRIMARY KEY,
